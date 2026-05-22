@@ -211,7 +211,7 @@ class LLM:
         sub_title: str | None = None,
     ) -> None:
         """发布流式增量消息到前端。"""
-        from app.schemas.response import CoderMessage, WriterMessage, ModelerMessage, CoordinatorMessage, SubCoordinatorMessage
+        from app.schemas.response import AgentMessage, CoderMessage, WriterMessage, ModelerMessage, CoordinatorMessage, SubCoordinatorMessage
 
         idx = self.agent_index
         agent_msg: Any = None
@@ -230,6 +230,9 @@ class LLM:
                 agent_msg = SubCoordinatorMessage(content=partial_content, stream_state="streaming", agent_index=idx)
             case _:
                 return
+
+        if isinstance(agent_msg, AgentMessage):
+            self._attach_identity(agent_msg)
 
         await redis_manager.publish_message(self.task_id, agent_msg)
 
@@ -288,6 +291,19 @@ class LLM:
 
         return fixed_history
 
+    def _attach_identity(self, msg: "AgentMessage") -> None:
+        """将 LLM 实例上的结构化身份写入消息。"""
+        if self.agent_instance_id:
+            msg.agent_instance_id = self.agent_instance_id
+        if self.question_index is not None:
+            msg.question_index = self.question_index
+        if self.race_index is not None:
+            msg.race_index = self.race_index
+        if self.group_id:
+            msg.group_id = self.group_id
+        if self.phase:
+            msg.phase = self.phase
+
     async def send_message(
         self,
         response: StandardResponse,
@@ -320,18 +336,8 @@ class LLM:
             case _:
                 raise ValueError(f"不支持的agent类型: {agent_name}")
 
-        # 附加结构化身份
         if isinstance(agent_msg, AgentMessage):
-            if self.agent_instance_id:
-                agent_msg.agent_instance_id = self.agent_instance_id
-            if self.question_index is not None:
-                agent_msg.question_index = self.question_index
-            if self.race_index is not None:
-                agent_msg.race_index = self.race_index
-            if self.group_id:
-                agent_msg.group_id = self.group_id
-            if self.phase:
-                agent_msg.phase = self.phase
+            self._attach_identity(agent_msg)
 
         await redis_manager.publish_message(self.task_id, agent_msg)
 
