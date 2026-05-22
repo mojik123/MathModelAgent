@@ -1,0 +1,874 @@
+"""File management routes for task files, paper preview, PDF, and image revision."""
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import textwrap
+import asyncio
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
+from icecream import ic  # type: ignore[import-unresolved]
+from pydantic import BaseModel
+
+from app.config.setting import settings
+from app.core.llm.llm import LLM, simple_chat
+from app.core.prompts.image_revision import get_image_revision_prompt
+from app.core.prompts.text_revision import get_text_revision_prompt
+from app.tools.local_interpreter import LocalCodeInterpreter
+from app.tools.notebook_serializer import NotebookSerializer
+from app.utils.common_utils import get_current_files, get_work_dir, md_2_pdf
+from app.utils.image_code_index import (
+    extract_saved_images,
+    get_image_code_entry,
+    get_notebook_code_cells,
+    normalize_image_name,
+    update_image_code_index,
+    update_image_metadata,
+)
+from app.utils.image_constants import IMAGE_EXTENSION_RE_FRAGMENT
+from app.utils.log_util import logger
+
+router = APIRouter()
+
+_IMAGE_REVISION_COMPAT_CODE = r"""
+import builtins as _mma_builtins
+
+if not hasattr(_mma_builtins, "_mma_original_sorted"):
+    _mma_builtins._mma_original_sorted = _mma_builtins.sorted
+
+def _mma_safe_sorted(iterable, *args, **kwargs):
+    try:
+        return _mma_builtins._mma_original_sorted(iterable, *args, **kwargs)
+    except TypeError as exc:
+        message = str(exc)
+        if "not supported between instances" not in message or "key" in kwargs:
+            raise
+        fallback_kwargs = dict(kwargs)
+        def _mma_sort_key(value):
+            type_name = type(value).__name__
+            is_missing = value is None or type_name in {"NAType", "NaTType"}
+            try:
+                is_missing = is_missing or bool(value != value)
+            except Exception:
+                pass
+            return (is_missing, str(type(value)), "" if value is None else str(value))
+        fallback_kwargs["key"] = _mma_sort_key
+        return _mma_builtins._mma_original_sorted(iterable, *args, **fallback_kwargs)
+
+_mma_builtins.sorted = _mma_safe_sorted
+"""
+
+
+class PaperSaveRequest(BaseModel):
+    task_id: str
+    content: str
+
+
+class ImageRevisionRequest(BaseModel):
+    task_id: str
+    filename: str
+    instruction: str
+
+
+class ImageRevisionChatRequest(BaseModel):
+    task_id: str
+    filename: str
+    instruction: str
+    title: str | None = None
+    description: str | None = None
+    conversation_history: list[dict] | None = None
+
+
+class ImageRevisionChatResponse(BaseModel):
+    success: bool
+    status: str = "success"
+    message: str = ""
+    analysis_text: str
+    revised_code: str | None = None
+    updated_alt_text: str | None = None
+    updated_caption: str | None = None
+    paper_updated: bool = False
+    image_url: str | None = None
+    code_found: bool = False
+
+
+class TextRevisionChatRequest(BaseModel):
+    task_id: str
+    instruction: str
+    selected_text: str
+    context: str | None = None
+    conversation_history: list[dict] | None = None
+
+
+class TextRevisionChatResponse(BaseModel):
+    success: bool
+    message: str = ""
+    revised_text: str | None = None
+    updated_paper: str | None = None
+    paper_updated: bool = False
+    revision_scope: str = "selection"
+
+
+class ImageCodeResponse(BaseModel):
+    found: bool
+    filename: str
+    cell_index: int | None = None
+    code: str | None = None
+    section: str | None = None
+    description: str | None = None
+    alt_text: str | None = None
+    caption: str | None = None
+
+
+@router.get("/download_url")
+async def get_download_url(task_id: str, filename: str):
+    return {"download_url": f"http://localhost:8000/static/{task_id}/{filename}"}
+
+
+@router.get("/download_all_url")
+async def get_download_all_url(task_id: str):
+    return {"download_url": f"http://localhost:8000/static/{task_id}/all.zip"}
+
+
+@router.get("/files")
+async def get_files(task_id: str):
+    work_dir = get_work_dir(task_id)
+    files = get_current_files(work_dir, "all")
+    return [{"filename": item, "file_type": item.split(".")[-1]} for item in files]
+
+
+@router.get("/image_code")
+async def get_image_code(task_id: str, filename: str) -> ImageCodeResponse:
+    work_dir = get_work_dir(task_id)
+    image_name = normalize_image_name(filename)
+    entry = get_image_code_entry(work_dir, image_name)
+    if not entry:
+        return ImageCodeResponse(found=False, filename=image_name)
+    return ImageCodeResponse(
+        found=True,
+        filename=image_name,
+        cell_index=entry.get("cell_index"),
+        code=entry.get("code"),
+        section=entry.get("section"),
+        description=entry.get("description"),
+        alt_text=entry.get("alt_text"),
+        caption=entry.get("caption"),
+    )
+
+
+@router.get("/paper")
+async def get_paper(task_id: str):
+    work_dir = get_work_dir(task_id)
+    md_path = os.path.join(work_dir, "res.md")
+    if not os.path.exists(md_path):
+        return {"content": ""}
+
+    with open(md_path, "r", encoding="utf-8") as f:
+        return {"content": f.read()}
+
+
+@router.post("/paper")
+async def save_paper(payload: PaperSaveRequest):
+    work_dir = get_work_dir(payload.task_id)
+    md_path = os.path.join(work_dir, "res.md")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(payload.content)
+    return {"success": True}
+
+
+@router.post("/compile_pdf")
+async def compile_pdf(task_id: str):
+    try:
+        pdf_path = md_2_pdf(task_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return {"pdf_url": f"http://localhost:8000/static/{task_id}/res.pdf"}
+
+
+@router.post("/revise_image")
+async def revise_image(payload: ImageRevisionRequest):
+    work_dir = get_work_dir(payload.task_id)
+    image_path = os.path.join(work_dir, payload.filename)
+    md_path = os.path.join(work_dir, "res.md")
+
+    if not os.path.exists(image_path):
+        raise HTTPException(status_code=404, detail="图片不存在")
+
+    edited_filename = f"edited_{payload.filename}"
+    edited_path = os.path.join(work_dir, edited_filename)
+
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        image = Image.open(image_path).convert("RGB")
+        footer_height = max(56, min(140, image.height // 6))
+        canvas = Image.new("RGB", (image.width, image.height + footer_height), "white")
+        canvas.paste(image, (0, 0))
+        draw = ImageDraw.Draw(canvas)
+        try:
+            font = ImageFont.truetype("NotoSansCJK-Regular.ttc", max(14, image.width // 70))
+        except Exception:
+            font = ImageFont.load_default()
+        wrapped = "\n".join(textwrap.wrap(payload.instruction, width=42))
+        draw.rectangle((0, image.height, image.width, image.height + footer_height), fill=(250, 250, 250))
+        draw.text((18, image.height + 14), f"修改说明：{wrapped}", fill=(30, 41, 59), font=font)
+        canvas.save(edited_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"图片修改失败: {e}") from e
+
+    content = ""
+    if os.path.exists(md_path):
+        with open(md_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        content = content.replace(f"]({payload.filename})", f"]({edited_filename})")
+        content = content.replace(f"]({payload.filename.replace(os.sep, '/')})", f"]({edited_filename})")
+        if edited_filename not in content:
+            content += f"\n\n![修改后的图片]({edited_filename})\n\n> 图片修改说明：{payload.instruction}\n"
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    return {
+        "success": True,
+        "filename": edited_filename,
+        "image_url": f"http://localhost:8000/static/{payload.task_id}/{edited_filename}",
+        "content": content,
+    }
+
+
+def _extract_image_context(paper_content: str, filename: str) -> str:
+    escaped = re.escape(filename)
+    pattern = rf"!\[([^\]]*)\]\([^)]*{escaped}\)"
+    match = re.search(pattern, paper_content, re.IGNORECASE)
+    if not match:
+        return "(图片尚未在论文中引用)"
+
+    start = max(0, match.start() - 500)
+    end = min(len(paper_content), match.end() + 500)
+    return paper_content[start:end].strip()
+
+
+def _clip_context(value: str, limit: int) -> str:
+    value = (value or "").strip()
+    if len(value) <= limit:
+        return value
+    half = max(1, limit // 2)
+    return (
+        value[:half]
+        + f"\n\n...（中间内容较长，已压缩；原始长度 {len(value)} 字）...\n\n"
+        + value[-half:]
+    )
+
+
+def _read_task_messages(task_id: str) -> list[dict]:
+    message_path = Path("logs/messages") / f"{task_id}.json"
+    if not message_path.exists():
+        return []
+    try:
+        data = json.loads(message_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"读取任务消息上下文失败 {task_id}: {e}")
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _format_tool_outputs(output: object) -> str:
+    if not isinstance(output, list):
+        return ""
+    lines: list[str] = []
+    for item in output:
+        if isinstance(item, str):
+            if item.strip():
+                lines.append(item.strip())
+            continue
+        if not isinstance(item, dict):
+            continue
+        if item.get("res_type") == "error":
+            lines.append(
+                f"[error] {item.get('name', '')}: {item.get('value', '')}\n{item.get('traceback', '')}".strip()
+            )
+        elif item.get("format") in {"png", "jpeg", "svg", "pdf"}:
+            lines.append(f"[{item.get('format')}] 生成了图像/文件结果")
+        else:
+            msg = str(item.get("msg") or "").strip()
+            if msg:
+                lines.append(msg)
+    return "\n".join(lines)
+
+
+def _build_task_revision_context(task_id: str, work_dir: str, paper_content: str) -> str:
+    messages = _read_task_messages(task_id)
+    modeler_parts: list[str] = []
+    coder_parts: list[str] = []
+    tool_parts: list[str] = []
+
+    for message in messages:
+        msg_type = message.get("msg_type")
+        content = str(message.get("content") or "").strip()
+        agent_type = message.get("agent_type")
+        if msg_type == "agent" and content:
+            if agent_type == "ModelerAgent":
+                modeler_parts.append(_clip_context(content, 6000))
+            elif agent_type == "CoderAgent":
+                coder_parts.append(_clip_context(content, 6000))
+        elif msg_type == "tool":
+            tool_name = str(message.get("tool_name") or "tool")
+            input_data = message.get("input") if isinstance(message.get("input"), dict) else {}
+            code = ""
+            if isinstance(input_data, dict) and isinstance(input_data.get("code"), str):
+                code = _clip_context(str(input_data["code"]), 4000)
+            outputs = _clip_context(_format_tool_outputs(message.get("output")), 5000)
+            if code or outputs:
+                tool_parts.append(
+                    "\n".join(
+                        part
+                        for part in [
+                            f"### 工具 {tool_name}",
+                            f"代码：\n```python\n{code}\n```" if code else "",
+                            f"输出：\n{outputs}" if outputs else "",
+                        ]
+                        if part
+                    )
+                )
+
+    try:
+        files = get_current_files(work_dir, "all")
+    except Exception:
+        files = []
+    important_files = [
+        item
+        for item in files
+        if re.search(rf"\.(?:csv|xlsx|xls|json|{IMAGE_EXTENSION_RE_FRAGMENT}|pdf|md|tex|ipynb|py)$", item, re.I)
+    ][:120]
+
+    try:
+        code_cells = get_notebook_code_cells(work_dir)
+    except Exception:
+        code_cells = []
+    notebook_context = "\n\n".join(
+        f"### Notebook 代码单元 {index + 1}\n```python\n{_clip_context(code, 3500)}\n```"
+        for index, code in enumerate(code_cells[-8:])
+        if code.strip()
+    )
+
+    return "\n\n".join(
+        part
+        for part in [
+            "## 完整论文 Markdown\n" + (paper_content.strip() or "(当前还没有论文正文)"),
+            "## 建模思路上下文\n"
+            + (_clip_context("\n\n".join(modeler_parts), 18000) or "(没有读取到建模手输出)"),
+            "## 代码与执行结果上下文\n"
+            + (
+                _clip_context("\n\n".join([*coder_parts, *tool_parts]), 22000)
+                or "(没有读取到代码手或工具执行结果)"
+            ),
+            "## 任务文件列表\n" + ("\n".join(important_files) or "(暂无文件列表)"),
+            "## 最近 Notebook 代码上下文\n" + (notebook_context or "(暂无 Notebook 代码上下文)"),
+        ]
+        if part
+    )
+
+
+def _format_revision_history(history: list[dict] | None, limit: int = 5000) -> str:
+    if not history:
+        return ""
+    lines: list[str] = []
+    for item in history[-8:]:
+        role = str(item.get("role") or "").strip()
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        label = "用户" if role == "user" else "AI"
+        lines.append(f"{label}：{content}")
+    return _clip_context("\n\n".join(lines), limit)
+
+
+def _build_revision_message(
+    filename: str,
+    instruction: str,
+    context: str,
+    title: str | None,
+    description: str | None,
+    source_code: str,
+    task_context: str,
+    conversation_history: list[dict] | None = None,
+) -> str:
+    image_title = (title or "").strip() or "(未提供)"
+    current_description = (description or "").strip() or "(当前界面未提取到图片旁边介绍)"
+    history_text = _format_revision_history(conversation_history)
+    history_block = (
+        f"## 本图历史修订对话（仅作为用户意图上下文，不要模仿其输出格式）\n{history_text}\n\n"
+        if history_text
+        else ""
+    )
+    return (
+        f"## 图片文件名\n`{filename}`\n\n"
+        f"## 生成该图片的原始 Python 代码\n```python\n{source_code}\n```\n\n"
+        f"## 图片标题\n{image_title}\n\n"
+        f"## 当前图片旁边介绍\n{current_description}\n\n"
+        f"## 论文上下文（图片周围 Markdown）\n```markdown\n{context}\n```\n\n"
+        f"## 任务全局上下文（完整论文、建模思路、代码结果）\n{task_context}\n\n"
+        f"{history_block}"
+        f"## 用户修改指令\n{instruction}\n\n"
+        "请根据以上所有信息（优先用户指令，其次论文上下文，最后靠标题/文件名推断），"
+        "修改绘图代码并生成新的 alt-text 与图片旁边说明。"
+        "无论本次修改是否很小，都必须返回可直接执行的完整 revised_code。"
+    )
+
+
+def _extract_json_braces(text: str) -> str | None:
+    """从文本中提取首个完整 JSON 对象（正确处理嵌套大括号）。"""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text[start:], start=start):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _parse_revision_payload(raw_text: str) -> dict:
+    text = raw_text.strip()
+
+    # 先尝试提取 ```json ... ``` 代码块
+    fenced = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if fenced:
+        text = fenced.group(1).strip()
+
+    # 用括号匹配提取完整 JSON
+    json_text = _extract_json_braces(text)
+    if json_text:
+        text = json_text
+
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {
+            "status": "failed",
+            "message": "AI 返回格式异常，未返回 JSON 对象。",
+            "analysis_text": raw_text.strip(),
+            "revised_code": None,
+            "updated_alt_text": None,
+            "updated_caption": None,
+            "parse_error": True,
+        }
+
+    return {
+        "status": parsed.get("status") if parsed.get("status") in {"success", "failed"} else "success",
+        "message": str(parsed.get("message") or ""),
+        "analysis_text": str(parsed.get("analysis_text") or parsed.get("message") or ""),
+        "revised_code": parsed.get("revised_code") or None,
+        "updated_alt_text": parsed.get("updated_alt_text") or None,
+        "updated_caption": parsed.get("updated_caption") or None,
+        "parse_error": False,
+    }
+
+
+async def _repair_revision_payload(
+    revision_llm: LLM,
+    user_message: str,
+    raw_text: str,
+    filename: str,
+    source_code: str,
+) -> dict:
+    logger.warning(
+        f"图片修订返回缺少可执行 revised_code，尝试二次纠偏。filename={filename}, raw={_clip_context(raw_text, 1200)}"
+    )
+    repair_message = (
+        f"{user_message}\n\n"
+        "## 上一次 AI 返回内容\n"
+        f"{_clip_context(raw_text, 4000)}\n\n"
+        "## 强制修正要求\n"
+        "上一次返回没有提供可执行的 revised_code，导致系统无法重新生成图片。"
+        f"请以图片文件名 `{filename}` 和下面原始代码为基础，重新输出一个 JSON 对象。\n"
+        "必须满足：\n"
+        "1. status 为 success 时 revised_code 必须是完整 Python 代码，不允许为空。\n"
+        f"2. revised_code 必须覆盖保存到原文件名 `{filename}`。\n"
+        "3. 不要输出 Markdown 代码块，不要输出 JSON 之外的解释。\n\n"
+        f"## 原始代码备份\n```python\n{source_code}\n```"
+    )
+    try:
+        repaired_raw = await simple_chat(
+            revision_llm,
+            [
+                {"role": "system", "content": get_image_revision_prompt()},
+                {"role": "user", "content": repair_message},
+            ],
+        )
+    except Exception as e:
+        logger.error(f"AI 图片修订二次纠偏失败: {e}")
+        return _parse_revision_payload(raw_text)
+    return _parse_revision_payload(repaired_raw)
+
+
+def _file_sha256(path: str) -> str | None:
+    if not os.path.exists(path):
+        return None
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+async def _rerun_revised_image_code(
+    task_id: str,
+    work_dir: str,
+    filename: str,
+    revised_code: str,
+    cell_index: int | None,
+) -> tuple[bool, str]:
+    target = os.path.join(work_dir, normalize_image_name(filename))
+    serializer = NotebookSerializer(
+        work_dir=work_dir,
+        notebook_name=f"image_revision_{normalize_image_name(filename)}.ipynb",
+    )
+    interpreter = LocalCodeInterpreter(
+        task_id=task_id,
+        work_dir=work_dir,
+        notebook_serializer=serializer,
+    )
+    await interpreter.initialize()
+    try:
+        compat_outputs = await asyncio.to_thread(
+            interpreter.execute_code_,
+            _IMAGE_REVISION_COMPAT_CODE,
+        )
+        compat_errors = [out for mark, out in compat_outputs if mark == "error"]
+        if compat_errors:
+            return False, f"图片修订兼容环境初始化失败：{compat_errors[-1]}"
+
+        code_cells = get_notebook_code_cells(work_dir)
+        if cell_index is None:
+            # 尝试从所有 cell 中找到能生成目标图片的那一个
+            for idx, cell_code in enumerate(code_cells):
+                if normalize_image_name(filename) in extract_saved_images(cell_code):
+                    cell_index = idx
+                    break
+        prefix_cells = code_cells[:cell_index] if cell_index is not None else code_cells
+        for index, code in enumerate(prefix_cells):
+            outputs = await asyncio.to_thread(interpreter.execute_code_, code)
+            errors = [out for mark, out in outputs if mark == "error"]
+            if errors:
+                return False, f"依赖代码第 {index + 1} 段执行失败：{errors[-1]}"
+
+        before_digest = _file_sha256(target)
+        _, error_occurred, error_message = await interpreter.execute_code(revised_code)
+        if error_occurred:
+            return False, error_message
+
+        if not os.path.exists(target):
+            return False, "修改代码执行完成，但没有生成目标图片文件"
+
+        after_digest = _file_sha256(target)
+        if before_digest and after_digest == before_digest:
+            return False, (
+                "修改代码执行完成，但目标图片内容没有变化。"
+                "请让 AI 修改绘图代码并覆盖保存到原图片文件名。"
+            )
+
+        update_image_code_index(
+            work_dir,
+            revised_code,
+            cell_index=cell_index,
+            section="image_revision",
+        )
+        return True, "图片已通过修改代码重新生成"
+    finally:
+        await interpreter.cleanup()
+
+
+def _apply_image_text_revision(
+    paper_content: str,
+    filename: str,
+    updated_alt_text: str | None,
+    updated_caption: str | None,
+) -> tuple[str, bool]:
+    if not paper_content or not (updated_alt_text or updated_caption):
+        return paper_content, False
+
+    escaped = re.escape(filename)
+    pattern = rf"!\[([^\]]*)\]\(([^)]*{escaped})\)"
+    match = re.search(pattern, paper_content, re.IGNORECASE)
+    if not match:
+        return paper_content, False
+
+    new_alt = (updated_alt_text or match.group(1)).strip()
+    new_ref = f"![{new_alt}]({match.group(2)})"
+    updated = paper_content[: match.start()] + new_ref + paper_content[match.end() :]
+
+    if not updated_caption:
+        return updated, updated != paper_content
+
+    insert_at = match.start() + len(new_ref)
+    caption = updated_caption.strip()
+    caption_block = f"\n\n{caption}\n"
+    next_image = updated.find("![", insert_at)
+    paragraph_end = updated.find("\n\n", insert_at + 1)
+    if paragraph_end != -1 and (next_image == -1 or paragraph_end < next_image):
+        existing = updated[insert_at:paragraph_end].strip()
+        if existing:
+            updated = updated[:insert_at] + caption_block + updated[paragraph_end:]
+        else:
+            updated = updated[:insert_at] + caption_block + updated[paragraph_end + 2 :]
+    else:
+        updated = updated[:insert_at] + caption_block + updated[insert_at:]
+
+    return updated, updated != paper_content
+
+
+@router.post("/revise_image_chat")
+async def revise_image_chat(payload: ImageRevisionChatRequest):
+    work_dir = get_work_dir(payload.task_id)
+    image_path = os.path.join(work_dir, payload.filename)
+    md_path = os.path.join(work_dir, "res.md")
+
+    if not os.path.exists(image_path):
+        raise HTTPException(status_code=404, detail="图片不存在")
+
+    image_name = normalize_image_name(payload.filename)
+    code_entry = get_image_code_entry(work_dir, image_name)
+    if not code_entry or not code_entry.get("code"):
+        return ImageRevisionChatResponse(
+            success=False,
+            status="failed",
+            message="没有找到这张图片对应的生成代码，无法通过修改代码重新生成图片",
+            analysis_text="当前任务缺少图片到代码单元的映射。请先重新运行一次生成该图片的代码，系统会记录映射。",
+            code_found=False,
+        )
+
+    paper_content = ""
+    if os.path.exists(md_path):
+        with open(md_path, "r", encoding="utf-8") as f:
+            paper_content = f.read()
+
+    image_context = _extract_image_context(paper_content, payload.filename)
+    task_context = _build_task_revision_context(payload.task_id, work_dir, paper_content)
+    user_message = _build_revision_message(
+        payload.filename,
+        payload.instruction,
+        image_context,
+        payload.title,
+        payload.description,
+        str(code_entry.get("code") or ""),
+        task_context,
+        payload.conversation_history,
+    )
+
+    messages: list[dict] = [{"role": "system", "content": get_image_revision_prompt()}]
+    messages.append({"role": "user", "content": user_message})
+
+    revision_llm = LLM(
+        api_type=settings.WRITER_API_TYPE,
+        api_key=settings.WRITER_API_KEY,
+        model=settings.WRITER_MODEL,
+        base_url=settings.WRITER_BASE_URL,
+        task_id=payload.task_id,
+    )
+
+    try:
+        raw_text = await simple_chat(revision_llm, messages)
+    except Exception as e:
+        logger.error(f"AI 图片修订失败: {e}")
+        raise HTTPException(status_code=500, detail=f"AI 修改失败: {e}") from e
+
+    parsed = _parse_revision_payload(raw_text)
+    if parsed.get("parse_error") or (
+        parsed.get("status") == "success" and not parsed.get("revised_code")
+    ):
+        parsed = await _repair_revision_payload(
+            revision_llm,
+            user_message,
+            raw_text,
+            image_name,
+            str(code_entry.get("code") or ""),
+        )
+    revised_code = parsed.get("revised_code")
+    if parsed["status"] == "success" and not revised_code:
+        return ImageRevisionChatResponse(
+            success=False,
+            status="failed",
+            message="AI 没有按要求返回可执行的 revised_code，无法重新生成图片",
+            analysis_text=parsed["analysis_text"],
+            code_found=True,
+        )
+
+    image_regenerated = False
+    run_message = ""
+    if parsed["status"] == "success":
+        image_regenerated, run_message = await _rerun_revised_image_code(
+            payload.task_id,
+            work_dir,
+            image_name,
+            str(revised_code),
+            code_entry.get("cell_index"),
+        )
+        if not image_regenerated:
+            return ImageRevisionChatResponse(
+                success=False,
+                status="failed",
+                message=run_message or "修改代码执行失败，图片没有重新生成",
+                analysis_text=parsed["analysis_text"],
+                revised_code=str(revised_code),
+                updated_alt_text=parsed.get("updated_alt_text"),
+                updated_caption=parsed.get("updated_caption"),
+                code_found=True,
+            )
+
+    paper_updated = False
+    if parsed["status"] == "success" and os.path.exists(md_path):
+        updated_content, paper_updated = _apply_image_text_revision(
+            paper_content,
+            image_name,
+            parsed.get("updated_alt_text"),
+            parsed.get("updated_caption"),
+        )
+        if paper_updated:
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(updated_content)
+
+    if parsed["status"] == "success":
+        update_image_metadata(
+            work_dir,
+            image_name,
+            description=parsed.get("updated_caption") or parsed.get("updated_alt_text"),
+            alt_text=parsed.get("updated_alt_text"),
+            caption=parsed.get("updated_caption"),
+        )
+
+    return ImageRevisionChatResponse(
+        success=parsed["status"] == "success",
+        status=parsed["status"],
+        message=parsed["message"] or run_message or ("修改成功" if parsed["status"] == "success" else "修改失败"),
+        analysis_text=parsed["analysis_text"],
+        revised_code=str(revised_code) if revised_code else None,
+        updated_alt_text=parsed.get("updated_alt_text"),
+        updated_caption=parsed.get("updated_caption"),
+        paper_updated=paper_updated,
+        image_url=f"http://localhost:8000/static/{payload.task_id}/{image_name}",
+        code_found=True,
+    )
+
+
+@router.post("/revise_text_chat")
+async def revise_text_chat(payload: TextRevisionChatRequest):
+    """AI 对话修改论文文本。
+
+    接受用户选中的文本段落和修改指令，调用 LLM 进行精准修订。
+    """
+    work_dir = get_work_dir(payload.task_id)
+    md_path = os.path.join(work_dir, "res.md")
+    paper_content = ""
+    if os.path.exists(md_path):
+        with open(md_path, "r", encoding="utf-8") as f:
+            paper_content = f.read()
+    task_context = _build_task_revision_context(payload.task_id, work_dir, paper_content)
+
+    messages: list[dict] = [
+        {"role": "system", "content": get_text_revision_prompt()},
+    ]
+    history_text = _format_revision_history(payload.conversation_history)
+
+    context_block = ""
+    if payload.context:
+        context_block = f"\n\n【选中文本附近上下文】\n{payload.context}"
+    history_block = (
+        f"\n\n【历史修订对话，仅作为意图上下文，不要模仿其输出格式】\n{history_text}"
+        if history_text
+        else ""
+    )
+
+    messages.append({
+        "role": "user",
+        "content": (
+            f"【需要修改的原文】\n{payload.selected_text}"
+            f"{context_block}"
+            f"{history_block}"
+            f"\n\n【任务全局上下文：完整论文、建模思路、代码结果】\n{task_context}"
+            f"\n\n【修改指令】\n{payload.instruction}"
+            "\n\n请注意：用户虽然可能只选中了一句话，但你可以根据指令修改整篇论文。"
+            "如果只需要替换选中文本，返回 revised_text；如果需要改动整篇论文，返回 updated_paper（完整 Markdown）。"
+        ),
+    })
+
+    revision_llm = LLM(
+        api_type=settings.WRITER_API_TYPE,
+        api_key=settings.WRITER_API_KEY,
+        model=settings.WRITER_MODEL,
+        base_url=settings.WRITER_BASE_URL,
+        task_id=payload.task_id,
+    )
+
+    try:
+        raw_text = await simple_chat(revision_llm, messages)
+    except Exception as e:
+        logger.error(f"AI 文本修订失败: {e}")
+        raise HTTPException(status_code=500, detail=f"AI 修改失败: {e}") from e
+
+    # 解析 JSON 响应
+    try:
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[-1]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:cleaned.rfind("```")].strip()
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return TextRevisionChatResponse(
+            success=False,
+            message="AI 返回格式异常，请重试",
+            revised_text=raw_text[:1000],
+        )
+
+    updated_paper = parsed.get("updated_paper")
+    paper_updated = False
+    if parsed.get("status") == "success" and isinstance(updated_paper, str) and updated_paper.strip():
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(updated_paper)
+        paper_updated = True
+
+    return TextRevisionChatResponse(
+        success=parsed.get("status") == "success",
+        message=parsed.get("message", ""),
+        revised_text=parsed.get("revised_text"),
+        updated_paper=updated_paper if isinstance(updated_paper, str) else None,
+        paper_updated=paper_updated,
+        revision_scope="paper" if paper_updated else "selection",
+    )
+
+
+@router.get("/open_folder")
+async def open_folder(task_id: str):
+    ic(task_id)
+    work_dir = get_work_dir(task_id)
+
+    if os.name == "nt":
+        subprocess.run(["explorer", work_dir])
+    elif os.name == "posix":
+        subprocess.run(["open", work_dir])
+    else:
+        raise HTTPException(status_code=500, detail=f"不支持的操作系统: {os.name}")
+
+    return {"message": "打开工作目录成功", "work_dir": work_dir}
