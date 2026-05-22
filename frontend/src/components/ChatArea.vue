@@ -874,7 +874,7 @@ const getGroupMeta = (
 	if (static_meta[groupId]) return static_meta[groupId];
 
 		// 新格式 q1.coder.r2
-		const modernMatch = groupId.match(/^q(\d+)\.(sub_coordinator|modeler|coder|writer)(?:\.r(\d+))?$/);
+		const modernMatch = groupId.match(/^q(\\d+)\\.sub_coordinator|modeler|coder|writer)(?:\\.r(\\d+))?$/);
 		if (modernMatch) {
 			const [, qIdx, role, raceIdx] = modernMatch;
 			const qNameMap = { sub_coordinator: `Q${qIdx} · SubCoordinatorAgent`, modeler: `Q${qIdx} · ModelerAgent`, coder: raceIdx ? `Q${qIdx} · CoderAgent 竞速${raceIdx}` : `Q${qIdx} · CoderAgent`, writer: `Q${qIdx} · WriterAgent` };
@@ -2325,19 +2325,14 @@ const topLevelItems = computed<TopLevelItem[]>(() => {
 	for (const group of agentGroups.value) {
 		if (!indexedIds.has(group.id)) {
 			items.push({ kind: "group", group });
-		} else {
-			const m = group.id.match(
-				/^(?:sub_coordinator|modeler|coder)_(\d+)$/,
-			);
-			if (m) {
-				const idx = Number(m[1]);
-				if (!seenQGroups.has(idx)) {
-					seenQGroups.add(idx);
-					const qg = questionGroupsData.value.find((q) => q.index === idx);
+			} else {
+				const parsed = parseGroupId(group.id);
+				if (parsed && !seenQGroups.has(parsed.index)) {
+					seenQGroups.add(parsed.index);
+					const qg = questionGroupsData.value.find((q) => q.index === parsed.index);
 					if (qg) items.push({ kind: "question_group", ...qg });
 				}
 			}
-		}
 	}
 	if (writerGroupsData.value.length > 0) {
 		items.push({ kind: "writer_group", groups: writerGroupsData.value });
@@ -2405,9 +2400,7 @@ interface WorkflowRow {
 			else if (parsed.role === "modeler") row.modeler = group;
 			else if (parsed.role === "coder") {
 				row.coders.push(group);
-				if (group.actions.some((a) => (a.title + 
- + (a.content ?? "")).includes("代码手求解成功"))) {
-					row.winnerCoder = group;
+				if (group.actions.some((a) => `${a.title}\n${a.content ?? ""}`.includes("代码手求解成功"))) {
 				}
 			}
 			else if (parsed.role === "writer") row.writer = group;
