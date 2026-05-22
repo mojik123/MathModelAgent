@@ -2401,6 +2401,7 @@ interface WorkflowRow {
 			else if (parsed.role === "coder") {
 				row.coders.push(group);
 				if (group.actions.some((a) => `${a.title}\n${a.content ?? ""}`.includes("代码手求解成功"))) {
+						row.winnerCoder = group;
 				}
 			}
 			else if (parsed.role === "writer") row.writer = group;
