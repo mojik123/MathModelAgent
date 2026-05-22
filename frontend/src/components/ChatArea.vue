@@ -227,8 +227,8 @@ const normalizeGroupId = (
 	agentIndex: number | null | undefined,
 	msg?: any,
 ): string => {
-	if (msg?.agent_instance_id) return msg.group_id;
-	if (msg?.group_id) return msg.agent_instance_id;
+	if (msg?.agent_instance_id) return msg.agent_instance_id;
+	if (msg?.group_id) return msg.group_id;
 	const typeMap: Record<string, string> = {
 		[AgentType.COORDINATOR]: "coordinator",
 		[AgentType.SUB_COORDINATOR]: "sub_coordinator",
