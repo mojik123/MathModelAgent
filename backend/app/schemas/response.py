@@ -36,6 +36,13 @@ class AgentMessage(Message):
     agent_type: AgentType  # CoordinatorAgent | ModelerAgent | CoderAgent | WriterAgent
     agent_index: int | None = None  # 并行组编号（1-based），None 表示全局单例
     stream_state: Literal["streaming", "complete"] | None = None  # streaming=增量内容，complete=最终完整内容
+    # 结构化身份字段（多 Agent 协同用）
+    agent_instance_id: str | None = None  # 全局唯一实例 ID，如 "q1.coder.r2"
+    question_index: int | None = None  # 所属问题编号（1-based）
+    race_index: int | None = None  # 竞速编号（1-based），非竞速 Agent 为 None
+    phase: str | None = None  # 当前阶段：coordinating|modeling|coding|writing|reviewing
+    group_id: str | None = None  # 前端分组用，同组 Agent 共享，如 "q1.coder"
+    feedback_kind: str | None = None  # user_checkpoint|auto_quality_check|rework|handoff|final_review
 
 
 class ModelerMessage(AgentMessage):

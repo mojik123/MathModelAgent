@@ -779,6 +779,12 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 coder = self._create_coder_agent(
                     problem, interp, agent_index=group_idx
                 )
+                # 设置竞速身份
+                coder.model.question_index = group_idx
+                coder.model.race_index = w + 1
+                coder.model.agent_instance_id = f"q{group_idx}.coder.r{w + 1}"
+                coder.model.group_id = f"q{group_idx}.coder"
+                coder.model.phase = "coding"
                 racing_interpreters.append(interp)
                 racing_coders.append(coder)
 

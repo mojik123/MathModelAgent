@@ -44,6 +44,12 @@ class LLM:
         self.model = model
         self.base_url = base_url
         self.chat_count = 0
+        # 结构化身份（多 Agent 协同）
+        self.question_index: int | None = None
+        self.race_index: int | None = None
+        self.agent_instance_id: str | None = None
+        self.group_id: str | None = None
+        self.phase: str | None = None
         self.max_tokens = max_tokens
         self.task_id = task_id
         self.agent_index = agent_index
@@ -312,6 +318,19 @@ class LLM:
                 agent_msg = SubCoordinatorMessage(content=content, agent_index=idx)
             case _:
                 raise ValueError(f"不支持的agent类型: {agent_name}")
+
+        # 附加结构化身份
+        if isinstance(agent_msg, AgentMessage):
+            if self.agent_instance_id:
+                agent_msg.agent_instance_id = self.agent_instance_id
+            if self.question_index is not None:
+                agent_msg.question_index = self.question_index
+            if self.race_index is not None:
+                agent_msg.race_index = self.race_index
+            if self.group_id:
+                agent_msg.group_id = self.group_id
+            if self.phase:
+                agent_msg.phase = self.phase
 
         await redis_manager.publish_message(self.task_id, agent_msg)
 

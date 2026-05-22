@@ -338,6 +338,14 @@ export const useTaskStore = defineStore("task", () => {
 		}, 1000);
 	}
 
+	function getAgentStreamKey(msg: AgentMessage): string {
+		const m = msg as any;
+		return (
+			m.agent_instance_id ??
+			[m.agent_type, m.question_index ?? "", m.race_index ?? "", m.agent_index ?? ""].join(":")
+		);
+	}
+
 	function appendMessage(taskId: string, message: Message) {
 		ensureTaskBucket(taskId);
 
@@ -349,9 +357,8 @@ export const useTaskStore = defineStore("task", () => {
 					const existing = bucket[i];
 					if (
 						existing.msg_type === "agent" &&
-						(existing as AgentMessage).agent_type === agentMsg.agent_type &&
 						(existing as AgentMessage).stream_state === "streaming" &&
-						((existing as any).agent_index ?? null) === ((agentMsg as any).agent_index ?? null)
+						getAgentStreamKey(existing as AgentMessage) === getAgentStreamKey(agentMsg)
 					) {
 						bucket[i] = { ...existing, content: agentMsg.content };
 						messagesByTask.value[taskId] = [...bucket];

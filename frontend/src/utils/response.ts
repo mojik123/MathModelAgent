@@ -53,6 +53,13 @@ export interface AgentMessage extends BaseMessage {
 	agent_type: AgentType;
 	agent_index?: number | null; // 并行组编号（1-based），null 表示全局单例
 	stream_state?: "streaming" | "complete" | null;
+	// 结构化身份字段（多 Agent 协同用）
+	agent_instance_id?: string | null; // 全局唯一实例 ID，如 "q1.coder.r2"
+	question_index?: number | null; // 所属问题编号（1-based）
+	race_index?: number | null; // 竞速编号（1-based）
+	phase?: string | null; // 当前阶段
+	group_id?: string | null; // 前端分组用
+	feedback_kind?: string | null; // user_checkpoint|auto_quality_check|rework|handoff|final_review
 }
 
 /** 建模手消息 */
