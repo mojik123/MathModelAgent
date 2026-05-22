@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 自动推送规则
+
+每次完成代码修改后，必须执行以下命令提交并推送到 GitHub：
+```powershell
+powershell -ExecutionPolicy Bypass -File .\push-to-github.ps1
+```
+
 ## 项目概述
 
 MathModelAgent 是数学建模竞赛自动化系统，通过多 Agent 协作完成建模、代码生成和论文撰写。核心工作流：CoordinatorAgent 分析问题 → ModelerAgent 建模 → CoderAgent 编码执行 → WriterAgent 撰写论文。
