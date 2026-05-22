@@ -1617,6 +1617,7 @@ const rawActions = computed(() => {
 					durationMs: 0,
 					agent: lastAgentName || "File",
 					files: fileAction.files,
+						groupId: lastAgentGroupId || "coder",
 					codePreview: compactCodePreview(code),
 				});
 			});
@@ -1989,77 +1990,74 @@ const groupWorkStatus = computed<Record<string, GroupWork>>(() => {
 		}
 		const c = `${action.title}\n${action.content ?? ""}`;
 		const ownerGroup = getGroupId(action);
+			const setWork = (baseGroup, text, state) => {
+				const target = ownerGroup && (ownerGroup === baseGroup || ownerGroup.startsWith(baseGroup + "_") || ownerGroup.includes("." + baseGroup)) ? ownerGroup : baseGroup;
+				if (!map[target]) map[target] = { text: getGroupMeta(target).role, state: "idle" };
+				map[target] = { text, state };
+				if (target !== baseGroup) map[baseGroup] = { text, state };
+			};
 
 		// ── CoderAgent ──
 		if (c.includes("创建代码沙盒") || c.includes("初始化代码手")) {
-			map.coder = { text: "准备就绪，待命中", state: "commanded" };
+			setWork("coder", "准备就绪，待命中", "commanded");
 		} else if (c.includes("代码手开始求解")) {
 			const key = extractFlowKey(c);
 			const lbl = keyLabel(key);
-			map.coder = { text: `正在求解${lbl}`, state: "commanded" };
+			setWork("coder", `正在求解${lbl}`, "commanded");
 		} else if (
 			c.includes("代码手调用") ||
 			c.includes("开始执行代码") ||
 			c.includes("运行：代码块") ||
 			c.includes("代码执行完成")
 		) {
-			map.coder = {
-				text: map.coder.text.startsWith("正在求解")
-					? map.coder.text
-					: "正在执行代码",
-				state: "working",
-			};
+			const curText = (ownerGroup && map[ownerGroup]?.text) || map.coder.text;
+			setWork("coder", curText.startsWith("正在求解") ? curText : "正在执行代码", "working");
 		} else if (c.includes("代码手反思纠正错误")) {
-			map.coder = { text: "正在改错修复", state: "working" };
+			setWork("coder", "正在改错修复", "working");
 		} else if (c.includes("超过最大重试次数")) {
-			map.coder = { text: "改错中止，沿用现有结果", state: "idle" };
-		} else if (c.includes("代码手完成任务")) {
-			const prev = map.coder.text;
-			map.coder = {
-				text: prev.startsWith("正在求解")
-					? `${prev.replace("正在求解", "已完成")}求解`
-					: "代码任务完成",
-				state: "idle",
-			};
+			setWork("coder", "改错中止，沿用现有结果", "idle");
+			} else if (c.includes("代码手完成任务")) {
+				const prev = (ownerGroup && map[ownerGroup]?.text) || map.coder.text;
+				setWork("coder", prev.startsWith("正在求解") ? `${prev.replace("正在求解", "已完成")}求解` : "代码任务完成", "idle");
 		} else if (c.includes("代码手求解成功")) {
 			const key = extractFlowKey(c);
 			const lbl = keyLabel(key);
-			map.coder = { text: `已完成${lbl}求解`, state: "idle" };
+			setWork("coder", `已完成${lbl}求解`, "idle");
 		}
 
 		// ── WriterAgent ──
 		if (c.includes("论文手开始写")) {
 			const key = extractFlowKey(c);
 			const lbl = keyLabel(key);
-			map.writer = { text: `正在进行${lbl}写作`, state: "commanded" };
+			setWork("writer", `正在进行${lbl}写作`, "commanded");
 		} else if (c.includes("论文手完成")) {
 			const key = extractFlowKey(c);
 			const lbl = keyLabel(key);
-			map.writer = { text: `已完成${lbl}写作`, state: "idle" };
+			setWork("writer", `已完成${lbl}写作`, "idle");
 		} else if (c.includes("论文生成完成")) {
-			map.writer = { text: "论文全部写作完成", state: "idle" };
+			setWork("writer", "论文全部写作完成", "idle");
 		} else if (c.includes("终稿整体检查")) {
-			map.writer = { text: "正在检查论文终稿", state: "working" };
+			setWork("writer", "正在检查论文终稿", "working");
 		}
 
 		// ── ModelerAgent ──
 		if (c.includes("任务转交给建模手")) {
-			map.modeler = { text: "接收建模任务", state: "commanded" };
+			setWork("modeler", "接收建模任务", "commanded");
 		} else if (
 			c.includes("建模手开始") ||
 			c.includes("建模手正在") ||
 			c.includes("比选：建模方案")
 		) {
-			map.modeler = { text: "正在制定建模方案", state: "working" };
+			setWork("modeler", "正在制定建模方案", "working");
 		} else if (c.includes("建模手分析完成")) {
-			map.modeler = { text: "建模方案已完成", state: "idle" };
+			setWork("modeler", "建模方案已完成", "idle");
 		}
 
 		// ── CoordinatorAgent ──
 		if (c.includes("识别用户意图") || c.includes("协调者正在分析")) {
-			map.coordinator = { text: "正在拆解问题结构", state: "working" };
+			setWork("coordinator", "正在拆解问题结构", "working");
 		} else if (c.includes("问题拆解完成")) {
-			map.coordinator = { text: "问题拆解已完成", state: "idle" };
+			setWork("coordinator", "问题拆解已完成", "idle");
 		}
 
 		// ── Terminal system states ──
