@@ -6,6 +6,7 @@ from app.utils.common_utils import transform_link, split_footnotes
 from app.utils.log_util import logger
 import time
 from app.schemas.response import (
+    AgentMessage,
     CoderMessage,
     WriterMessage,
     ModelerMessage,
