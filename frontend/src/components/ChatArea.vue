@@ -2384,35 +2384,34 @@ interface WorkflowRow {
 	overallStatus: ActionStatus;
 }
 
-const workflowRows = computed<WorkflowRow[]>(() => {
-	const rows = new Map<number, WorkflowRow>();
-	for (const group of agentGroups.value) {
-		const m = group.id.match(/^(sub_coordinator|modeler|coder|writer)_(\d+)$/);
-		if (m) {
-			const role = m[1];
-			const idx = Number(m[2]);
+	const workflowRows = computed<WorkflowRow[]>(() => {
+		const rows = new Map<number, WorkflowRow>();
+		const ensureRow = (idx: number) => {
 			if (!rows.has(idx)) {
-				rows.set(idx, {
-					index: idx,
-					subCoordinator: null,
-					modeler: null,
-					coder: null,
-					writer: null,
-					overallStatus: "pending",
-				});
+				rows.set(idx, { index: idx, subCoordinator: null, modeler: null, coders: [], winnerCoder: null, writer: null, overallStatus: "pending" });
 			}
-			const row = rows.get(idx)!;
-			if (role === "sub_coordinator") row.subCoordinator = group;
-			else if (role === "modeler") row.modeler = group;
-			else if (role === "coder") row.coder = group;
-			else if (role === "writer") row.writer = group;
+			return rows.get(idx)!;
+		};
+		for (const group of agentGroups.value) {
+			const parsed = parseGroupId(group.id);
+			if (!parsed) continue;
+			const row = ensureRow(parsed.index);
+			if (parsed.role === "sub_coordinator") row.subCoordinator = group;
+			else if (parsed.role === "modeler") row.modeler = group;
+			else if (parsed.role === "coder") {
+				row.coders.push(group);
+				if (group.actions.some((a) => (a.title + 
+ + (a.content ?? "")).includes("代码手求解成功"))) {
+					row.winnerCoder = group;
+				}
+			}
+			else if (parsed.role === "writer") row.writer = group;
 		}
-	}
 	for (const row of rows.values()) {
 		const groups = [
 			row.subCoordinator,
 			row.modeler,
-			row.coder,
+			row.winnerCoder ?? row.coders[0],
 			row.writer,
 		].filter(Boolean) as AgentGroup[];
 		if (groups.some((g) => g.status === "error")) row.overallStatus = "error";
@@ -2650,11 +2649,11 @@ onBeforeUnmount(() => {
 						<CheckCircle2 v-else-if="row.modeler?.status === 'done'" class="h-2 w-2 shrink-0" />
 					</div>
 					<span class="pipeline-arrow">→</span>
-					<div class="pipeline-node" :class="pipelineNodeClass(row.coder)" :title="row.coder?.name ?? '代码 Agent'">
+					<div class="pipeline-node" :class="pipelineNodeClass(row.winnerCoder ?? row.coders[0] ?? null)" :title="row.winnerCoder?.name ?? row.coders.map(g => g.name).join(' / ') || '代码 Agent'">
 						<Code2 class="h-2.5 w-2.5 shrink-0" />
-						<span>代码</span>
-						<LoaderCircle v-if="row.coder?.status === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
-						<CheckCircle2 v-else-if="row.coder?.status === 'done'" class="h-2 w-2 shrink-0" />
+						<span>代码<template v-if="row.coders.length > 1"> 竞速 {{ row.coders.filter(g => g.status === 'done').length }}/{{ row.coders.length }}</template></span>
+						<LoaderCircle v-if="row.coders.some(g => g.status === 'running')" class="h-2 w-2 shrink-0 animate-spin" />
+						<CheckCircle2 v-else-if="row.winnerCoder || row.coders.some(g => g.status === 'done')" class="h-2 w-2 shrink-0" />
 					</div>
 					<span class="pipeline-arrow">→</span>
 					<div class="pipeline-node" :class="pipelineNodeClass(row.writer)" :title="row.writer?.name ?? '撰写 Agent'">
