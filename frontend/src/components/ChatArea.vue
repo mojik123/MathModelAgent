@@ -873,6 +873,15 @@ const getGroupMeta = (
 	};
 	if (static_meta[groupId]) return static_meta[groupId];
 
+		// 新格式 q1.coder.r2
+		const modernMatch = groupId.match(/^q(d+).(sub_coordinator|modeler|coder|writer)(?:.r(d+))?$/);
+		if (modernMatch) {
+			const [, qIdx, role, raceIdx] = modernMatch;
+			const qNameMap = { sub_coordinator: `Q${qIdx} · SubCoordinatorAgent`, modeler: `Q${qIdx} · ModelerAgent`, coder: raceIdx ? `Q${qIdx} · CoderAgent 竞速${raceIdx}` : `Q${qIdx} · CoderAgent`, writer: `Q${qIdx} · WriterAgent` };
+			const qRoleMap = { sub_coordinator: `负责第 ${qIdx} 问任务协调  ·  ${modelInfo("coordinator")}`, modeler: `负责第 ${qIdx} 问建模细化  ·  ${modelInfo("modeler")}`, coder: raceIdx ? `第 ${qIdx} 问代码竞速 ${raceIdx}  ·  ${modelInfo("coder")}` : `负责第 ${qIdx} 问代码求解  ·  ${modelInfo("coder")}`, writer: `负责第 ${qIdx} 问结果撰写  ·  ${modelInfo("writer")}` };
+			return { name: qNameMap[role] ?? groupId, role: qRoleMap[role] ?? "等待执行" };
+		}
+
 	const idxMatch = groupId.match(
 		/^(sub_coordinator|modeler|coder|writer)_(\d+)$/,
 	);
@@ -2226,16 +2235,12 @@ interface QuestionGroupData {
 
 const questionGroupsData = computed<QuestionGroupData[]>(() => {
 	const indexed = new Map<number, AgentGroup[]>();
-	for (const group of agentGroups.value) {
-		const m = group.id.match(
-			/^(?:sub_coordinator|modeler|coder)_(\d+)$/,
-		);
-		if (m) {
-			const idx = Number(m[1]);
-			if (!indexed.has(idx)) indexed.set(idx, []);
-			indexed.get(idx)?.push(group);
+		for (const group of agentGroups.value) {
+			const parsed = parseGroupId(group.id);
+			if (!parsed) continue;
+			if (!indexed.has(parsed.index)) indexed.set(parsed.index, []);
+			indexed.get(parsed.index)?.push(group);
 		}
-	}
 	return Array.from(indexed.entries())
 		.sort(([a], [b]) => a - b)
 		.map(([idx, groups]) => {
