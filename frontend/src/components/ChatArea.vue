@@ -2366,11 +2366,20 @@ const statusClass = (status: ActionStatus) => {
 
 // ---- 子问题流水线 ----
 
+function parseGroupId(groupId: string) {
+	const modern = groupId.match(/^q(\d+)\.(sub_coordinator|modeler|coder|writer)(?:\.r(\d+))?$/);
+	if (modern) return { index: Number(modern[1]), role: modern[2], raceIndex: modern[3] ? Number(modern[3]) : null };
+	const legacy = groupId.match(/^(sub_coordinator|modeler|coder|writer)_(\d+)$/);
+	if (legacy) return { index: Number(legacy[2]), role: legacy[1], raceIndex: null };
+	return null;
+}
+
 interface WorkflowRow {
 	index: number;
 	subCoordinator: AgentGroup | null;
 	modeler: AgentGroup | null;
-	coder: AgentGroup | null;
+	coders: AgentGroup[];
+	winnerCoder: AgentGroup | null;
 	writer: AgentGroup | null;
 	overallStatus: ActionStatus;
 }
