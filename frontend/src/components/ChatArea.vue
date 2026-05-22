@@ -221,6 +221,25 @@ const agentDisplayName = (
 	return base;
 };
 
+/** 统一 groupId：agentType → 短名，带编号 */
+const normalizeGroupId = (
+	agentType: string,
+	agentIndex: number | null | undefined,
+	msg?: any,
+): string => {
+	if (msg?.group_id) return msg.group_id;
+	if (msg?.agent_instance_id) return msg.agent_instance_id;
+	const typeMap: Record<string, string> = {
+		[AgentType.COORDINATOR]: "coordinator",
+		[AgentType.SUB_COORDINATOR]: "sub_coordinator",
+		[AgentType.MODELER]: "modeler",
+		[AgentType.CODER]: "coder",
+		[AgentType.WRITER]: "writer",
+	};
+	const base = typeMap[agentType] ?? String(agentType).toLowerCase();
+	return agentIndex != null ? `${base}_${agentIndex}` : base;
+};
+
 const phaseLabelMap: Record<string, string> = {
 	eda: "数据探索 EDA",
 	sensitivity_analysis: "敏感性分析",
@@ -1546,7 +1565,7 @@ const rawActions = computed(() => {
 					streamState,
 					flow: message.action?.flow,
 					localAction: message.local_action,
-						groupId: agentLabel + (agentIndex != null ? `_${agentIndex}` : ""),
+						groupId: normalizeGroupId(message.agent_type, agentIndex, message as any),
 				};
 				actions.push(action);
 				if (streamState === "streaming") {
@@ -1554,7 +1573,7 @@ const rawActions = computed(() => {
 				}
 			}
 			lastAgentName = agentDisplayLabel;
-				lastAgentGroupId = agentLabel + (agentIndex != null ? `_${agentIndex}` : "");
+				lastAgentGroupId = normalizeGroupId(message.agent_type, agentIndex, message as any);
 			return;
 		}
 
