@@ -874,7 +874,7 @@ const getGroupMeta = (
 	if (static_meta[groupId]) return static_meta[groupId];
 
 		// 新格式 q1.coder.r2
-		const modernMatch = groupId.match(/^q(d+).(sub_coordinator|modeler|coder|writer)(?:.r(d+))?$/);
+		const modernMatch = groupId.match(/^q(\d+)\.(sub_coordinator|modeler|coder|writer)(?:\.r(\d+))?$/);
 		if (modernMatch) {
 			const [, qIdx, role, raceIdx] = modernMatch;
 			const qNameMap = { sub_coordinator: `Q${qIdx} · SubCoordinatorAgent`, modeler: `Q${qIdx} · ModelerAgent`, coder: raceIdx ? `Q${qIdx} · CoderAgent 竞速${raceIdx}` : `Q${qIdx} · CoderAgent`, writer: `Q${qIdx} · WriterAgent` };
