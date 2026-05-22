@@ -874,11 +874,11 @@ const getGroupMeta = (
 	if (static_meta[groupId]) return static_meta[groupId];
 
 		// 新格式 q1.coder.r2
-		const modernMatch = groupId.match(/^q(\\d+)\\.sub_coordinator|modeler|coder|writer)(?:\\.r(\\d+))?$/);
+		const modernMatch = groupId.match(/^q(\d+)\.(sub_coordinator|modeler|coder|writer)(?:\.r(\d+))?$/);
 		if (modernMatch) {
 			const [, qIdx, role, raceIdx] = modernMatch;
-			const qNameMap = { sub_coordinator: `Q${qIdx} · SubCoordinatorAgent`, modeler: `Q${qIdx} · ModelerAgent`, coder: raceIdx ? `Q${qIdx} · CoderAgent 竞速${raceIdx}` : `Q${qIdx} · CoderAgent`, writer: `Q${qIdx} · WriterAgent` };
-			const qRoleMap = { sub_coordinator: `负责第 ${qIdx} 问任务协调  ·  ${modelInfo("coordinator")}`, modeler: `负责第 ${qIdx} 问建模细化  ·  ${modelInfo("modeler")}`, coder: raceIdx ? `第 ${qIdx} 问代码竞速 ${raceIdx}  ·  ${modelInfo("coder")}` : `负责第 ${qIdx} 问代码求解  ·  ${modelInfo("coder")}`, writer: `负责第 ${qIdx} 问结果撰写  ·  ${modelInfo("writer")}` };
+			const qNameMap: Record<string, string> = { sub_coordinator: `Q${qIdx} · SubCoordinatorAgent`, modeler: `Q${qIdx} · ModelerAgent`, coder: raceIdx ? `Q${qIdx} · CoderAgent 竞速${raceIdx}` : `Q${qIdx} · CoderAgent`, writer: `Q${qIdx} · WriterAgent` };
+			const qRoleMap: Record<string, string> = { sub_coordinator: `负责第 ${qIdx} 问任务协调  ·  ${modelInfo("coordinator")}`, modeler: `负责第 ${qIdx} 问建模细化  ·  ${modelInfo("modeler")}`, coder: raceIdx ? `第 ${qIdx} 问代码竞速 ${raceIdx}  ·  ${modelInfo("coder")}` : `负责第 ${qIdx} 问代码求解  ·  ${modelInfo("coder")}`, writer: `负责第 ${qIdx} 问结果撰写  ·  ${modelInfo("writer")}` };
 			return { name: qNameMap[role] ?? groupId, role: qRoleMap[role] ?? "等待执行" };
 		}
 
@@ -1999,8 +1999,8 @@ const groupWorkStatus = computed<Record<string, GroupWork>>(() => {
 		}
 		const c = `${action.title}\n${action.content ?? ""}`;
 		const ownerGroup = getGroupId(action);
-			const setWork = (baseGroup, text, state) => {
-				const target = ownerGroup && (ownerGroup === baseGroup || ownerGroup.startsWith(baseGroup + "_") || ownerGroup.includes("." + baseGroup)) ? ownerGroup : baseGroup;
+			const setWork = (baseGroup: string, text: string, state: GroupWork["state"]) => {
+				const target = (ownerGroup && (ownerGroup === baseGroup || ownerGroup.startsWith(baseGroup + "_") || ownerGroup.includes("." + baseGroup))) ? ownerGroup : baseGroup;
 				if (!map[target]) map[target] = { text: getGroupMeta(target).role, state: "idle" };
 				map[target] = { text, state };
 				if (target !== baseGroup) map[baseGroup] = { text, state };
@@ -2648,7 +2648,7 @@ onBeforeUnmount(() => {
 						<CheckCircle2 v-else-if="row.modeler?.status === 'done'" class="h-2 w-2 shrink-0" />
 					</div>
 					<span class="pipeline-arrow">→</span>
-					<div class="pipeline-node" :class="pipelineNodeClass(row.winnerCoder ?? row.coders[0] ?? null)" :title="row.winnerCoder?.name ?? row.coders.map(g => g.name).join(' / ') || '代码 Agent'">
+					<div class="pipeline-node" :class="pipelineNodeClass(row.winnerCoder ?? row.coders[0] ?? null)" :title="(row.winnerCoder?.name ?? row.coders.map(g => g.name).join(' / ')) || '代码 Agent'">
 						<Code2 class="h-2.5 w-2.5 shrink-0" />
 						<span>代码<template v-if="row.coders.length > 1"> 竞速 {{ row.coders.filter(g => g.status === 'done').length }}/{{ row.coders.length }}</template></span>
 						<LoaderCircle v-if="row.coders.some(g => g.status === 'running')" class="h-2 w-2 shrink-0 animate-spin" />
@@ -2691,7 +2691,7 @@ onBeforeUnmount(() => {
 				</div>
 
 				<div class="space-y-3">
-					<template v-for="item in topLevelItems" :key="item.kind === 'group' ? item.group?.id : `qg-${item.index}`">
+					<template v-for="item in topLevelItems" :key="item.kind === 'group' ? item.group?.id : `qg-${(item as any).index ?? 'w'}`">
 
 					<!-- 普通 Agent 卡片 -->
 					<details
