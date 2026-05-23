@@ -120,11 +120,12 @@ class BaseCodeInterpreter(abc.ABC):
         if new_name == filename:
             return filename
 
-        # 防止同名覆盖：若目标已存在，追加 _2、_3...
-        counter = 2
-        while os.path.exists(os.path.join(self.work_dir, new_name)):
-            new_name = f"{base_name}_{counter}.png"
-            counter += 1
+        # 覆盖策略：同名图片视为同一产物新版本，直接覆盖
+        if os.path.exists(os.path.join(self.work_dir, new_name)):
+            try:
+                os.remove(os.path.join(self.work_dir, new_name))
+            except OSError:
+                pass
 
         src = os.path.join(self.work_dir, filename)
         dst = os.path.join(self.work_dir, new_name)

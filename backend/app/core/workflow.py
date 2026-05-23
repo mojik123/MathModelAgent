@@ -1016,18 +1016,19 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     )
                     try:
                         interp.cleanup_attempt_artifacts(key)
-                    except Exception:
-                        pass
-                    try:
-                        interp.cleanup_attempt_artifacts(key)
-                    except Exception:
-                        pass
+                    except Exception as cleanup_exc:
+                        logger.warning(
+                            f"[组#{group_idx}] 清理超时 Coder 产物失败: {cleanup_exc}"
+                        )
                     try:
                         await interp.cleanup()
                     except Exception:
                         pass
-                    raise
-    except Exception as exc:
+                    raise RuntimeError(
+                        f"Coder {attempt_name} 超时：{attempt_timeout}s 内未完成 {key}"
+                    ) from exc
+
+                except Exception as exc:
                     await self._publish_agent_stop_reason(
                         group_idx=group_idx,
                         key=key,
@@ -1036,6 +1037,12 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         detail=str(exc),
                         level="error",
                     )
+                    try:
+                        interp.cleanup_attempt_artifacts(key)
+                    except Exception as cleanup_exc:
+                        logger.warning(
+                            f"[组#{group_idx}] 清理失败 Coder 产物失败: {cleanup_exc}"
+                        )
                     try:
                         await interp.cleanup()
                     except Exception:
@@ -1058,14 +1065,6 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     failures.append(f"主力失败：{exc}")
                     logger.warning(
                         f"[组#{group_idx}] 主力 Coder 失败: {exc}"
-                    )
-                    await self._publish_agent_stop_reason(
-                        group_idx=group_idx,
-                        key=key,
-                        agent_name="Coder 主力",
-                        reason="主力尝试失败，准备切换备用",
-                        detail=str(exc),
-                        level="warning",
                     )
                     await self._publish_agent_stop_reason(
                         group_idx=group_idx,
