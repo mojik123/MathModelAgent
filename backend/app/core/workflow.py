@@ -6,6 +6,7 @@ EDA 和 sensitivity_analysis 作为独立阶段顺序执行。
 """
 
 import asyncio
+import hashlib
 import json
 import os
 from app.core.agents import WriterAgent, CoderAgent, CoordinatorAgent, ModelerAgent
@@ -58,7 +59,7 @@ class MathModelWorkFlow(WorkFlow):
     task_id: str
     work_dir: str
     ques_count: int = 0
-    questions: dict[str, str | int] = {}
+    questions: dict[str, str | int]
     cancel_event: asyncio.Event | None = None
     question_ready_event: asyncio.Event | None = None  # 等待用户确认问题划分
     question_selections: list[dict] | None = None  # 用户确认的问题划分
@@ -1575,6 +1576,20 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         )
 
         final_paper = checkpoint.get("final_paper_review")
+
+        _paper_source_sig = hashlib.sha256(
+            json.dumps(user_output.res, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest() if hasattr(json, "dumps") else ""
+
+        if (
+            isinstance(final_paper, str)
+            and final_paper.strip()
+            and checkpoint.get("final_paper_source_signature") == _paper_source_sig
+        ):
+            pass  # valid cache, reuse
+        else:
+            final_paper = None
+
         section_label_map = {
             "firstPage": "标题、摘要、关键词",
             "toc": "目录",
@@ -1672,7 +1687,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                             self.task_id,
                             SystemMessage(content=f"Repair: regenerating {k}"),
                         )
-                        coder_result = user_output.res.get(k)
+                        coder_result = checkpoint.get("coder_results", {}).get(k, {})
                         code_text = ""
                         images = []
                         if isinstance(coder_result, dict):
@@ -1853,6 +1868,7 @@ Regenerate the model building and solving chapter for {k}.
 
                 if not high_issues:
                     final_paper = clean_final_paper_markdown(raw_draft)
+                    checkpoint["final_paper_source_signature"] = _paper_source_sig
                     await redis_manager.publish_message(
                         self.task_id,
                         SystemMessage(content="终稿审计通过，无需全文重写", type="success"),
@@ -1913,6 +1929,7 @@ Regenerate the model building and solving chapter for {k}.
                         )
 
                 checkpoint["final_paper_review"] = final_paper
+                checkpoint["final_paper_source_signature"] = _paper_source_sig
                 self._save_checkpoint(checkpoint)
 
             except Exception as e:

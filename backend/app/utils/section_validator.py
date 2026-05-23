@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+CN_NUM = {1: '一', 2: '二', 3: '三', 4: '四', 5: '五', 6: '六', 7: '七', 8: '八', 9: '九', 10: '十'}
+
 
 def validate_section_output(
     key: str,
@@ -38,12 +40,17 @@ def validate_section_output(
         except ValueError:
             return issues
 
+        cn = CN_NUM.get(n, str(n))
+        heading_candidates = [f"5.{n}", f"问题{n}", f"第{n}问", f"问题{cn}", f"第{cn}问"]
         required_tokens = [
-            f"5.{n}",
+            *heading_candidates,
             "模型",
             "求解",
         ]
-        for token in required_tokens:
+        heading_ok = any(h in text for h in heading_candidates)
+        if not heading_ok:
+            issues.append(f"{key} 缺少章节标题标识（5.{n}/问题{n}/问题{cn}）")
+        for token in ["模型", "求解"]:
             if token not in text:
                 issues.append(f"{key} 缺少必要标识：{token}")
 
@@ -60,8 +67,17 @@ def validate_section_output(
     # ── 问题分析章节检查 ──
     if key == "analysisQues":
         for i in range(1, ques_count + 1):
-            if f"问题{i}" not in text:
-                issues.append(f"问题分析缺少「问题{i}」")
+            cn = CN_NUM.get(i, str(i))
+            candidates = [
+                f"问题{i}",
+                f"问题 {i}",
+                f"问题{cn}",
+                f"问题 {cn}",
+                f"第{i}问",
+                f"第{cn}问",
+            ]
+            if not any(token in text for token in candidates):
+                issues.append(f"问题分析缺少「问题{i}/问题{cn}」")
 
     # ── 目录检查 ──
     if key == "toc":

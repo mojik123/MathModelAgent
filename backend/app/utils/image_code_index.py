@@ -45,6 +45,12 @@ def normalize_image_name(filename: str) -> str:
     return normalize_image_filename(filename)
 
 
+def normalize_image_key(filename: str) -> str:
+    value = str(filename or "").replace("\\", "/").strip()
+    value = re.sub(r"^[./]+", "", value)
+    return value
+
+
 def extract_saved_images(code: str) -> list[str]:
     images: list[str] = []
     for match in SAVEFIG_RE.finditer(code):
@@ -197,11 +203,13 @@ def update_image_code_index(
     image_map = index.setdefault("images", {})
     now = datetime.now(timezone.utc).isoformat()
     for image in images:
-        existing = image_map.get(image, {})
-        metadata = build_image_description(image, code, section)
+        image_key = normalize_image_key(image)
+        existing = image_map.get(image_key, {})
+        metadata = build_image_description(image_key, code, section)
         preserve_metadata = existing.get("metadata_source") == "ai_revision"
-        image_map[image] = {
-            "filename": image,
+        image_map[image_key] = {
+            "filename": image_key,
+            "basename": Path(image_key).name,
             "code": code,
             "cell_index": cell_index,
             "section": section or "",
@@ -234,14 +242,16 @@ def rebuild_image_code_index_from_notebook(work_dir: str) -> dict[str, Any]:
             code_cell_index += 1
             code = cell.get("source", "")
             for image in extract_saved_images(code):
-                existing = previous_images.get(image) or index["images"].get(image, {})
-                metadata = build_image_description(image, code, section)
+                image_key = normalize_image_key(image)
+                existing = previous_images.get(image_key) or index["images"].get(image_key, {})
+                metadata = build_image_description(image_key, code, section)
                 preserve_metadata = existing.get("metadata_source") == "ai_revision"
                 resolved_cell_index = (
                     code_cell_index if is_main else existing.get("cell_index")
                 )
-                index["images"][image] = {
-                    "filename": image,
+                index["images"][image_key] = {
+                    "filename": image_key,
+                    "basename": Path(image_key).name,
                     "code": code,
                     "cell_index": resolved_cell_index,
                     "section": section,
@@ -257,8 +267,16 @@ def rebuild_image_code_index_from_notebook(work_dir: str) -> dict[str, Any]:
 
 
 def get_image_code_entry(work_dir: str, filename: str) -> dict[str, Any] | None:
+    image_key = normalize_image_key(filename)
     image_name = normalize_image_name(filename)
     index = load_image_code_index(work_dir)
+
+    entry = index.get("images", {}).get(image_key)
+    if entry:
+        if _ensure_entry_metadata(entry):
+            save_image_code_index(work_dir, index)
+        return entry
+
     entry = index.get("images", {}).get(image_name)
     if entry and entry.get("cell_index") is not None:
         if _ensure_entry_metadata(entry):
@@ -283,9 +301,12 @@ def update_image_metadata(
     caption: str | None = None,
     metadata_source: str = "llm",
 ) -> dict[str, Any] | None:
+    image_key = normalize_image_key(filename)
     image_name = normalize_image_name(filename)
     index = load_image_code_index(work_dir)
-    entry = index.setdefault("images", {}).get(image_name)
+    entry = index["images"].get(image_key) if image_key in index.get("images", {}) else None
+    if not entry:
+        entry = index.setdefault("images", {}).get(image_name)
     if not entry:
         return None
 
@@ -314,5 +335,9 @@ def get_notebook_code_cells(work_dir: str) -> list[str]:
 
 
 def image_exists(work_dir: str, filename: str) -> bool:
+    image_key = normalize_image_key(filename)
+    target = Path(work_dir) / image_key
+    if target.exists() and is_image_file(target.name):
+        return True
     target = Path(work_dir) / normalize_image_name(filename)
     return target.exists() and is_image_file(target.name)

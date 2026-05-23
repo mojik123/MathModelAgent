@@ -340,7 +340,17 @@ class BaseCodeInterpreter(abc.ABC):
 
             base_name = os.path.basename(normalized)
             src = os.path.join(self.work_dir, base_name)
-            dst = os.path.join(dest_dir, base_name)
+
+            # 目标冲突保护：若章节目录已存在同名文件，自动追加序号
+            stem, ext = os.path.splitext(base_name)
+            dst_name = base_name
+            counter = 2
+            while os.path.exists(os.path.join(dest_dir, dst_name)):
+                dst_name = f"{stem}_{counter}{ext}"
+                counter += 1
+            dst = os.path.join(dest_dir, dst_name)
+            final_base_name = dst_name
+
             if os.path.isfile(src):
                 try:
                     shutil.move(src, dst)
