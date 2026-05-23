@@ -1103,14 +1103,6 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         detail=str(exc),
                         level="error",
                     )
-                    await self._publish_agent_stop_reason(
-                        group_idx=group_idx,
-                        key=key,
-                        agent_name="Coder 备用1",
-                        reason="备用尝试失败",
-                        detail=str(exc),
-                        level="error",
-                    )
 
                 final_reason = "；".join(failures)
                 await self._publish_agent_stop_reason(
