@@ -103,11 +103,33 @@ class CoderAgent(Agent):
         retry_count = 0
         last_error_message = ""
         consecutive_same_error_count = 0
+        total_execute_count = 0
+        max_total_steps = int(getattr(settings, "CODER_MAX_TOTAL_STEPS", 35))
         last_error_type = ""
         max_same_error = int(getattr(settings, "CODER_MAX_SAME_ERROR", 4))
         has_executed_code = False
 
         while True:
+            total_execute_count += 1
+
+            if total_execute_count > max_total_steps:
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=(
+                            f"代码手已停止：总执行步数超过上限({max_total_steps})\n"
+                            f"子任务：{subtask_title}\n"
+                            f"停止原因：多次执行代码仍未完成 task_complete\n"
+                            f"最后错误：{last_error_message[:1000]}"
+                        ),
+                        type="error",
+                    ),
+                )
+                raise RuntimeError(
+                    f"代码手求解失败：总执行步数超过上限 {max_total_steps}，"
+                    f"子任务：{subtask_title}，最后错误：{last_error_message}"
+                )
+
             if consecutive_same_error_count >= max_same_error:
                 logger.error(f"连续相同错误达到上限: {max_same_error}")
                 await redis_manager.publish_message(
