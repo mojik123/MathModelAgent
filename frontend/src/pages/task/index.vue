@@ -10,8 +10,8 @@ import ImageGallery from "@/components/AgentEditor/ImageGallery.vue";
 import ModelerEditor from "@/components/AgentEditor/ModelerEditor.vue";
 import WriterEditor from "@/components/AgentEditor/WriterEditor.vue";
 import ChatArea from "@/components/ChatArea.vue";
-import QuestionDiscussion from "@/components/QuestionDiscussion.vue";
 import ModelingDiscussion from "@/components/ModelingDiscussion.vue";
+import QuestionDiscussion from "@/components/QuestionDiscussion.vue";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -101,9 +101,16 @@ function getSavedPanelExpanded(taskId: string, panel: string) {
 	if (v === "closed") return false;
 	return true;
 }
-function setSavedPanelExpanded(taskId: string, panel: string, expanded: boolean) {
+function setSavedPanelExpanded(
+	taskId: string,
+	panel: string,
+	expanded: boolean,
+) {
 	if (typeof window === "undefined") return;
-	window.localStorage.setItem(panelStateKey(taskId, panel), expanded ? "open" : "closed");
+	window.localStorage.setItem(
+		panelStateKey(taskId, panel),
+		expanded ? "open" : "closed",
+	);
 }
 const terminalRuntimeStatuses = new Set([
 	"stopped",
@@ -231,7 +238,28 @@ const subTaskNodes = computed(() => {
 		desc.includes("代码") ||
 		desc.includes("撰写") ||
 		desc.includes("论文");
-	const coordinatorDone = modelerDone || desc.includes("建模");
+	const waitingQuestionConfirm =
+		hasQuestionWaitMessage.value && !hasQuestionConfirmedMessage.value;
+	const waitingModelingConfirm =
+		hasModelingWaitMessage.value && !hasModelingConfirmedMessage.value;
+	const questionConfirmedTransition =
+		hasQuestionConfirmedMessage.value &&
+		!hasModelingWaitMessage.value &&
+		!hasModelingConfirmedMessage.value;
+
+	const coordinatorDone =
+		modelerDone ||
+		waitingQuestionConfirm ||
+		questionConfirmedTransition ||
+		hasQuestionConfirmedMessage.value ||
+		hasModelingWaitMessage.value ||
+		hasModelingConfirmedMessage.value ||
+		desc.includes("建模");
+
+	const modelerActive =
+		hasQuestionConfirmedMessage.value &&
+		!modelerDone &&
+		!waitingModelingConfirm;
 
 	if (shouldShowPrefix) {
 		nodes.push({
@@ -243,7 +271,13 @@ const subTaskNodes = computed(() => {
 		nodes.push({
 			key: "modeler",
 			label: "建模",
-			status: modelerDone ? "done" : coordinatorDone ? "active" : "pending",
+			status: modelerDone
+				? "done"
+				: waitingModelingConfirm
+					? "done"
+					: modelerActive
+						? "active"
+						: "pending",
 			index: nodes.length,
 		});
 	}
@@ -405,6 +439,11 @@ const overallProgress = computed(() => {
 });
 
 const progressText = computed(() => {
+	if (isWaitingQuestionConfirm.value) return "请在下方确认问题划分";
+	if (isQuestionConfirmTransition.value)
+		return "问题划分已确认，等待进入建模方案讨论";
+	if (isWaitingModelingConfirm.value) return "请在下方确认各问建模方案";
+
 	if (taskStore.currentProgress?.description)
 		return taskStore.currentProgress.description;
 	if (taskStore.taskRuntimeState?.current_step)
@@ -420,6 +459,11 @@ const currentPhaseName = computed(() => {
 	if (runtimeStatus.value === "interrupted") return "已中断";
 	if (runtimeStatus.value === "failed") return "运行出错";
 	if (runtimeStatus.value === "completed") return "任务完成";
+
+	if (isWaitingQuestionConfirm.value) return "等待确认问题划分";
+	if (isQuestionConfirmTransition.value) return "等待进入建模方案讨论";
+	if (isWaitingModelingConfirm.value) return "等待确认建模方案";
+
 	// 仅在任务未处于活跃运行状态时才显示历史错误状态
 	if (latestSystemType.value === "error" && !taskStore.isRunning)
 		return "运行出错";
@@ -443,6 +487,12 @@ const progressStatus = computed(() => {
 	if (runtimeStatus.value === "interrupted") return "已中断";
 	if (runtimeStatus.value === "failed") return "出错";
 	if (runtimeStatus.value === "completed") return "已完成";
+
+	if (isWaitingQuestionConfirm.value || isWaitingModelingConfirm.value)
+		return "待确认";
+
+	if (isQuestionConfirmTransition.value) return "等待中";
+
 	// 仅在任务未处于活跃运行状态时才用历史终止消息覆盖状态文本
 	if (latestSystemType.value === "error" && !taskStore.isRunning) return "出错";
 	if (latestSystemType.value === "warning" && !taskStore.isRunning)
@@ -734,11 +784,16 @@ async function loadCurrentTask(taskId: string) {
 	// 刷新后重新检查是否需要显示模型对比区（绕过 watcher 时序问题）
 	if (!discussionLocked.value) {
 		const hasWait = taskStore.messages.some(
-			(m) => m.msg_type === "system" && (m.content ?? "").includes("等待用户确认各问建模方案"),
+			(m) =>
+				m.msg_type === "system" &&
+				(m.content ?? "").includes("等待用户确认各问建模方案"),
 		);
 		if (hasWait) {
 			discussionAvailable.value = true;
-			discussionExpanded.value = getSavedPanelExpanded(props.task_id, "modeling");
+			discussionExpanded.value = getSavedPanelExpanded(
+				props.task_id,
+				"modeling",
+			);
 			questionDiscussionExpanded.value = false;
 		}
 	}
@@ -782,6 +837,21 @@ const hasModelingConfirmedMessage = computed(
 		),
 );
 
+const isWaitingQuestionConfirm = computed(
+	() => hasQuestionWaitMessage.value && !hasQuestionConfirmedMessage.value,
+);
+
+const isQuestionConfirmTransition = computed(
+	() =>
+		hasQuestionConfirmedMessage.value &&
+		!hasModelingWaitMessage.value &&
+		!hasModelingConfirmedMessage.value &&
+		!terminalRuntimeStatuses.has(taskStore.taskStatus),
+);
+
+const isWaitingModelingConfirm = computed(
+	() => hasModelingWaitMessage.value && !hasModelingConfirmedMessage.value,
+);
 // Coordinator 完成后显示问题划分讨论（同时监听后端等待消息）
 watch(
 	() => {
@@ -831,7 +901,10 @@ watch(
 		// 已锁定（用户已确认建模方案）时，不再自动展开面板
 		if (discussionLocked.value) return;
 		// 问题讨论已确认 或 根本没有问题讨论阶段（旧任务/断点恢复）→ 允许打开
-		if (waiting && (hasQuestionConfirmedMessage.value || !hasQuestionWaitMessage.value)) {
+		if (
+			waiting &&
+			(hasQuestionConfirmedMessage.value || !hasQuestionWaitMessage.value)
+		) {
 			discussionAvailable.value = true;
 			discussionExpanded.value = !confirmed;
 		}
@@ -889,7 +962,9 @@ watch(
 function onQuestionConfirmed() {
 	questionDiscussionExpanded.value = false;
 	questionDiscussionLocked.value = true;
+	questionDiscussionAvailable.value = true;
 	localQuestionConfirmed.value = true;
+	discussionExpanded.value = false;
 	if (typeof window !== "undefined") {
 		window.localStorage.setItem(`question-confirmed:${props.task_id}`, "true");
 	}
@@ -1019,7 +1094,7 @@ onBeforeUnmount(() => {
                     :class="{
                       'bg-green-50 text-green-700': progressStatus === '已完成',
                       'bg-red-50 text-red-700': progressStatus === '出错',
-                      'bg-amber-50 text-amber-700': progressStatus === '已结束' || progressStatus === '停止中' || progressStatus === '已停止' || progressStatus === '已中断',
+                      'bg-amber-50 text-amber-700': progressStatus === '已结束' || progressStatus === '停止中' || progressStatus === '已停止' || progressStatus === '已中断' || progressStatus === '待确认',
                       'bg-blue-50 text-blue-700': progressStatus === '进行中',
                       'bg-slate-100 text-slate-500': progressStatus === '等待中',
                     }"
