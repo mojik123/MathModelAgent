@@ -44,10 +44,10 @@ interface CodeFileSection {
 
 // ---- State ----
 
-	const props = defineProps<{
-		task_id: string;
-		refreshKey?: number;
-	}>();
+const props = defineProps<{
+	task_id: string;
+	refreshKey?: number;
+}>();
 
 const taskStore = useTaskStore();
 const route = useRoute();
