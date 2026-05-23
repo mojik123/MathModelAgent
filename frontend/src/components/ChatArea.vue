@@ -288,17 +288,17 @@ const groupIdFromParticipant = (
 	if (/User|用户/i.test(text)) return "user";
 	if (/System|系统/i.test(text)) return "system";
 	if (/SubCoordinator/i.test(text)) {
-		return agentIndex != null ? `sub_coordinator_${agentIndex}` : "coordinator";
+		return agentIndex != null ? `q${agentIndex}.sub_coordinator` : "coordinator";
 	}
 	if (/Coordinator/i.test(text)) return "coordinator";
 	if (/Modeler/i.test(text)) {
-		return agentIndex != null ? `modeler_${agentIndex}` : "modeler";
+		return agentIndex != null ? `q${agentIndex}.modeler` : "modeler";
 	}
 	if (/Coder/i.test(text)) {
-		return agentIndex != null ? `coder_${agentIndex}` : "coder";
+		return agentIndex != null ? `q${agentIndex}.coder.main` : "coder";
 	}
 	if (/Writer/i.test(text)) {
-		return agentIndex != null ? `writer_${agentIndex}` : "writer";
+		return agentIndex != null ? `q${agentIndex}.writer` : "writer";
 	}
 	return "";
 };
@@ -326,6 +326,7 @@ interface NormalizedSystemAction {
 	kind: ActionKind;
 	coordination?: string;
 	flow?: MessageFlow;
+	groupId?: string;
 }
 
 const normalizeSystemAction = (
@@ -564,6 +565,7 @@ const normalizeSystemAction = (
 			detail: content,
 			agent: `SubCoordinatorAgent #${idx}`,
 			kind: "agent",
+			groupId: idx ? `q${idx}.sub_coordinator` : undefined,
 			flow: isDone
 				? {
 						from: `SubCoordinatorAgent #${idx}`,
@@ -1647,6 +1649,7 @@ const rawActions = computed(() => {
 				timeLabel,
 				durationMs: 0,
 				agent: result.agent,
+				groupId: result.groupId,
 				content: message.content ?? "",
 				coordination: coordinationTarget,
 				flow,
@@ -1979,25 +1982,36 @@ const extractAgentIndex = (agentStr: string): number | null => {
 	return m ? Number(m[1]) : null;
 };
 
+const canonicalQuestionGroupId = (groupId: string) => {
+	const legacy = groupId.match(/^(sub_coordinator|modeler|coder|writer)_(\d+)$/);
+	if (!legacy) return groupId;
+	const [, role, idx] = legacy;
+	if (role === "sub_coordinator") return `q${idx}.sub_coordinator`;
+	if (role === "modeler") return `q${idx}.modeler`;
+	if (role === "coder") return `q${idx}.coder.main`;
+	if (role === "writer") return `q${idx}.writer`;
+	return groupId;
+};
+
 const getGroupId = (action: AgentAction) => {
-	if (action.groupId) return action.groupId;
+	if (action.groupId) return canonicalQuestionGroupId(action.groupId);
 	if (action.kind === "user") return "user";
 	const agentStr = action.agent ?? "";
 	const idx = extractAgentIndex(agentStr);
 
 	// 精确匹配（含编号的带索引 Agent）
 	if (/SubCoordinatorAgent/.test(agentStr)) {
-		return idx != null ? `sub_coordinator_${idx}` : "coordinator";
+		return idx != null ? `q${idx}.sub_coordinator` : "coordinator";
 	}
 	if (/CoordinatorAgent/.test(agentStr)) return "coordinator";
 	if (/ModelerAgent/.test(agentStr)) {
-		return idx != null ? `modeler_${idx}` : "modeler";
+		return idx != null ? `q${idx}.modeler` : "modeler";
 	}
 	if (/CoderAgent/.test(agentStr)) {
-		return idx != null ? `coder_${idx}` : "coder";
+		return idx != null ? `q${idx}.coder.main` : "coder";
 	}
 	if (/WriterAgent/.test(agentStr)) {
-		return idx != null ? `writer_${idx}` : "writer";
+		return idx != null ? `q${idx}.writer` : "writer";
 	}
 
 	if (
