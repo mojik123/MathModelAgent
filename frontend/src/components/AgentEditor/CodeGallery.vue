@@ -56,6 +56,10 @@ const showToc = ref(true);
 const selectedFilePath = ref("");
 const workspaceFiles = ref<WorkspaceFile[]>([]);
 const loadingFiles = ref(false);
+const fileContentCache = ref<Record<string, string>>({});
+const loadingCodeFile = ref(false);
+const codeFileError = ref('');
+const expandedCodeFiles = ref<Set<string>>(new Set());
 
 const currentTaskId = computed(
 	() =>
@@ -247,6 +251,7 @@ const selectedFile = computed(() => {
 
 function selectFile(file: CodeFileItem) {
 	selectedFilePath.value = file.path;
+	void loadSelectedFileContent(file.path);
 }
 
 function openFilePreview(file: string) {
@@ -421,10 +426,20 @@ onMounted(() => {
 						</span>
 					</div>
 
-					<div class="mt-5">
-						<Button @click="openFilePreview(selectedFile.path)">
-							打开完整 Python 文件
-						</Button>
+					<div class="mt-5 overflow-hidden rounded-xl border border-slate-100 bg-slate-950">
+						<div class="flex items-center justify-between border-b border-slate-800 px-3 py-2">
+							<div class="flex min-w-0 items-center gap-2">
+								<span class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Python</span>
+								<span class="truncate text-xs text-slate-500">{{ selectedFileExpanded ? '完整代码' : '前 10 行预览' }}</span>
+							</div>
+							<div class="flex items-center gap-1">
+								<Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-slate-300 hover:text-white" @click="openFilePreview(selectedFile.path)">弹窗打开</Button>
+								<Button v-if="selectedFileHasMoreThan10Lines" variant="ghost" size="sm" class="h-7 px-2 text-xs text-slate-300 hover:text-white" @click="toggleSelectedFileExpanded">{{ selectedFileExpanded ? '收起' : '展开全部' }}</Button>
+							</div>
+						</div>
+						<div v-if="loadingCodeFile" class="p-4 text-xs text-slate-400"><RefreshCw class="mr-1 inline h-3.5 w-3.5 animate-spin" />读取中...</div>
+						<div v-else-if="codeFileError" class="p-4 text-xs text-red-300">{{ codeFileError }}</div>
+						<pre v-else class="overflow-auto p-4 text-xs leading-5 text-slate-100" :class="selectedFileExpanded ? 'max-h-none' : 'max-h-80'"><code>{{ selectedFileDisplayedCode }}</code></pre>
 					</div>
 				</div>
 
