@@ -321,7 +321,10 @@ watch(codeFileSections, (sections) => {
 watch(
 	() => [currentTaskId.value, props.refreshKey],
 	() => {
-		void loadWorkspaceFiles();
+		fileContentCache.value = {};
+			expandedCodeFiles.value = new Set();
+			codeFileError.value = "";
+			void loadWorkspaceFiles();
 	},
 	{ immediate: true },
 );
@@ -477,10 +480,7 @@ onMounted(() => {
 								<span class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Python</span>
 								<span class="truncate text-xs text-slate-500">{{ selectedFileExpanded ? '完整代码' : '前 10 行预览' }}</span>
 							</div>
-							<div class="flex items-center gap-1">
-								<Button variant="ghost" size="sm" class="h-7 px-2 text-xs text-slate-300 hover:text-white" @click="openFilePreview(selectedFile.path)">弹窗打开</Button>
-								<Button v-if="selectedFileHasMoreThan10Lines" variant="ghost" size="sm" class="h-7 px-2 text-xs text-slate-300 hover:text-white" @click="toggleSelectedFileExpanded">{{ selectedFileExpanded ? '收起' : '展开全部' }}</Button>
-							</div>
+							<Button v-if="selectedFileHasMoreThan10Lines" variant="ghost" size="sm" class="h-7 px-2 text-xs text-slate-300 hover:text-white" @click="toggleSelectedFileExpanded">{{ selectedFileExpanded ? '收起到 10 行' : '展开全部' }}</Button>
 						</div>
 						<div v-if="loadingCodeFile" class="p-4 text-xs text-slate-400"><RefreshCw class="mr-1 inline h-3.5 w-3.5 animate-spin" />读取中...</div>
 						<div v-else-if="codeFileError" class="p-4 text-xs text-red-300">{{ codeFileError }}</div>
