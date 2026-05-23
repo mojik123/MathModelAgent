@@ -991,8 +991,14 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                             group_idx,
                             artifact_tag=artifact_tag or None,
                         )
-                        result = await coder.run(
-                            prompt=attempt_prompt, subtask_title=key
+                        attempt_timeout = int(
+                            getattr(settings, "CODER_ATTEMPT_TIMEOUT", 1200)
+                        )
+                        result = await asyncio.wait_for(
+                            coder.run(
+                                prompt=attempt_prompt, subtask_title=key
+                            ),
+                            timeout=attempt_timeout,
                         )
 
                     _check_coder_artifacts(result, attempt_name, artifact_tag)
@@ -1053,6 +1059,14 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         detail=str(exc),
                         level="warning",
                     )
+                    await self._publish_agent_stop_reason(
+                        group_idx=group_idx,
+                        key=key,
+                        agent_name="Coder 主力",
+                        reason="主力尝试失败，准备切换备用",
+                        detail=str(exc),
+                        level="warning",
+                    )
 
                 # 固定一层备用
                 try:
@@ -1073,6 +1087,14 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     failures.append(f"备用1失败：{exc}")
                     logger.warning(
                         f"[组#{group_idx}] 备用 Coder 1 失败: {exc}"
+                    )
+                    await self._publish_agent_stop_reason(
+                        group_idx=group_idx,
+                        key=key,
+                        agent_name="Coder 备用1",
+                        reason="备用尝试失败",
+                        detail=str(exc),
+                        level="error",
                     )
                     await self._publish_agent_stop_reason(
                         group_idx=group_idx,

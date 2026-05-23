@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     CODE_EXECUTION_TIMEOUT: int = 300  # 单次代码执行最长秒数
     CODER_MAX_RETRIES: int = 6       # Coder 内部最大重试次数
     CODER_MAX_SAME_ERROR: int = 3    # 连续相同错误上限，防止同类错误无限循环
+    CODER_ATTEMPT_TIMEOUT: int = 1200  # 单个 Coder attempt 最长秒数，超时视为失败
 
     # 兼容旧 .env 里的 MAX_RETRIES，下轮彻底删除
     MAX_RETRIES: int | None = None

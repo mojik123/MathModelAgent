@@ -113,9 +113,13 @@ class CoderAgent(Agent):
                 await redis_manager.publish_message(
                     self.task_id,
                     SystemMessage(
-                        content=f"代码手求解失败：连续 {max_same_error} 次相同错误，"
-                        f"错误类型：{last_error_type}，"
-                        f"请检查任务或数据",
+                        content=(
+                            f"代码手已停止：连续 {max_same_error} 次遇到相同错误\n"
+                            f"子任务：{subtask_title}\n"
+                            f"错误类型：{last_error_type}\n"
+                            f"最后错误：{last_error_message[:1000]}\n"
+                            f"建议：检查数据字段、文件路径、模型约束或降低该问建模复杂度。"
+                        ),
                         type="error",
                     ),
                 )
@@ -129,7 +133,12 @@ class CoderAgent(Agent):
                 await redis_manager.publish_message(
                     self.task_id,
                     SystemMessage(
-                        content=f"代码手已停止：超过最大重试次数({self.max_retries})\\n子任务：{subtask_title}\\n停止原因：连续修复代码仍未通过执行\\n最后错误：{last_error_message[:1000]}",
+                        content=(
+                            f"代码手已停止：超过最大重试次数({self.max_retries})\n"
+                            f"子任务：{subtask_title}\n"
+                            f"停止原因：连续修复代码仍未通过执行\n"
+                            f"最后错误：{last_error_message[:1000]}"
+                        ),
                         type="error",
                     ),
                 )
