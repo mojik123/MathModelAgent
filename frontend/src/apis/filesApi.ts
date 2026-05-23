@@ -144,11 +144,14 @@ export function reviseTextChat(
 ) {
 	return request.post<{
 		success: boolean;
+		status?: "success" | "partial_success" | "failed";
 		message: string;
 		revised_text?: string;
 		updated_paper?: string;
 		paper_updated?: boolean;
 		revision_scope?: "selection" | "paper";
+		applied?: boolean;
+		validation_issues?: string[];
 	}>(
 		"/revise_text_chat",
 		{

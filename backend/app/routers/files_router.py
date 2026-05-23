@@ -146,11 +146,14 @@ class TextRevisionChatRequest(BaseModel):
 
 class TextRevisionChatResponse(BaseModel):
     success: bool
+    status: str = "success"
     message: str = ""
     revised_text: str | None = None
     updated_paper: str | None = None
     paper_updated: bool = False
     revision_scope: str = "selection"
+    applied: bool = False
+    validation_issues: list[str] | None = None
 
 
 class ImageCodeResponse(BaseModel):
@@ -337,6 +340,174 @@ def _format_tool_outputs(output: object) -> str:
             if msg:
                 lines.append(msg)
     return "\n".join(lines)
+
+
+
+def _infer_text_revision_scope(instruction: str) -> str:
+    text = (instruction or "").lower()
+    global_keywords = [
+        "全文",
+        "全篇",
+        "整篇",
+        "整体",
+        "通篇",
+        "统一全文",
+        "统一术语",
+        "所有章节",
+        "全部修改",
+        "重构结构",
+        "重写论文",
+        "更新目录",
+        "调整结构",
+    ]
+    if any(keyword in text for keyword in global_keywords):
+        return "paper"
+    return "selection"
+
+
+def _build_focused_text_revision_context(
+    paper_content: str,
+    selected_text: str,
+    nearby_context: str | None,
+    scope: str,
+) -> str:
+    selected = (selected_text or "").strip()
+    nearby = (nearby_context or "").strip()
+
+    if scope == "paper":
+        return "\n\n".join(
+            part
+            for part in [
+                "## 当前完整论文 Markdown",
+                _clip_context(paper_content, 50000) or "(当前没有论文正文)",
+                "## 用户选中文本",
+                selected or "(未提供)",
+                "## 选中文本附近上下文",
+                nearby or "(未提供)",
+            ]
+            if part
+        )
+
+    return "\n\n".join(
+        part
+        for part in [
+            "## 用户选中文本",
+            selected or "(未提供)",
+            "## 选中文本附近上下文",
+            _clip_context(nearby, 6000) or "(未提供)",
+            "## 说明",
+            "本次默认为局部修改，只能返回 revised_text，不要返回 updated_paper。",
+        ]
+        if part
+    )
+
+
+def _parse_text_revision_payload(raw_text: str) -> dict:
+    text = raw_text.strip()
+
+    fenced = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if fenced:
+        text = fenced.group(1).strip()
+
+    json_text = _extract_json_braces(text)
+    if json_text:
+        text = json_text
+
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {
+            "status": "failed",
+            "message": "AI 返回格式异常，未解析到有效 JSON 对象。",
+            "revised_text": None,
+            "updated_paper": None,
+            "parse_error": True,
+            "raw_text": raw_text.strip(),
+        }
+
+    revised_text = parsed.get("revised_text")
+    updated_paper = parsed.get("updated_paper")
+
+    return {
+        "status": parsed.get("status")
+        if parsed.get("status") in {"success", "failed"}
+        else "success",
+        "message": str(parsed.get("message") or ""),
+        "revised_text": (
+            revised_text
+            if isinstance(revised_text, str) and revised_text.strip()
+            else None
+        ),
+        "updated_paper": (
+            updated_paper
+            if isinstance(updated_paper, str) and updated_paper.strip()
+            else None
+        ),
+        "parse_error": False,
+    }
+
+
+def _apply_local_text_revision(
+    paper_content: str,
+    selected_text: str,
+    revised_text: str,
+) -> tuple:
+    selected = (selected_text or "").strip()
+    revised = (revised_text or "").strip()
+
+    if not paper_content or not selected or not revised:
+        return paper_content, False, "缺少原文或修订文本"
+
+    count = paper_content.count(selected)
+    if count == 1:
+        return paper_content.replace(selected, revised, 1), True, "局部文本已替换"
+
+    if count == 0:
+        return paper_content, False, "未能在当前论文中找到选中文本，可能前端内容已变化"
+
+    return paper_content, False, f"选中文本在论文中出现 {count} 次，无法安全自动替换"
+
+
+def _validate_text_revision_paper_update(
+    original: str,
+    updated: str,
+) -> list[str]:
+    issues: list[str] = []
+
+    if not updated.strip():
+        issues.append("updated_paper 为空")
+        return issues
+
+    if len(updated) < len(original) * 0.6:
+        issues.append("updated_paper 长度异常缩短，疑似丢失章节")
+
+    required_headings = [
+        "一、问题重述",
+        "二、问题分析",
+        "三、模型假设",
+        "五、模型的建立与求解",
+    ]
+    for heading in required_headings:
+        if heading in original and heading not in updated:
+            issues.append(f"缺少原有章节标题：{heading}")
+
+    original_images = set(re.findall(r"!\[[^\]]*\]\([^)]+\)", original))
+    updated_images = set(re.findall(r"!\[[^\]]*\]\([^)]+\)", updated))
+    missing_images = list(original_images - updated_images)
+    if missing_images:
+        issues.append(f"丢失图片引用 {len(missing_images)} 个")
+
+    original_formula_count = original.count("$$")
+    updated_formula_count = updated.count("$$")
+    if (
+        original_formula_count >= 2
+        and updated_formula_count < original_formula_count * 0.7
+    ):
+        issues.append("公式数量明显减少，疑似误删公式")
+
+    return issues
+
+
 
 
 def _build_task_revision_context(task_id: str, work_dir: str, paper_content: str) -> str:
@@ -1068,12 +1239,19 @@ async def revise_text_chat(payload: TextRevisionChatRequest):
         total=6,
     )
 
-    task_context = _build_task_revision_context(payload.task_id, work_dir, paper_content)
+    requested_scope = _infer_text_revision_scope(payload.instruction)
+
+    task_context = _build_focused_text_revision_context(
+        paper_content,
+        payload.selected_text,
+        payload.context,
+        requested_scope,
+    )
 
     await _publish_revision_step(
         payload.task_id,
         title="文本修订：AI 正在判断修改范围并生成修订内容",
-        detail=payload.instruction,
+        detail=f"{payload.instruction}（范围：{'全文' if requested_scope == 'paper' else '局部'}）",
         current=3,
         total=6,
     )
@@ -1092,16 +1270,21 @@ async def revise_text_chat(payload: TextRevisionChatRequest):
         else ""
     )
 
+    scope_instruction = (
+        "【修改范围约束：全文修改】\n本次用户指令被判定为全文修改，可以返回 updated_paper。"
+        if requested_scope == "paper"
+        else "【修改范围约束：局部修改】\n必须只返回 revised_text，不要返回 updated_paper。"
+    )
+
     messages.append({
         "role": "user",
         "content": (
             f"【需要修改的原文】\n{payload.selected_text}"
             f"{context_block}"
             f"{history_block}"
-            f"\n\n【任务全局上下文：完整论文、建模思路、代码结果】\n{task_context}"
+            f"\n\n{task_context}"
             f"\n\n【修改指令】\n{payload.instruction}"
-            "\n\n请注意：用户虽然可能只选中了一句话，但你可以根据指令修改整篇论文。"
-            "如果只需要替换选中文本，返回 revised_text；如果需要改动整篇论文，返回 updated_paper（完整 Markdown）。"
+            f"\n\n{scope_instruction}"
         ),
     })
 
@@ -1137,56 +1320,81 @@ async def revise_text_chat(payload: TextRevisionChatRequest):
         total=6,
     )
 
-    # 解析 JSON 响应
-    try:
-        cleaned = raw_text.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[-1]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:cleaned.rfind("```")].strip()
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError:
-        await _publish_revision_step(
-            payload.task_id,
-            title="文本修订失败：AI 返回格式异常",
-            detail=raw_text[:500],
-            msg_type="error",
-        )
-        return TextRevisionChatResponse(
-            success=False,
-            message="AI 返回格式异常，请重试",
-            revised_text=raw_text[:1000],
-        )
+    parsed = _parse_text_revision_payload(raw_text)
 
+    revised_text = parsed.get("revised_text")
     updated_paper = parsed.get("updated_paper")
     paper_updated = False
-    if parsed.get("status") == "success" and isinstance(updated_paper, str) and updated_paper.strip():
-        await _publish_revision_step(
-            payload.task_id,
-            title="文本修订：正在写入论文 Markdown",
-            current=5,
-            total=6,
-        )
-        with open(md_path, "w", encoding="utf-8") as f:
-            f.write(updated_paper)
-        paper_updated = True
+    applied = False
+    validation_issues: list[str] = []
+
+    if parsed.get("status") == "success":
+        if requested_scope == "selection":
+            if revised_text:
+                updated_content, applied, apply_message = _apply_local_text_revision(
+                    paper_content,
+                    payload.selected_text,
+                    revised_text,
+                )
+                if applied:
+                    await _publish_revision_step(
+                        payload.task_id,
+                        title="文本修订：正在写入选中文段",
+                        current=5,
+                        total=6,
+                    )
+                    with open(md_path, "w", encoding="utf-8") as f:
+                        f.write(updated_content)
+                    paper_updated = True
+                else:
+                    validation_issues.append(apply_message)
+            else:
+                validation_issues.append("局部修改模式下 AI 未返回 revised_text")
+        else:
+            if updated_paper:
+                validation_issues = _validate_text_revision_paper_update(
+                    paper_content,
+                    updated_paper,
+                )
+                if not validation_issues:
+                    await _publish_revision_step(
+                        payload.task_id,
+                        title="文本修订：正在写入完整论文",
+                        current=5,
+                        total=6,
+                    )
+                    with open(md_path, "w", encoding="utf-8") as f:
+                        f.write(updated_paper)
+                    paper_updated = True
+                    applied = True
+            else:
+                validation_issues.append("全文修改模式下 AI 未返回 updated_paper")
 
     await _publish_revision_step(
         payload.task_id,
         title="文本修订完成",
-        detail="已生成修订文本" if not paper_updated else "已更新完整论文",
+        detail=(
+            "已更新完整论文" if applied
+            else "已生成修订文本（未自动写回）" if revised_text
+            else "AI 修订未完全成功"
+        ),
         current=6,
         total=6,
-        msg_type="success",
+        msg_type="success" if not validation_issues else "warning",
     )
 
     return TextRevisionChatResponse(
-        success=parsed.get("status") == "success",
-        message=parsed.get("message", ""),
-        revised_text=parsed.get("revised_text"),
-        updated_paper=updated_paper if isinstance(updated_paper, str) else None,
+        success=parsed.get("status") == "success" and not validation_issues,
+        status="partial_success" if (parsed.get("status") == "success" and validation_issues) else parsed.get("status", "failed"),
+        message=(
+            parsed.get("message") or ("修改成功" if not validation_issues else "修改存在风险，未完全写回")
+        ),
+        revised_text=revised_text,
+        updated_paper=updated_paper if requested_scope == "paper" else None,
         paper_updated=paper_updated,
-        revision_scope="paper" if paper_updated else "selection",
+        revision_scope=requested_scope,
+        applied=applied,
+        validation_issues=validation_issues or None,
     )
 
 
