@@ -100,6 +100,15 @@ LLM 调用基于 LiteLLM 封装，支持多 Provider 架构：
 - `core/workflow.py` — `MathModelWorkFlow` 是主工作流类，编排多 Agent 协作完成完整建模任务，包含 checkpoint 断点续传、cancel 取消机制
 - `core/flows.py` — `Flows` 类定义任务的求解阶段序列（firstPage → toc → RepeatQues → analysisQues → modelAssumption → symbol → eda → ques{N} → sensitivity_analysis → judge），根据问题数量动态生成流程节点
 
+### FastAPI 路由
+
+| 文件 | 说明 |
+|------|------|
+| `routers/modeling_router.py` | 主任务管理（创建、取消、状态查询、结果下载） |
+| `routers/ws_router.py` | WebSocket `/task/{task_id}` 实时推送 |
+| `routers/files_router.py` | 文件上传/下载，支持 `.txt`/`.csv`/`.xlsx` |
+| `routers/common_router.py` | 公共接口（检索诊断、临时文件管理） |
+
 ### WebSocket 实时推送
 
 - 路由 `routers/ws_router.py` 提供 `/task/{task_id}` WebSocket 端点
@@ -109,16 +118,46 @@ LLM 调用基于 LiteLLM 封装，支持多 Provider 架构：
 
 ### Code Interpreter
 
-`tools/interpreter_factory.py` — `create_interpreter()` 工厂函数根据配置创建代码解释器实例，支持三种后端：
-- **Local Jupyter** — 基于 ipykernel + jupyter-client，代码保存为 `.ipynb`
-- **E2B** — 云端沙箱解释器
-- **Daytona** — 云端解释器（备用）
+`tools/interpreter_factory.py` — `create_interpreter()` 工厂函数根据配置创建代码解释器实例，支持两种后端：
+- **Local Jupyter** — 基于 ipykernel + jupyter-client（`local_interpreter.py`），代码保存为 `.ipynb`
+- **E2B** — 云端沙箱解释器（`e2b_interpreter.py`），需要 `E2B_API_KEY`
+
+`tools/base_interpreter.py` 定义抽象基类 `BaseCodeInterpreter`，`notebook_serializer.py` 负责将执行结果序列化为 `.ipynb`。
 
 ### Prompt 模板与 Inject
 
-`core/prompts/` 下每个 Agent 有独立的 prompt 模板文件（`coordinator.py`, `modeler.py`, `coder.py`, `writer.py`），`shared.py` 存放共享模板。
+`core/prompts/` 下每个 Agent 有独立的 prompt 模板文件（`coordinator.py`, `modeler.py`, `coder.py`, `writer.py`），`shared.py` 存放共享模板，`image_revision.py` 和 `text_revision.py` 存放图片/文本修订模板。
 
 `config/md_template.toml` 是用户可自定义的论文模板（Prompt Inject），定义每个求解阶段（firstPage、toc、analysisQues 等）的输出格式要求。用户可按需修改模板来控制论文风格，不需要改代码。
+
+### Agent 工具函数 (`core/functions.py`)
+
+定义各 Agent 可调用的工具 schema（含 OpenAI 和 Anthropic 两种格式）：
+
+| Agent | 工具 | 说明 |
+|-------|------|------|
+| Coder | `execute_code` | 在 Jupyter kernel 中执行 Python 代码并返回输出，生成的图片返回 `[image]` 标记 |
+| Coder | `task_complete` | Coder 完成所有代码执行和图表生成后调用，标记子任务结束 |
+| Writer | `search_papers` | 通过 OpenAlex API 搜索学术论文用于参考文献 |
+
+### 论文章节契约 (`core/section_contracts.py`)
+
+`SectionContract` dataclass 定义每个论文章节的强制性规则：`must_include`（必须包含的内容）和 `forbidden`（禁止出现的内容）。Writer Agent 在生成各章节时遵循对应契约，确保论文结构合规。覆盖章节：firstPage、toc、RepeatQues、analysisQues、modelAssumption、symbol、judge。
+
+### Agent 间通信 (A2A) (`schemas/A2A.py`)
+
+Agent 之间通过 Pydantic 模型传递结构化数据：
+
+| 数据流 | 模型 | 内容 |
+|--------|------|------|
+| Coordinator → Modeler | `CoordinatorToModeler` | 问题列表和数量 |
+| Modeler → Coder | `ModelerToCoder` | 每问的建模方案 |
+| Coder → Writer | `CoderToWriter` | 代码响应、执行输出、生成的图片列表 |
+| Writer → 工作流 | `WriterResponse` | 论文内容和脚注 |
+
+### 结果聚合 (`models/user_output.py`)
+
+`UserOutput` 类聚合所有问题求解结果（代码、输出、图片、建模描述），供 Writer Agent 生成论文时使用。
 
 ### 核心功能特性
 
@@ -145,6 +184,13 @@ LLM 调用基于 LiteLLM 封装，支持多 Provider 架构：
 
 可选功能通过环境变量开关控制，未配置外部依赖时自动降级跳过。主要开关：`SEARCH_ENABLED`、`RAG_ENABLED`、`HIL_ENABLED`、`CODER_RACING_ENABLED`、`ARTIFACT_CHECK_ENABLED`、`FALLBACK_*` 系列、`EVALUATOR_*` 系列。
 
+其他配置文件：
+- `config/model_config.toml` — 模型参数配置
+- `config/cumcm_latex_rules.md` — CUMCM 竞赛 LaTeX 排版规范
+- `config/nature_figure_rules.md` — Nature 风格图片规范
+- `config/cumcm_pandoc_template.tex` — Pandoc LaTeX 模板
+- `config/template.md` — 论文 Markdown 模板
+
 ## 用户交互流程
 
 前端页面路由：`/login` (登录) → `/chat` (主页面：文件上传、题目输入、参数选择、提交任务) → `/task/{task_id}` (任务详情：实时进度、代码 Tab、论文 Tab、下载)。
@@ -158,9 +204,17 @@ LLM 调用基于 LiteLLM 封装，支持多 Provider 架构：
 - `res.md` — 最终结果为 markdown 格式
 - 生成的图片文件（`fig{N}_{描述}.png` 等）
 
-## 项目结构
+## 工具与自动修复
 
-`.cursor/rules/` 目录下有额外的架构说明文件（`structure.mdc`、`backend-rules.mdc`、`frontend-rules.mdc`、`ws-frontend-backend-interaction.mdc`），可作为补充参考。
+- `utils/artifact_checker.py` — Coder 完成后检查产物（图片、代码、目录）是否齐全，触发自动修复
+- `utils/final_output_validator.py` — 验证最终输出的完整性和格式合规性
+- `utils/paper_validator.py` — 论文结构/内容验证
+- `utils/data_recorder.py` — 记录任务执行过程中的数据，用于调试和审计
+- `utils/image_describer.py` — 为生成的图片生成描述文本
+- `utils/image_code_index.py` — 建立图片与代码块的交叉索引
+- `tools/openalex_scholar.py` — OpenAlex 学术论文搜索（参考文献检索）
+
+## 项目结构
 
 ```
 backend/
@@ -181,7 +235,7 @@ backend/
     routers/           # FastAPI 路由（REST + WebSocket）
     schemas/           # Pydantic 模型（请求/响应/枚举/A2A 消息协议）
     services/          # Redis 管理、WebSocket 管理、任务状态
-    tools/             # 代码解释器（本地 Jupyter / E2B / Daytona）
+    tools/             # 代码解释器（本地 Jupyter / E2B）、论文搜索工具
     utils/             # 工具函数（image_constants.py 为图片常量权威来源）
     config/            # 配置（pydantic-settings，多 Agent 独立配置）
     tests/             # 测试文件
@@ -190,10 +244,14 @@ frontend/
   src/
     apis/              # 后端 API 调用封装（按业务模块拆分）
     components/        # 通用组件 + shadcn-vue UI 库（components/ui/ 不要修改）
-    pages/             # 页面组件（chat/、task/、login/）
+      AgentEditor/     # Coder/Modeler/Writer 编辑器 + 代码/图片画廊
+      FilePreviewer/   # 多格式文件预览（代码、CSV、图片、Markdown、PDF）
+    composables/       # Vue composables（useFilePreview.ts）
+    pages/             # 页面组件（chat/、task/、login/、pdf/、example/）
     stores/            # Pinia 状态管理（apiKeys.ts、task.ts）
     router/            # vue-router 路由配置
     utils/             # 工具函数、类型定义、WebSocket 客户端、axios 封装、图片常量
+      enum.ts          # 后端枚举的 TypeScript 镜像（AgentType、ApiType）
 ```
 
 ## Code Style
@@ -266,6 +324,16 @@ const rendered = computed(() => marked.parse(props.content));
 - `docs`: 文档
 
 示例：`feat: 添加 OpenAlex API Key 支持并更新相关配置`
+
+## 根目录辅助脚本
+
+- `check-config.ps1` — 启动前检查 API Key 等配置是否完整
+- `start-docker.ps1` — 一键启动 Docker 所有服务
+- `push-to-github.ps1` — 提交并推送到 GitHub（每次修改后执行）
+- `scripts/` — 环境修复和补丁脚本（Python + PowerShell）
+- `skills/` — 自定义技能定义（`cumcm-latex`、`nature-figure`）
+- `third_party/CUMCMThesis/` — CUMCM LaTeX 论文模板
+- `.cursor/rules/` — 补充架构说明（`structure.mdc`、`backend-rules.mdc`、`frontend-rules.mdc`、`ws-frontend-backend-interaction.mdc`）
 
 ## Boundaries
 
