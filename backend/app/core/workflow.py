@@ -609,7 +609,10 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 tasks = [asyncio.create_task(self.question_ready_event.wait())]
                 if self.cancel_event:
                     tasks.append(asyncio.create_task(self.cancel_event.wait()))
-                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
                 if self.cancel_event and self.cancel_event.is_set():
                     raise asyncio.CancelledError("任务被用户停止")
             finally:
@@ -663,7 +666,10 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 tasks = [asyncio.create_task(self.modeling_ready_event.wait())]
                 if self.cancel_event:
                     tasks.append(asyncio.create_task(self.cancel_event.wait()))
-                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
                 if self.cancel_event and self.cancel_event.is_set():
                     raise asyncio.CancelledError("任务被用户停止")
             finally:

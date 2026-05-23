@@ -16,12 +16,16 @@ def validate_final_paper(work_dir: str, markdown: str) -> list[str]:
         "模型假设",
         "符号",
         "模型",
-        "参考文献",
     ]
 
     for marker in required_markers:
         if marker not in markdown:
             issues.append(f"终稿缺少关键章节或关键词：{marker}")
+
+    # 仅在存在引用标号（[^1]、[^2] 等）时才要求参考文献章节
+    has_citation = bool(re.search(r"\[\^\d+\]", markdown))
+    if has_citation and "参考文献" not in markdown:
+        issues.append("终稿存在引用标号，但缺少参考文献章节")
 
     if len(markdown.strip()) < 1500:
         issues.append("终稿内容过短，可能生成不完整")

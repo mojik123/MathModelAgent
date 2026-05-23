@@ -963,7 +963,10 @@ async def get_task_diagnostics(task_id: str):
     from pathlib import Path
     from app.utils.image_constants import is_image_file
 
-    work_dir = get_work_dir(safe_task_id)
+    try:
+        work_dir = get_work_dir(safe_task_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="任务工作目录不存在")
     root = Path(work_dir)
 
     # 检查 checkpoint

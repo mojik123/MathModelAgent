@@ -3,6 +3,7 @@
 import asyncio
 from app.tools.base_interpreter import BaseCodeInterpreter
 from app.tools.notebook_serializer import NotebookSerializer
+from app.config.setting import settings
 import jupyter_client
 from app.utils.log_util import logger
 import os
@@ -297,18 +298,35 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
             self.save_section_code(section)
             return moved
 
-        # ── 兜底路径：文件系统扫描（带 section 前缀过滤）──
+        # ── 兜底路径：文件系统扫描（带 section 前缀过滤，含章节目录）──
         section_num = get_section_num(section)
         section_prefix = f"{section_num}_" if section_num else None
 
+        scan_dirs = [self.work_dir]
+        try:
+            from app.utils.image_constants import section_dir_name
+
+            sec_dir = os.path.join(self.work_dir, section_dir_name(section))
+            if os.path.isdir(sec_dir):
+                scan_dirs.append(sec_dir)
+        except Exception:
+            pass
+
         current_images: set[str] = set()
-        for fname in os.listdir(self.work_dir):
-            if not is_image_file(fname):
+        for scan_dir in scan_dirs:
+            if not os.path.isdir(scan_dir):
                 continue
-            # 并行隔离：只拾取属于本 section 的图片（按命名前缀过滤）
-            if section_prefix and not fname.startswith(section_prefix):
-                continue
-            current_images.add(fname)
+            for fname in os.listdir(scan_dir):
+                if not is_image_file(fname):
+                    continue
+                # 并行隔离：只拾取属于本 section 的图片（按命名前缀过滤）
+                if section_prefix and not fname.startswith(section_prefix):
+                    continue
+                if scan_dir == self.work_dir:
+                    current_images.add(fname)
+                else:
+                    rel_dir = os.path.relpath(scan_dir, self.work_dir).replace("\\", "/")
+                    current_images.add(f"{rel_dir}/{fname}")
 
         new_images = current_images - self.last_created_images
         self.last_created_images = current_images

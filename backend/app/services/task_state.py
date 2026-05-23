@@ -113,4 +113,5 @@ async def mark_task_terminal(
     status: Literal["stopped", "completed", "failed", "interrupted"],
     message: str,
 ) -> dict[str, Any]:
-    return await set_task_state(task_id, status, message=message)
+    progress = 100 if status == "completed" else None
+    return await set_task_state(task_id, status, message=message, progress=progress)

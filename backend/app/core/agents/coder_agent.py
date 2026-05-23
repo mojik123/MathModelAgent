@@ -126,6 +126,31 @@ class CoderAgent(Agent):
                     tool_id = tool_call.id
 
                     if tool_call.name == "task_complete":
+                        if not has_executed_code:
+                            logger.info("代码手未执行代码却调用 task_complete，已拒绝完成")
+                            retry_count += 1
+                            last_error_message = "代码手未调用 execute_code 工具，不能直接 task_complete"
+
+                            await self.append_chat_history(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_id,
+                                    "name": "task_complete",
+                                    "content": "拒绝完成：本任务必须至少调用一次 execute_code 工具。",
+                                }
+                            )
+                            await self.append_chat_history(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "你还没有调用 execute_code 工具。"
+                                        "请先执行 Python 代码完成数据读取、建模、计算或结果生成，"
+                                        "确认结果后再调用 task_complete。"
+                                    ),
+                                }
+                            )
+                            continue
+
                         logger.info("任务完成信号")
                         await redis_manager.publish_message(
                             self.task_id,

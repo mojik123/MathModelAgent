@@ -117,9 +117,16 @@ class BaseCodeInterpreter(abc.ABC):
             return filename
 
         tag = f"{self.artifact_tag}_" if self.artifact_tag else ""
-        new_name = f"{section_num}_{tag}{cleaned}.png"
+        base_name = f"{section_num}_{tag}{cleaned}"
+        new_name = f"{base_name}.png"
         if new_name == filename:
             return filename
+
+        # 防止同名覆盖：若目标已存在，追加 _2、_3...
+        counter = 2
+        while os.path.exists(os.path.join(self.work_dir, new_name)):
+            new_name = f"{base_name}_{counter}.png"
+            counter += 1
 
         src = os.path.join(self.work_dir, filename)
         dst = os.path.join(self.work_dir, new_name)
