@@ -1052,6 +1052,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 worker_suffix: str,
                 artifact_tag: str,
                 race_index: int | None = None,
+                prompt_override: str | None = None,
             ):
                 interp, coder = await _build_coder(
                     worker_suffix, artifact_tag, race_index
@@ -1067,8 +1068,9 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                                 )
                             ),
                         )
+                        base_prompt = prompt_override or solution_flows[key]["coder_prompt"]
                         attempt_prompt = self._with_image_position_hint(
-                            solution_flows[key]["coder_prompt"],
+                            base_prompt,
                             key,
                             group_idx,
                             artifact_tag=artifact_tag or None,
@@ -1157,12 +1159,17 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         level="warning",
                     )
 
-                # 固定一层备用
+                # 固定一层备用，使用轻量 repair prompt 避免完整重跑
                 try:
+                    fallback_prompt = self._build_fallback_repair_prompt(
+                        key=key,
+                        original_prompt=solution_flows[key]["coder_prompt"],
+                        failure_reason="；".join(failures),
+                    )
                     await redis_manager.publish_message(
                         self.task_id,
                         SystemMessage(
-                            content=f"[组#{group_idx}] 启动备用 Coder 1/1",
+                            content=f"[组#{group_idx}] 启动备用 Coder 1/1 (轻量修复)",
                             type="warning",
                         ),
                     )
@@ -1171,6 +1178,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         worker_suffix="_b1",
                         artifact_tag="b1",
                         race_index=2,
+                        prompt_override=fallback_prompt,
                     )
                 except Exception as exc:
                     failures.append(f"备用1失败：{exc}")
