@@ -28,6 +28,7 @@ from app.core.llm.llm import LLM
 from app.core.llm.llm_factory import LLMFactory
 from app.utils.image_code_index import update_image_metadata
 from app.utils.image_describer import generate_image_description
+from app.utils.section_validator import validate_section_output
 from app.utils.image_constants import get_all_section_keys, section_dir_name, set_section_labels
 
 
@@ -522,6 +523,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         self.task_id = problem.task_id
         self.work_dir = create_work_dir(self.task_id)
         checkpoint = self._load_checkpoint()
+        checkpoint.setdefault("section_ledger", {})
 
         llm_factory = LLMFactory(self.task_id)
         coordinator_llm, modeler_llm, coder_llm, writer_llm = llm_factory.get_all_llms()
@@ -1282,6 +1284,33 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 user_output.set_res(key, writer_response)
                 self._save_writer_checkpoint(checkpoint, key, writer_response)
 
+            # 章节校验（子问题 Writer）
+            section_issues = validate_section_output(
+                key,
+                writer_response.response_content or "",
+                self.ques_count,
+                available_images=winner_coder_response.created_images,
+            )
+            checkpoint["section_ledger"][key] = {
+                "title": f"Question {group_idx}",
+                "owner": f"q{group_idx}.writer",
+                "status": "invalid" if section_issues else "valid",
+                "attempts": 1,
+                "content_chars": len(writer_response.response_content or ""),
+                "issues": section_issues,
+                "last_action": "generated",
+            }
+            if section_issues:
+                logger.warning(f"[Group#{group_idx}] {key} section issues: {section_issues}")
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=f"[Group#{group_idx}] {key} section validation: {'; '.join(section_issues[:3])}",
+                        type="warning",
+                    ),
+                )
+            self._save_checkpoint(checkpoint)
+
             # 胜者 interpreter 在 Writer 完成后清理
             try:
                 await winner_interp.cleanup()
@@ -1466,6 +1495,27 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 async with write_lock:
                     user_output.set_res(key, writer_response)
                     self._save_writer_checkpoint(checkpoint, key, writer_response)
+
+                # 章节校验（论文写作 Writer）
+                paper_issues = validate_section_output(
+                    key,
+                    writer_response.response_content or "",
+                    self.ques_count,
+                )
+                checkpoint["section_ledger"][key] = {
+                    "title": key,
+                    "owner": f"paper.writer.{key}",
+                    "status": "invalid" if paper_issues else "valid",
+                    "attempts": 1,
+                    "content_chars": len(writer_response.response_content or ""),
+                    "issues": paper_issues,
+                    "last_action": "generated",
+                }
+                if paper_issues:
+                    logger.warning(f"paper writing {key} issues: {paper_issues}")
+                self._save_checkpoint(checkpoint)
+
+                async with write_lock:
                     step_counter[0] += 1
                     completed = step_counter[0]
 
@@ -1528,6 +1578,138 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 SystemMessage(content="论文手开始终稿审计：检查章节重复、串位、图片引用"),
             )
 
+            # ── Layer 2: Section ledger check + missing/invalid repair ──
+            async def _repair_missing_or_invalid_sections() -> None:
+                """Check section_ledger and attempt local repair for missing/invalid sections."""
+                missing_keys = []
+                invalid_keys = []
+
+                for k in user_output.seq:
+                    entry = checkpoint["section_ledger"].get(k)
+                    if not entry or entry.get("status") == "missing":
+                        missing_keys.append(k)
+                    elif entry.get("status") == "invalid":
+                        invalid_keys.append((k, entry.get("issues", [])))
+
+                if not missing_keys and not invalid_keys:
+                    return
+
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=f"Section ledger: {len(missing_keys)} missing, {len(invalid_keys)} invalid, starting local repair"
+                    ),
+                )
+
+                # TOC missing/invalid -> deterministic regeneration
+                if "toc" in missing_keys or "toc" in [k for k, _ in invalid_keys]:
+                    from app.schemas.A2A import WriterResponse
+
+                    toc_content = _build_deterministic_toc(self.ques_count)
+                    toc_response = WriterResponse(
+                        response_content=toc_content,
+                        footnotes={},
+                    )
+                    user_output.set_res("toc", toc_response)
+                    self._save_writer_checkpoint(checkpoint, "toc", toc_response)
+                    checkpoint["section_ledger"]["toc"] = {
+                        "title": "TOC",
+                        "owner": "deterministic",
+                        "status": "valid",
+                        "attempts": 1,
+                        "content_chars": len(toc_content),
+                        "issues": [],
+                        "last_action": "regenerated_from_template",
+                    }
+                    await redis_manager.publish_message(
+                        self.task_id,
+                        SystemMessage(content="TOC regenerated deterministically"),
+                    )
+
+                # quesN missing -> rerun qN.writer with existing coder results
+                repair_writer = self._create_writer_agent(problem, agent_index=None)
+                for k in missing_keys:
+                    if k.startswith("ques"):
+                        group_idx = int(k[4:])
+                        await redis_manager.publish_message(
+                            self.task_id,
+                            SystemMessage(content=f"Repair: regenerating {k}"),
+                        )
+                        coder_result = user_output.res.get(k)
+                        code_text = ""
+                        images = []
+                        if isinstance(coder_result, dict):
+                            code_text = str(coder_result.get("code_response") or "")
+                            images = coder_result.get("created_images") or []
+                        repair_prompt = flows.get_writer_prompt(
+                            k, code_text, "", config_template
+                        )
+                        repair_writer.model.question_index = group_idx
+                        repair_writer.model.agent_instance_id = f"q{group_idx}.writer"
+                        repair_writer.model.group_id = f"q{group_idx}"
+                        repair_writer.model.phase = "question_writing"
+                        try:
+                            wr = await repair_writer.run(
+                                repair_prompt,
+                                available_images=images,
+                                sub_title=k,
+                            )
+                            user_output.set_res(k, wr)
+                            self._save_writer_checkpoint(checkpoint, k, wr)
+                            re_issues = validate_section_output(
+                                k, wr.response_content or "", self.ques_count, images
+                            )
+                            checkpoint["section_ledger"][k] = {
+                                "title": f"Question {group_idx}",
+                                "owner": f"q{group_idx}.writer",
+                                "status": "invalid" if re_issues else "valid",
+                                "attempts": 2,
+                                "content_chars": len(wr.response_content or ""),
+                                "issues": re_issues,
+                                "last_action": "regenerated",
+                            }
+                            await redis_manager.publish_message(
+                                self.task_id,
+                                SystemMessage(content=f"Repaired: {k} regenerated"),
+                            )
+                        except Exception as exc:
+                            logger.error(f"Repair {k} failed: {exc}")
+                            checkpoint["section_ledger"][k] = (
+                                checkpoint["section_ledger"].get(k) or {}
+                            )
+                            checkpoint["section_ledger"][k]["last_action"] = "repair_failed"
+                            checkpoint["section_ledger"][k]["status"] = "missing"
+
+                    elif k in ("analysisQues", "modelAssumption", "symbol", "judge", "firstPage", "RepeatQues"):
+                        repair_writer.model.agent_instance_id = f"paper.writer.{k}"
+                        repair_writer.model.group_id = "paper.writing"
+                        repair_writer.model.phase = "paper_writing"
+                        try:
+                            wr = await repair_writer.run(
+                                prompt=write_flows.get(k, ""),
+                                sub_title=k,
+                            )
+                            user_output.set_res(k, wr)
+                            self._save_writer_checkpoint(checkpoint, k, wr)
+                            re_issues = validate_section_output(
+                                k, wr.response_content or "", self.ques_count
+                            )
+                            checkpoint["section_ledger"][k] = {
+                                "title": k,
+                                "owner": f"paper.writer.{k}",
+                                "status": "invalid" if re_issues else "valid",
+                                "attempts": 2,
+                                "content_chars": len(wr.response_content or ""),
+                                "issues": re_issues,
+                                "last_action": "regenerated",
+                            }
+                        except Exception as exc:
+                            logger.error(f"Repair {k} failed: {exc}")
+
+                self._save_checkpoint(checkpoint)
+
+            # Execute section repair loop
+            await _repair_missing_or_invalid_sections()
             # 终稿前必备章节检查
             def _missing_required_sections() -> list:
                 missing: list = []
