@@ -1,10 +1,15 @@
 import {
 	cancelTask as cancelTaskAPI,
+	getTaskDiagnostics,
 	getTaskMessages,
 	getTaskState,
 	startTask as startTaskAPI,
 } from "@/apis/commonApi";
-import type { TaskRuntimeState, TaskRuntimeStatus } from "@/apis/commonApi";
+import type {
+	TaskDiagnostics,
+	TaskRuntimeState,
+	TaskRuntimeStatus,
+} from "@/apis/commonApi";
 import { AgentType } from "@/utils/enum";
 import type {
 	AgentMessage,
@@ -39,6 +44,7 @@ export const useTaskStore = defineStore("task", () => {
 	>("disconnected");
 	const isRunning = ref(false);
 	const taskRuntimeState = ref<TaskRuntimeState | null>(null);
+	const taskDiagnostics = ref<TaskDiagnostics | null>(null);
 
 	// 建模讨论同步状态
 	// 问题划分讨论同步状态
@@ -215,7 +221,6 @@ export const useTaskStore = defineStore("task", () => {
 		return "";
 	}
 
-
 	function applyRuntimeState(state: TaskRuntimeState) {
 		taskRuntimeState.value = state;
 		if (
@@ -256,13 +261,37 @@ export const useTaskStore = defineStore("task", () => {
 		}
 	}
 
+	async function refreshTaskDiagnostics(taskId?: string) {
+		const id = taskId || currentTaskId.value;
+		if (!id) return null;
+
+		try {
+			const res = await getTaskDiagnostics(id);
+			taskDiagnostics.value = res.data;
+			return res.data;
+		} catch (error) {
+			console.warn("获取任务诊断信息失败", error);
+			taskDiagnostics.value = null;
+			return null;
+		}
+	}
+
 	async function refreshTaskState(taskId: string) {
 		setCurrentTask(taskId);
 		ensureTaskBucket(taskId);
 		try {
 			const response = await getTaskState(taskId);
 			applyRuntimeState(response.data);
-			return response.data;
+			const state = response.data;
+			if (
+				state.status === "completed" ||
+				state.status === "failed" ||
+				state.status === "stopped" ||
+				state.status === "interrupted"
+			) {
+				await refreshTaskDiagnostics(taskId);
+			}
+			return state;
 		} catch (error) {
 			console.error("刷新任务状态失败:", error);
 			const status = deriveStatusFromMessages(taskId);
@@ -342,7 +371,12 @@ export const useTaskStore = defineStore("task", () => {
 		const m = msg as any;
 		return (
 			m.agent_instance_id ??
-			[m.agent_type, m.question_index ?? "", m.race_index ?? "", m.agent_index ?? ""].join(":")
+			[
+				m.agent_type,
+				m.question_index ?? "",
+				m.race_index ?? "",
+				m.agent_index ?? "",
+			].join(":")
 		);
 	}
 
@@ -358,7 +392,8 @@ export const useTaskStore = defineStore("task", () => {
 					if (
 						existing.msg_type === "agent" &&
 						(existing as AgentMessage).stream_state === "streaming" &&
-						getAgentStreamKey(existing as AgentMessage) === getAgentStreamKey(agentMsg)
+						getAgentStreamKey(existing as AgentMessage) ===
+							getAgentStreamKey(agentMsg)
 					) {
 						bucket[i] = { ...existing, content: agentMsg.content };
 						messagesByTask.value[taskId] = [...bucket];
@@ -711,6 +746,7 @@ export const useTaskStore = defineStore("task", () => {
 		wsStatus,
 		isRunning,
 		taskRuntimeState,
+		taskDiagnostics,
 		taskStatus,
 		currentProgress,
 		activeQuestionIndex,
@@ -726,6 +762,7 @@ export const useTaskStore = defineStore("task", () => {
 		interpreterMessage,
 		files,
 		refreshTaskState,
+		refreshTaskDiagnostics,
 		loadTaskMessages,
 		setCurrentTask,
 		startTask,

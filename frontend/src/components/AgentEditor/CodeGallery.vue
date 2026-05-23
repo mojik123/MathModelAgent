@@ -1,16 +1,20 @@
 <script setup lang="ts">
+import type { ArtifactCheckRecord } from "@/apis/commonApi";
 import { Button } from "@/components/ui/button";
+import { useFilePreview } from "@/composables/useFilePreview";
 import { useTaskStore } from "@/stores/task";
 import type { InterpreterMessage, OutputItem } from "@/utils/response";
 import {
 	ChevronDown,
 	ChevronUp,
 	Code2,
+	FolderOpen,
 	ListTree,
 	PanelLeftClose,
 	PanelLeftOpen,
 } from "lucide-vue-next";
 import { computed, nextTick, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 
 // ---- Types ----
 
@@ -21,9 +25,24 @@ interface CodeBlock {
 	output: OutputItem[] | null;
 }
 
+interface CodeFileItem {
+	name: string;
+	path: string;
+	attempt: string;
+	passed: boolean;
+}
+
+interface CodeFileSection {
+	section: string;
+	sectionLabel: string;
+	files: CodeFileItem[];
+}
+
 // ---- State ----
 
 const taskStore = useTaskStore();
+const route = useRoute();
+const { openPreview, buildFileUrl } = useFilePreview();
 const showToc = ref(true);
 const activeCodeId = ref<string>("");
 const hoveredCodeId = ref<string>("");
@@ -31,6 +50,15 @@ const hoveredCodeId = ref<string>("");
 const expandedIds = ref<Set<string>>(new Set());
 const codeTocScrollHost = ref<HTMLElement | null>(null);
 const codeScrollHost = ref<HTMLElement | null>(null);
+const codePanelTab = ref<"blocks" | "files">("blocks");
+
+const currentTaskId = computed(
+	() =>
+		taskStore.currentTaskId ||
+		(typeof route.params.task_id === "string" ? route.params.task_id : "") ||
+		window.localStorage.getItem("currentTaskId") ||
+		"",
+);
 
 // ---- Computed ----
 
@@ -62,7 +90,89 @@ const codeBlocks = computed<CodeBlock[]>(() => {
 	return blocks;
 });
 
+// ---- 代码文件目录（来自 diagnostics） ----
+
+const fileBaseName = (path: string) =>
+	path.split(/[\\/]/).filter(Boolean).pop() || path;
+
+const fileDirName = (path: string) => {
+	const parts = path.split(/[\\/]/).filter(Boolean);
+	return parts.length > 1 ? parts.slice(0, -1).join("/") : "根目录";
+};
+
+const cleanSectionLabel = (section: string) => {
+	return section
+		.replace(/^4\.1_/, "4.1 ")
+		.replace(/^5\.(\d+)_/, "5.$1 ")
+		.replace(/^6\.1_/, "6.1 ")
+		.replace(/_/g, " ");
+};
+
+const codeFileSections = computed<CodeFileSection[]>(() => {
+	const diagnostics = taskStore.taskDiagnostics;
+	const artifactChecks = diagnostics?.artifact_checks ?? {};
+
+	const sectionMap = new Map<string, CodeFileSection>();
+
+	for (const [_phaseKey, attempts] of Object.entries(artifactChecks)) {
+		for (const [attemptKey, record] of Object.entries(attempts ?? {})) {
+			const typedRecord = record as ArtifactCheckRecord;
+			const codeFiles = typedRecord?.code_files ?? [];
+
+			for (const filePath of codeFiles) {
+				const section = fileDirName(filePath);
+				const fileName = fileBaseName(filePath);
+
+				if (!sectionMap.has(section)) {
+					sectionMap.set(section, {
+						section,
+						sectionLabel: cleanSectionLabel(section),
+						files: [],
+					});
+				}
+
+				const sectionItem = sectionMap.get(section);
+				if (!sectionItem) continue;
+
+				// 去重：同一路径只显示一次
+				if (sectionItem.files.some((item) => item.path === filePath)) continue;
+
+				sectionItem.files.push({
+					name: fileName,
+					path: filePath,
+					attempt: attemptKey,
+					passed: Boolean(typedRecord?.passed),
+				});
+			}
+		}
+	}
+
+	const orderWeight = (section: string) => {
+		if (section.startsWith("4.1_")) return 10;
+		if (section.startsWith("5.")) return 20;
+		if (section.startsWith("6.1_")) return 30;
+		return 99;
+	};
+
+	return Array.from(sectionMap.values())
+		.map((section) => ({
+			...section,
+			files: section.files.sort((a, b) => a.name.localeCompare(b.name)),
+		}))
+		.sort((a, b) => {
+			const w = orderWeight(a.section) - orderWeight(b.section);
+			if (w !== 0) return w;
+			return a.section.localeCompare(b.section);
+		});
+});
+
 // ---- Methods ----
+
+function openFilePreview(file: string) {
+	const url = buildFileUrl(file, currentTaskId.value);
+	const cleanName = file.split(/[?#]/)[0].split(/[\\/]/).pop() || file;
+	openPreview(url, cleanName);
+}
 
 function blockTitle(block: CodeBlock, index: number): string {
 	const phaseMatch = block.description.match(/所属阶段[：:]\s*(.+)/);
@@ -213,17 +323,43 @@ watch(codeBlocks, () => {
   <div class="relative flex h-full min-h-0 bg-white/70 backdrop-blur-sm">
     <!-- 左侧目录 -->
     <aside v-if="showToc" class="w-56 shrink-0 bg-slate-50/90 backdrop-blur-xl">
-      <div class="flex items-center justify-between bg-gradient-to-b from-white/70 to-white/35 px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-md">
-        <div class="flex items-center gap-2 text-sm font-semibold text-slate-800">
-          <ListTree class="h-4 w-4" />
-          <span class="bg-gradient-to-b from-slate-900 to-slate-500 bg-clip-text text-transparent">代码目录</span>
-          <span class="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500">{{ codeBlocks.length }}</span>
+      <div class="bg-gradient-to-b from-white/70 to-white/35 px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-md">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2 text-sm font-semibold text-slate-800 min-w-0">
+            <ListTree class="h-4 w-4 shrink-0" />
+            <span class="bg-gradient-to-b from-slate-900 to-slate-500 bg-clip-text text-transparent truncate">
+              {{ codePanelTab === "blocks" ? "代码块目录" : "代码文件目录" }}
+            </span>
+            <span class="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500 shrink-0">
+              {{ codePanelTab === "blocks" ? codeBlocks.length : codeFileSections.reduce((n, s) => n + s.files.length, 0) }}
+            </span>
+          </div>
+          <Button variant="ghost" size="icon" @click="showToc = false">
+            <PanelLeftClose class="h-4 w-4" />
+          </Button>
         </div>
-        <Button variant="ghost" size="icon" @click="showToc = false">
-          <PanelLeftClose class="h-4 w-4" />
-        </Button>
+
+        <!-- Tab 切换 -->
+        <div class="flex rounded-lg bg-slate-100 p-1 text-xs mt-2">
+          <button
+            class="flex-1 rounded px-2 py-1"
+            :class="codePanelTab === 'blocks' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'"
+            @click="codePanelTab = 'blocks'"
+          >
+            代码块
+          </button>
+          <button
+            class="flex-1 rounded px-2 py-1"
+            :class="codePanelTab === 'files' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'"
+            @click="codePanelTab = 'files'"
+          >
+            代码文件
+          </button>
+        </div>
       </div>
-      <div ref="codeTocScrollHost" class="code-toc-scroll h-[calc(100%-45px)] overflow-y-auto overflow-x-hidden">
+
+      <!-- 代码块列表 -->
+      <div v-if="codePanelTab === 'blocks'" ref="codeTocScrollHost" class="code-toc-scroll h-[calc(100%-85px)] overflow-y-auto overflow-x-hidden">
         <div class="p-2">
           <button
             v-for="(block, idx) in codeBlocks"
@@ -243,9 +379,53 @@ watch(codeBlocks, () => {
           </button>
         </div>
       </div>
+
+      <!-- 代码文件列表 -->
+      <div v-else class="h-[calc(100%-85px)] overflow-y-auto overflow-x-hidden">
+        <div class="p-2 space-y-3">
+          <div
+            v-for="section in codeFileSections"
+            :key="section.section"
+            class="rounded-xl border border-slate-200 bg-white/70 p-2"
+          >
+            <div class="mb-1 flex items-center gap-1 text-xs font-semibold text-slate-700">
+              <FolderOpen class="h-3.5 w-3.5 text-blue-600 shrink-0" />
+              <span class="truncate">{{ section.sectionLabel }}</span>
+              <span class="ml-auto text-[10px] text-slate-400 shrink-0">
+                {{ section.files.length }}
+              </span>
+            </div>
+
+            <button
+              v-for="file in section.files"
+              :key="file.path"
+              type="button"
+              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs hover:bg-blue-50"
+              @click="openFilePreview(file.path)"
+            >
+              <Code2 class="h-3.5 w-3.5 shrink-0 text-slate-500" />
+              <span class="min-w-0 flex-1 truncate">{{ file.name }}</span>
+
+              <span
+                class="rounded px-1.5 py-0.5 text-[10px] shrink-0"
+                :class="file.passed ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'"
+              >
+                {{ file.attempt === "main" ? "主力" : file.attempt }}
+              </span>
+            </button>
+          </div>
+
+          <div
+            v-if="codeFileSections.length === 0"
+            class="rounded-lg border border-dashed border-slate-200 p-3 text-xs text-slate-400"
+          >
+            暂无代码文件。任务完成后会从 diagnostics 中读取真实保存的 .py 文件。
+          </div>
+        </div>
+      </div>
     </aside>
 
-    <!-- 右侧代码卡片区 -->
+    <!-- 右侧内容区 -->
     <div class="flex min-w-0 flex-1 flex-col bg-white/80 backdrop-blur-sm">
       <div class="flex items-center justify-between bg-gradient-to-b from-white/72 to-white/42 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-md">
         <div class="flex items-center gap-2">
@@ -253,12 +433,15 @@ watch(codeBlocks, () => {
             <PanelLeftOpen class="h-4 w-4" />
           </Button>
           <Code2 class="h-4 w-4 text-slate-600" />
-          <h2 class="text-base font-semibold text-gray-900">代码结果</h2>
-          <span class="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{{ codeBlocks.length }} 段</span>
+          <h2 class="text-base font-semibold text-gray-900">
+            {{ codePanelTab === "blocks" ? "代码结果" : "代码文件目录" }}
+          </h2>
+          <span v-if="codePanelTab === 'blocks'" class="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{{ codeBlocks.length }} 段</span>
         </div>
       </div>
 
-      <div ref="codeScrollHost" class="code-content-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+      <!-- 代码块详情 -->
+      <div v-if="codePanelTab === 'blocks'" ref="codeScrollHost" class="code-content-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
         <div v-if="codeBlocks.length" class="flex flex-col gap-3 p-4">
           <section
             v-for="(block, idx) in codeBlocks"
@@ -341,114 +524,20 @@ watch(codeBlocks, () => {
           暂无代码执行结果
         </div>
       </div>
+
+      <!-- 代码文件说明 -->
+      <div v-else class="flex-1 flex items-center justify-center p-6">
+        <div class="rounded-2xl bg-white p-6 text-sm text-slate-600 max-w-md text-center">
+          <FolderOpen class="h-10 w-10 mx-auto mb-3 text-blue-400" />
+          <div class="mb-2 text-base font-semibold text-slate-900">代码文件目录</div>
+          <p>
+            这里显示后端实际保存到任务目录中的 Python 文件。点击左侧文件可预览完整内容。
+          </p>
+          <p class="mt-2 text-xs text-slate-400">
+            文件来源：diagnostics.artifact_checks[*].code_files
+          </p>
+        </div>
+      </div>
     </div>
   </div>
 </template>
-
-<style scoped>
-.code-toc-item {
-  position: relative;
-}
-
-.code-toc-item-active::before {
-  position: absolute;
-  top: 0.35rem;
-  bottom: 0.35rem;
-  left: 0.25rem;
-  width: 3px;
-  border-radius: 999px;
-  background: #2563eb;
-  content: "";
-}
-
-.code-toc-scroll,
-.code-content-scroll {
-  background: rgba(255, 255, 255, 0.68);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  mask-image: linear-gradient(
-    to bottom,
-    transparent 0,
-    #000 1.25rem,
-    #000 calc(100% - 1.25rem),
-    transparent 100%
-  );
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent 0,
-    #000 1.25rem,
-    #000 calc(100% - 1.25rem),
-    transparent 100%
-  );
-}
-
-.code-toc-scroll::-webkit-scrollbar,
-.code-content-scroll::-webkit-scrollbar {
-  width: 4px;
-}
-
-.code-toc-scroll::-webkit-scrollbar-track,
-.code-content-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.code-toc-scroll::-webkit-scrollbar-thumb,
-.code-content-scroll::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.75);
-}
-
-/* 代码卡片玻璃风格 */
-.code-card {
-  border-color: rgba(255, 255, 255, 0.25);
-  background: rgba(255, 255, 255, 0.4);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-radius: 1rem;
-  box-shadow:
-    0 4px 24px rgba(0, 0, 0, 0.04),
-    0 0 0 1px rgba(255, 255, 255, 0.5) inset;
-  transition: box-shadow 0.3s ease, border-color 0.3s ease;
-}
-.code-card:hover {
-  border-color: rgba(59, 130, 246, 0.45);
-}
-
-.code-card-hover {
-  border-color: rgba(59, 130, 246, 0.3) !important;
-  background: linear-gradient(135deg, rgba(255,255,255,0.95), rgba(241,245,249,0.9)) !important;
-  box-shadow:
-    0 0 16px 2px rgba(59, 130, 246, 0.15),
-    0 0 32px 6px rgba(59, 130, 246, 0.06),
-    0 0 0 1px rgba(255, 255, 255, 0.5) inset,
-    0 8px 24px rgba(15, 23, 42, 0.08) !important;
-}
-
-.code-card-hover::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: radial-gradient(ellipse 70% 50% at 50% 30%, rgba(147,197,253,0.12), transparent 60%);
-  pointer-events: none;
-}
-
-/* 3 行截断 */
-.line-clamp-3 {
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.glass-card {
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(255, 255, 255, 0.4);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-radius: 1rem;
-  box-shadow:
-    0 4px 24px rgba(0, 0, 0, 0.04),
-    0 0 0 1px rgba(255, 255, 255, 0.5) inset;
-}
-</style>

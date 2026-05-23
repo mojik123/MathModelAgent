@@ -38,6 +38,33 @@ export function getHelloWorld() {
 	return request.get<{ message: string }>("/");
 }
 
+export interface ArtifactCheckRecord {
+	attempt_name?: string;
+	passed: boolean;
+	issues: string[];
+	images: string[];
+	code_files: string[];
+}
+
+export interface TaskDiagnostics {
+	task_id: string;
+	status?: TaskRuntimeStatus;
+	completed?: boolean;
+	files?: {
+		res_md?: boolean;
+		res_json?: boolean;
+		docx?: boolean;
+		images?: number;
+		code_files?: number;
+		notebooks?: number;
+	};
+	artifact_checks?: Record<string, Record<string, ArtifactCheckRecord>>;
+	final_audit?: unknown;
+	final_image_ref_issues?: string[];
+	final_paper_issues?: string[];
+	final_file_issues?: string[];
+}
+
 /** 获取论文写作顺序 */
 export function getWriterSeque() {
 	return request.get<{ writer_seque: string[] }>("/writer_seque");
@@ -75,6 +102,11 @@ export function startTask(task_id: string) {
 /** 获取单个任务的后端运行状态 */
 export function getTaskState(task_id: string) {
 	return request.get<TaskRuntimeState>(`/modeling/${task_id}/state`);
+}
+
+/** 获取任务诊断信息：真实代码文件、图片、终稿检查结果 */
+export function getTaskDiagnostics(task_id: string) {
+	return request.get<TaskDiagnostics>(`/modeling/${task_id}/diagnostics`);
 }
 
 /**
@@ -177,7 +209,6 @@ export function generateModelingOptions(
 		}>;
 	}>(`/modeling/${task_id}/model-options`, payload, { timeout: 600000 });
 }
-
 
 // ── 问题划分讨论接口 ─────────────────────────────────────────────
 
