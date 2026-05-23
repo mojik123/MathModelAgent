@@ -60,11 +60,31 @@ class Flows:
             }
             for key, value in questions_quesx.items()
         }
+
+        eda_data_safety_prompt = """
+【EDA 数据读取与防错规则 — 必须严格执行】
+1. 读取每个 Excel sheet 后，必须先统一清洗列名和字符串字段：
+   - df.columns = [str(c).strip() for c in df.columns]
+   - 所有 object/string 列都要 astype(str).str.strip()，并把 "nan" 还原为空值。
+2. 不得直接假定某个 DataFrame 一定包含“作物类型”。
+   - 若当前经济参数表缺少“作物类型”，必须从“附件1.xlsx / 乡村种植的农作物”按“作物编号”合并补齐。
+   - 合并前必须把“作物编号”转为数值型并删除非数据行。
+   - 若按“作物编号”合并后仍有缺失，可再按“作物名称”映射补齐。
+3. 对固定类别排序或绘图时，禁止使用 set_index(...).loc[固定列表] 直接强索引。
+   - 必须使用 reindex(固定列表) 后再 dropna/reset_index，避免 KeyError。
+4. 所有可能缺列的统计都必须先检查列是否存在：
+   - if "作物类型" in df.columns: ...
+   - 缺列时先补列或跳过该图，并输出明确说明。
+5. EDA 阶段只做数据清洗、结构核验和轻量可视化，不做 MILP、动态规划、穷举搜索等复杂模型。
+6. 保存清洗后的中间数据，输出必要的列名检查结果和缺失值统计，便于后续 Coder 复用。
+"""
+
         flows = {
             "eda": {
                 "coder_prompt": f"""
                         参考建模手给出的解决方案{solutions.get("eda", "对数据进行探索性分析")}
                         对当前目录下数据进行EDA分析(数据清洗,可视化),清洗后的数据保存当前目录下,**不需要复杂的模型**
+                        {eda_data_safety_prompt}
                     """,
             },
             **ques_flow,
@@ -233,7 +253,6 @@ class Flows:
 
     def get_questions_quesx(self) -> dict[str, str | int]:
         """获取问题1,2,3...的键值对"""
-        # 获取所有以 "ques" 开头的键值对
         questions_quesx = {
             key: value
             for key, value in self.questions.items()
