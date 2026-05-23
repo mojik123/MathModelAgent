@@ -155,6 +155,9 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
                     final_images = self.move_images_to_section_dir(corrected_images)
                     # 用最终图片路径保存同名 .py
                     self.save_code_for_images(code, final_images)
+                    # 更新 section 图片记录为最终路径
+                    if current_section:
+                        self.created_images_by_section[current_section] = set(final_images)
                     # 反馈命名违规信息给 Agent
                     naming_issues: list[str] = []
                     for i, image_name in enumerate(saved_images):
@@ -180,7 +183,7 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
                     code,
                     cell_index=cell_index,
                     section=self.notebook_serializer.current_segmentation,
-                    image_names=corrected_images if corrected_images else None,
+                    image_names=final_images if final_images else None,
                 )
             except Exception as e:
                 logger.warning(f"记录图片代码映射失败: {e}")
@@ -280,98 +283,35 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
         return all_output
 
     async def get_created_images(self, section: str) -> list[str]:
-        """本 section 执行完毕时调用：归档新图片并保存章节代码。
+        """本 section 执行完毕时调用：返回已归档图片路径。
 
-        并行安全策略（两层）：
-        1. 优先路径：从 ``created_images_by_section`` 取已记录的图片名（由
-           ``record_created_images`` 在代码执行后通过解析 savefig 调用注册），
-           完全不扫描文件系统，各并行 Agent 互不干扰。
-        2. 兜底路径：若优先路径无结果（如 savefig 路径动态拼接无法静态解析），
-           回退到文件系统扫描，但只收集文件名以本 section 论文编号前缀（如
-           ``"5.1_"``）开头的图片，排除其他并行 Agent 的图片。
+        统一模式：只返回 created_images_by_section 中已记录的最终路径。
+        不再移动图片，不再扫描文件系统。
         """
-        from app.utils.image_constants import get_section_num
-
-        # ── 优先路径：基于代码解析的记录（并行安全，无 IO）──
         recorded = self.created_images_by_section.get(section, set())
-        if recorded:
-            logger.info(f"[{section}] 使用已记录图片（代码解析）: {recorded}")
-            moved = self.move_images_to_section_dir(list(recorded))
+
+        if not recorded:
+            logger.info(f"[{section}] 无已记录图片。统一模式下不扫描文件系统。")
             self.save_section_code(section)
+            return []
 
-            section_code = "\n\n".join(self.section_codes.get(section, []))
-            if section_code and moved:
-                try:
-                    update_image_code_index(
-                        self.work_dir,
-                        section_code,
-                        section=self.notebook_serializer.current_segmentation,
-                        image_names=moved,
-                    )
-                except Exception as exc:
-                    logger.warning(f"[{section}] 补写图片索引失败: {exc}")
-
-            return moved
-
-        # ── 兜底路径：文件系统扫描（含章节目录，按 artifact_tag 过滤）──
-        import re as _re
-
-        artifact_prefix = f"{self.artifact_tag}_" if self.artifact_tag else None
-
-        scan_dirs = [self.work_dir]
-        try:
-            from app.utils.image_constants import section_dir_name
-
-            sec_dir = os.path.join(self.work_dir, section_dir_name(section))
-            if os.path.isdir(sec_dir):
-                scan_dirs.append(sec_dir)
-        except Exception:
-            pass
-
-        current_images: set[str] = set()
-        for scan_dir in scan_dirs:
-            if not os.path.isdir(scan_dir):
-                continue
-            for fname in os.listdir(scan_dir):
-                if not is_image_file(fname):
-                    continue
-                # 并行隔离：
-                # 备用/竞速只拾取自己的 tag 图片，例如 b1_xxx.png / r1_xxx.png
-                if artifact_prefix and not fname.startswith(artifact_prefix):
-                    continue
-                # 主力不拾取备用/竞速图片，避免 b1/r1 混入主力
-                if not artifact_prefix and _re.match(
-                    r"^(?:b\d+|r\d+)_", fname
-                ):
-                    continue
-                if scan_dir == self.work_dir:
-                    current_images.add(fname)
-                else:
-                    rel_dir = os.path.relpath(scan_dir, self.work_dir).replace(
-                        "\\", "/"
-                    )
-                    current_images.add(f"{rel_dir}/{fname}")
-
-        new_images = current_images - self.last_created_images
-        self.last_created_images = current_images
-
-        logger.info(f"[{section}] 文件系统扫描新图片: {new_images}")
-        moved = self.move_images_to_section_dir(list(new_images))
+        logger.info(f"[{section}] 使用已归档图片: {recorded}")
         self.save_section_code(section)
 
         section_code = "\n\n".join(self.section_codes.get(section, []))
-        if section_code and moved:
+        if section_code:
             try:
                 update_image_code_index(
                     self.work_dir,
                     section_code,
                     section=self.notebook_serializer.current_segmentation,
-                    image_names=moved,
+                    image_names=list(recorded),
                 )
             except Exception as exc:
-                logger.warning(f"[{section}] 兜底扫描图片补写索引失败: {exc}")
+                logger.warning(f"[{section}] 补写图片索引失败: {exc}")
 
-        return moved
+        return sorted(recorded)
+
     async def cleanup(self):
         # 关闭内核
         assert self.kc is not None

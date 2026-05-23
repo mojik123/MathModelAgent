@@ -355,25 +355,7 @@ class BaseCodeInterpreter(abc.ABC):
                     logger.info(f"图片已归入目录: {rel_path}")
                 except OSError as exc:
 
-                    # 图片因重名被改名时，同步复制对应 .py 文件
-                    if final_base_name != base_name:
-                        old_code = os.path.join(dest_dir, f"{stem}.py")
-                        new_code = os.path.join(
-                            dest_dir,
-                            f"{os.path.splitext(final_base_name)[0]}.py",
-                        )
-                        if os.path.isfile(old_code) and not os.path.exists(new_code):
-                            try:
-                                shutil.copy2(old_code, new_code)
-                                logger.info(
-                                                    f"图片同名代码已同步复制: "
-                                                    f"{os.path.basename(old_code)} → "
-                                                    f"{os.path.basename(new_code)}"
-                                )
-                            except OSError as exc:
-                                logger.warning(
-                                                    f"同步复制图片代码文件失败 {old_code}: {exc}"
-                                )
+
                     logger.warning(f"移动图片失败 {base_name}: {exc}")
                     result.append(normalized)
             else:
