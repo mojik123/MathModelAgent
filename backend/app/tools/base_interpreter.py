@@ -264,44 +264,40 @@ class BaseCodeInterpreter(abc.ABC):
     def save_code_for_images(
         self, code: str, image_filenames: list[str]
     ) -> None:
-        """将生成图片的代码保存为同名 .py 文件（与图片配对）。
+        """严格按图片最终相对路径保存同名 .py。
 
-        例如 ``5.1_prediction_comparison.png`` → ``5.1_prediction_comparison.py``。
-        文件存到 section 子目录（如 ``5.1_问题1的模型建立与求解/``）。
+        输入:
+         5.1_问题1的模型建立与求解/prediction_result.png
+
+        输出:
+         5.1_问题1的模型建立与求解/prediction_result.py
 
         Args:
             code: 生成图片的 Python 代码。
-            image_filenames: 本次代码生成的图片基本名列表。
+            image_filenames: 图片相对路径列表（含章节目录）。
         """
         import os as _os
         from pathlib import Path as _Path
 
-        from app.utils.image_constants import section_dir_name
-
-        section = self.notebook_serializer.current_segmentation
-        if not section or not image_filenames:
-            return
-
-        try:
-            sub_dir_name = section_dir_name(section)
-        except ValueError:
-            return
-
-        dest_dir = _os.path.join(self.work_dir, sub_dir_name)
-        _os.makedirs(dest_dir, exist_ok=True)
-
         for fname in image_filenames:
             if not fname:
                 continue
-            image_name = _Path(fname).name
-            code_fname = str(_Path(image_name).with_suffix(".py"))
-            code_path = _os.path.join(dest_dir, code_fname)
+
+            normalized = fname.replace("\\", "/").lstrip("./")
+            image_path = _Path(self.work_dir) / normalized
+
+            if not image_path.exists():
+                logger.warning(f"图片不存在，无法保存同名代码: {normalized}")
+                continue
+
+            code_path = image_path.with_suffix(".py")
             try:
                 with open(code_path, "w", encoding="utf-8") as f:
                     f.write(code)
-                logger.info(f"代码已保存: {sub_dir_name}/{code_fname}")
+                rel_code = str(code_path.relative_to(_Path(self.work_dir))).replace("\\", "/")
+                logger.info(f"图片同名代码已保存: {rel_code}")
             except OSError as exc:
-                logger.warning(f"保存代码文件失败 {code_fname}: {exc}")
+                logger.warning(f"保存图片同名代码失败 {code_path}: {exc}")
 
     def move_images_to_section_dir(self, filenames: list[str]) -> list[str]:
         """将新图片从工作目录根移动到当前 section 对应的子目录。

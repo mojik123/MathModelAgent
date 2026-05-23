@@ -151,8 +151,10 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
                 if saved_images:
                     has_images = True
                     corrected_images = self.record_created_images(saved_images)
-                    # 图片代码：与图片同名保存（例：5.1_prediction.py 配对 5.1_prediction.png）
-                    self.save_code_for_images(code, corrected_images)
+                    # 先移动图片到章节目录，拿到最终相对路径
+                    final_images = self.move_images_to_section_dir(corrected_images)
+                    # 用最终图片路径保存同名 .py
+                    self.save_code_for_images(code, final_images)
                     # 反馈命名违规信息给 Agent
                     naming_issues: list[str] = []
                     for i, image_name in enumerate(saved_images):
