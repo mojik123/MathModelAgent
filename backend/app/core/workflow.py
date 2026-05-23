@@ -1619,6 +1619,9 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     elif entry.get("status") == "invalid":
                         invalid_keys.append((k, entry.get("issues", [])))
 
+                missing_set = set(missing_keys)
+                invalid_set = {k for k, _ in invalid_keys}
+
                 if not missing_keys and not invalid_keys:
                     return
 
@@ -1730,27 +1733,28 @@ Regenerate the model building and solving chapter for {k}.
                             checkpoint["section_ledger"][k]["status"] = "missing"
 
                     else:
-                        # 兜底：已有内容则补 ledger，不重跑
-                        value = user_output.res.get(k)
-                        content = ""
-                        if isinstance(value, dict):
-                            content = str(value.get("response_content") or "").strip()
-                        if content:
-                            issues = validate_section_output(k, content, self.ques_count)
-                            checkpoint["section_ledger"][k] = {
-                                "title": k,
-                                "owner": "restored",
-                                "status": "invalid" if issues else "valid",
-                                "attempts": 0,
-                                "content_chars": len(content),
-                                "issues": issues,
-                                "last_action": "ledger_restored_from_user_output",
-                            }
-                            await redis_manager.publish_message(
-                                self.task_id,
-                                SystemMessage(content=f"Ledger: {k} restored from existing content"),
-                            )
-                            continue
+                        # 只有"缺账本但 user_output 已有内容"的旧断点场景，才允许补 ledger 不重跑
+                        if k in missing_set and k not in invalid_set:
+                            value = user_output.res.get(k)
+                            content = ""
+                            if isinstance(value, dict):
+                                content = str(value.get("response_content") or "").strip()
+                            if content:
+                                issues = validate_section_output(k, content, self.ques_count)
+                                checkpoint["section_ledger"][k] = {
+                                    "title": k,
+                                    "owner": "restored",
+                                    "status": "invalid" if issues else "valid",
+                                    "attempts": 0,
+                                    "content_chars": len(content),
+                                    "issues": issues,
+                                    "last_action": "ledger_restored_from_user_output",
+                                }
+                                await redis_manager.publish_message(
+                                    self.task_id,
+                                    SystemMessage(content=f"Ledger: {k} restored from existing content"),
+                                )
+                                continue
 
                     if k in ("analysisQues", "modelAssumption", "symbol", "judge", "firstPage", "RepeatQues"):
                         repair_writer.model.agent_instance_id = f"paper.writer.{k}"
