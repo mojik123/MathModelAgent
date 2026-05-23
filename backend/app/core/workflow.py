@@ -16,6 +16,7 @@ from app.utils.log_util import logger
 from app.utils.common_utils import create_work_dir, get_config_template
 from app.models.user_output import UserOutput, clean_final_paper_markdown
 from app.utils.paper_validator import validate_markdown_image_refs
+from app.utils.final_output_validator import validate_final_paper, validate_saved_files
 from app.schemas.A2A import CoordinatorToModeler, ModelerToCoder
 from app.config.setting import settings
 from app.tools.interpreter_factory import create_interpreter
@@ -456,7 +457,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             SystemMessage(content=f"{group_tag}论文手完成{key}部分"),
         )
 
-        # 检查 Coder 生成的图片是否被 Writer 引用
+        # 检查 Coder 生成的图片是否被 Writer 引用，缺图则自动修复一次
         missing_images = []
         for img in (coder_response.created_images or []):
             basename = os.path.basename(img)
@@ -474,6 +475,35 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     type="warning",
                 ),
             )
+
+            repair_prompt = f"""
+你上一版没有引用以下已经生成的图片：
+
+{chr(10).join(f"- {img}" for img in missing_images)}
+
+请在不改变原有模型结果、公式和结论的前提下，重新输出本章节 Markdown。
+必须把这些图片插入到最相关的结果分析段落附近，并给出简短图注和解释。
+
+原章节内容：
+{writer_response.response_content}
+"""
+            try:
+                repaired_response = await writer_agent.run(
+                    repair_prompt,
+                    available_images=missing_images,
+                    sub_title=key,
+                )
+                if repaired_response.response_content.strip():
+                    writer_response = repaired_response
+                    await redis_manager.publish_message(
+                        self.task_id,
+                        SystemMessage(
+                            content=f"{group_tag}Writer 已自动修复缺图",
+                            type="success",
+                        ),
+                    )
+            except Exception as exc:
+                logger.warning(f"{key} Writer 缺图修复失败: {exc}")
 
         async with write_lock:
             user_output.set_res(key, writer_response)
@@ -875,6 +905,18 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     artifact_tag=artifact_tag or None,
                 )
 
+                # 产物检查结果写入 checkpoint，方便诊断
+                checkpoint.setdefault("artifact_checks", {}).setdefault(key, {})[
+                    artifact_tag or "main"
+                ] = {
+                    "attempt_name": attempt_name,
+                    "passed": check.passed,
+                    "issues": check.issues,
+                    "images": check.images,
+                    "code_files": check.code_files,
+                }
+                self._save_checkpoint(checkpoint)
+
                 if not check.passed:
                     raise RuntimeError(
                         f"Coder {attempt_name} 产物检查失败：" + "；".join(check.issues)
@@ -1153,7 +1195,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 SystemMessage(content=f"[组#{group_idx}] 论文手完成 {key} 部分"),
             )
 
-            # 检查 Coder 生成的图片是否被 Writer 引用
+            # 检查 Coder 生成的图片是否被 Writer 引用，缺图则自动修复一次
             missing_images = []
             for img in (winner_coder_response.created_images or []):
                 basename = os.path.basename(img)
@@ -1171,6 +1213,55 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         type="warning",
                     ),
                 )
+
+                repair_prompt = f"""
+你上一版没有引用以下已经生成的图片：
+
+{chr(10).join(f"- {img}" for img in missing_images)}
+
+请在不改变原有模型结果、公式和结论的前提下，重新输出本章节 Markdown。
+必须把这些图片插入到最相关的结果分析段落附近，并给出简短图注和解释。
+
+原章节内容：
+{writer_response.response_content}
+"""
+                try:
+                    repaired_response = await group_writer.run(
+                        repair_prompt,
+                        available_images=missing_images,
+                        sub_title=key,
+                    )
+                    if repaired_response.response_content.strip():
+                        writer_response = repaired_response
+                        await redis_manager.publish_message(
+                            self.task_id,
+                            SystemMessage(
+                                content=f"[组#{group_idx}] Writer 已自动修复缺图",
+                                type="success",
+                            ),
+                        )
+                        # 修复后重新检查
+                        still_missing = []
+                        for img in missing_images:
+                            basename = os.path.basename(img)
+                            if (
+                                img not in writer_response.response_content
+                                and basename not in writer_response.response_content
+                            ):
+                                still_missing.append(img)
+                        if still_missing:
+                            await redis_manager.publish_message(
+                                self.task_id,
+                                SystemMessage(
+                                    content=(
+                                        f"[组#{group_idx}] 修复后仍缺图："
+                                        + "、".join(still_missing[:5])
+                                    ),
+                                    type="warning",
+                                ),
+                            )
+                except Exception as exc:
+                    logger.warning(f"[组#{group_idx}] Writer 缺图修复失败: {exc}")
 
             async with write_lock:
                 user_output.set_res(key, writer_response)
@@ -1431,7 +1522,24 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 ),
             )
 
+        # 终稿完整性总检查
+        paper_issues = validate_final_paper(self.work_dir, final_paper)
+        if paper_issues:
+            checkpoint["final_paper_issues"] = paper_issues
+            self._save_checkpoint(checkpoint)
+            await redis_manager.publish_message(
+                self.task_id,
+                SystemMessage(
+                    content="终稿完整性检查发现问题：" + "；".join(paper_issues[:5]),
+                    type="warning",
+                ),
+            )
+
         user_output.save_result(final_text=final_paper)
+        file_issues = validate_saved_files(self.work_dir)
+        if file_issues:
+            checkpoint["final_file_issues"] = file_issues
+            self._save_checkpoint(checkpoint)
         checkpoint["completed"] = True
         self._save_checkpoint(checkpoint)
 

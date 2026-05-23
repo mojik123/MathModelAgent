@@ -951,6 +951,58 @@ async def get_modeling_task_state(task_id: str):
     }
 
 
+@router.get("/modeling/{task_id}/diagnostics")
+async def get_task_diagnostics(task_id: str):
+    """返回任务诊断信息：产物清单、检查结果、文件状态。"""
+    try:
+        safe_task_id = ensure_safe_task_id(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="非法任务ID") from exc
+
+    import json as _json
+    from pathlib import Path
+    from app.utils.image_constants import is_image_file
+
+    work_dir = get_work_dir(safe_task_id)
+    root = Path(work_dir)
+
+    # 检查 checkpoint
+    checkpoint_path = root / "workflow_checkpoint.json"
+    checkpoint: dict = {}
+    if checkpoint_path.exists():
+        try:
+            checkpoint = _json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # 统计文件
+    all_files = list(root.rglob("*")) if root.exists() else []
+    images = [str(f.relative_to(root)) for f in all_files if f.is_file() and is_image_file(f.name)]
+    code_files = [str(f.relative_to(root)) for f in all_files if f.is_file() and f.suffix == ".py"]
+    notebooks = [str(f.relative_to(root)) for f in all_files if f.is_file() and f.suffix == ".ipynb"]
+
+    # 收集 artifact_check 总结
+    artifact_checks = checkpoint.get("artifact_checks", {})
+
+    return {
+        "task_id": safe_task_id,
+        "status": (await get_task_state(safe_task_id) or {}).get("status", "unknown"),
+        "completed": bool(checkpoint.get("completed")),
+        "files": {
+            "res_md": (root / "res.md").exists(),
+            "res_json": (root / "res.json").exists(),
+            "docx": (root / "res.docx").exists(),
+            "image_count": len(images),
+            "code_count": len(code_files),
+            "notebook_count": len(notebooks),
+        },
+        "artifact_checks": artifact_checks,
+        "final_audit": checkpoint.get("final_paper_audit"),
+        "final_image_ref_issues": checkpoint.get("final_image_ref_issues", []),
+        "final_review_failed": checkpoint.get("final_paper_review_failed"),
+    }
+
+
 async def run_modeling_task_async(
     task_id: str,
     ques_all: str,
