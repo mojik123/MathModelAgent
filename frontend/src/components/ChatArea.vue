@@ -164,7 +164,6 @@ const isWorkflowTerminal = computed(() => {
 
 	if ((runtimeProgress ?? currentProgress ?? 0) >= 100) return true;
 
-
 	return false;
 });
 
@@ -356,6 +355,42 @@ const normalizeSystemAction = (
 				to: target,
 				label: firstLine.replace(/^.*?→\s*/, "").trim() || "分配任务",
 			},
+		};
+	}
+
+	if (/图片修订/.test(firstLine)) {
+		return {
+			title: firstLine.includes("完成")
+				? "完成：图片修订"
+				: firstLine.includes("失败")
+					? "失败：图片修订"
+					: "执行：图片修订",
+			detail: content,
+			agent: "WriterAgent",
+			kind: "agent",
+			flow: firstLine.includes("启动")
+				? { from: "User", to: "WriterAgent", label: "请求修改图片" }
+				: firstLine.includes("完成")
+					? { from: "WriterAgent", to: "User", label: "返回图片修订结果" }
+					: undefined,
+		};
+	}
+
+	if (/文本修订/.test(firstLine)) {
+		return {
+			title: firstLine.includes("完成")
+				? "完成：文本修订"
+				: firstLine.includes("失败")
+					? "失败：文本修订"
+					: "执行：文本修订",
+			detail: content,
+			agent: "WriterAgent",
+			kind: "agent",
+			flow: firstLine.includes("启动")
+				? { from: "User", to: "WriterAgent", label: "请求修改文本" }
+				: firstLine.includes("完成")
+					? { from: "WriterAgent", to: "User", label: "返回文本修订结果" }
+					: undefined,
 		};
 	}
 

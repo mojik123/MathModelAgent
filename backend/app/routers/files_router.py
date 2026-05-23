@@ -16,6 +16,9 @@ from pydantic import BaseModel
 from app.config.setting import settings
 from app.core.llm.llm import LLM, simple_chat
 from app.core.prompts.image_revision import get_image_revision_prompt
+from app.schemas.response import SystemMessage, ProgressMessage
+from app.schemas.enums import AgentType
+from app.services.redis_manager import redis_manager
 from app.core.prompts.text_revision import get_text_revision_prompt
 from app.tools.local_interpreter import LocalCodeInterpreter
 from app.tools.notebook_serializer import NotebookSerializer
@@ -32,6 +35,40 @@ from app.utils.image_constants import IMAGE_EXTENSION_RE_FRAGMENT
 from app.utils.log_util import logger
 
 router = APIRouter()
+
+
+async def _publish_revision_step(
+    task_id: str,
+    *,
+    title: str,
+    detail: str = "",
+    current: int = 0,
+    total: int = 0,
+    msg_type: str = "info",
+) -> None:
+    """向前端发布局部 AI 修订任务的进度反馈。"""
+    content = title if not detail else f"{title}\n{detail}"
+
+    await redis_manager.publish_message(
+        task_id,
+        SystemMessage(
+            content=content,
+            type=msg_type,
+        ),
+    )
+
+    if total > 0:
+        percentage = round(current / total * 100)
+        await redis_manager.publish_message(
+            task_id,
+            ProgressMessage(
+                current=current,
+                total=total,
+                percentage=percentage,
+                description=title,
+            ),
+        )
+
 
 _IMAGE_REVISION_COMPAT_CODE = r"""
 import builtins as _mma_builtins
@@ -642,6 +679,12 @@ def _apply_image_text_revision(
 @router.post("/revise_image_chat")
 async def revise_image_chat(payload: ImageRevisionChatRequest):
     work_dir = get_work_dir(payload.task_id)
+    await _publish_revision_step(
+        payload.task_id,
+        title="图片修订启动：正在读取图片与论文上下文",
+        current=1,
+        total=9,
+    )
     image_path = os.path.join(work_dir, payload.filename)
     md_path = os.path.join(work_dir, "res.md")
 
@@ -651,6 +694,12 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
     image_name = normalize_image_name(payload.filename)
     code_entry = get_image_code_entry(work_dir, image_name)
     if not code_entry or not code_entry.get("code"):
+        await _publish_revision_step(
+            payload.task_id,
+            title="图片修订失败：没有找到图片对应的生成代码",
+            detail="无法通过修改代码重新生成图片",
+            msg_type="error",
+        )
         return ImageRevisionChatResponse(
             success=False,
             status="failed",
@@ -659,10 +708,25 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
             code_found=False,
         )
 
+    await _publish_revision_step(
+        payload.task_id,
+        title="图片修订：已定位原始绘图代码",
+        detail=f"图片：{image_name}",
+        current=2,
+        total=9,
+    )
+
     paper_content = ""
     if os.path.exists(md_path):
         with open(md_path, "r", encoding="utf-8") as f:
             paper_content = f.read()
+
+    await _publish_revision_step(
+        payload.task_id,
+        title="图片修订：正在整理论文上下文和历史修改记录",
+        current=3,
+        total=9,
+    )
 
     image_context = _extract_image_context(paper_content, payload.filename)
     task_context = _build_task_revision_context(payload.task_id, work_dir, paper_content)
@@ -677,6 +741,14 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
         payload.conversation_history,
     )
 
+    await _publish_revision_step(
+        payload.task_id,
+        title="图片修订：AI 正在分析修改指令并生成新绘图代码",
+        detail=payload.instruction,
+        current=4,
+        total=9,
+    )
+
     messages: list[dict] = [{"role": "system", "content": get_image_revision_prompt()}]
     messages.append({"role": "user", "content": user_message})
 
@@ -689,15 +761,35 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
     )
 
     try:
-        raw_text = await simple_chat(revision_llm, messages)
+        response = await revision_llm.chat_stream(
+            history=messages,
+            agent_name=AgentType.WRITER,
+            sub_title="image_revision",
+        )
+        raw_text = response.content
     except Exception as e:
         logger.error(f"AI 图片修订失败: {e}")
         raise HTTPException(status_code=500, detail=f"AI 修改失败: {e}") from e
+
+    await _publish_revision_step(
+        payload.task_id,
+        title="图片修订：正在解析 AI 返回的修订方案",
+        current=5,
+        total=9,
+    )
 
     parsed = _parse_revision_payload(raw_text)
     if parsed.get("parse_error") or (
         parsed.get("status") == "success" and not parsed.get("revised_code")
     ):
+        await _publish_revision_step(
+            payload.task_id,
+            title="图片修订：AI 返回格式不完整，正在自动纠偏",
+            detail="缺少 revised_code 或 JSON 格式异常",
+            current=6,
+            total=9,
+            msg_type="warning",
+        )
         parsed = await _repair_revision_payload(
             revision_llm,
             user_message,
@@ -718,6 +810,12 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
     image_regenerated = False
     run_message = ""
     if parsed["status"] == "success":
+        await _publish_revision_step(
+            payload.task_id,
+            title="图片修订：正在执行修改后的绘图代码",
+            current=7,
+            total=9,
+        )
         image_regenerated, run_message = await _rerun_revised_image_code(
             payload.task_id,
             work_dir,
@@ -739,6 +837,12 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
 
     paper_updated = False
     if parsed["status"] == "success" and os.path.exists(md_path):
+        await _publish_revision_step(
+            payload.task_id,
+            title="图片修订：正在更新论文中的图片说明",
+            current=8,
+            total=9,
+        )
         updated_content, paper_updated = _apply_image_text_revision(
             paper_content,
             image_name,
@@ -758,6 +862,15 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
             caption=parsed.get("updated_caption"),
             metadata_source="ai_revision",
         )
+
+    await _publish_revision_step(
+        payload.task_id,
+        title="图片修订完成：图片已重新生成并更新说明",
+        detail=image_name,
+        current=9,
+        total=9,
+        msg_type="success",
+    )
 
     return ImageRevisionChatResponse(
         success=parsed["status"] == "success",
@@ -780,12 +893,33 @@ async def revise_text_chat(payload: TextRevisionChatRequest):
     接受用户选中的文本段落和修改指令，调用 LLM 进行精准修订。
     """
     work_dir = get_work_dir(payload.task_id)
+    await _publish_revision_step(
+        payload.task_id,
+        title="文本修订启动：正在读取论文和选中文本",
+        current=1,
+        total=6,
+    )
     md_path = os.path.join(work_dir, "res.md")
     paper_content = ""
     if os.path.exists(md_path):
         with open(md_path, "r", encoding="utf-8") as f:
             paper_content = f.read()
+    await _publish_revision_step(
+        payload.task_id,
+        title="文本修订：正在整理论文上下文和历史修改记录",
+        current=2,
+        total=6,
+    )
+
     task_context = _build_task_revision_context(payload.task_id, work_dir, paper_content)
+
+    await _publish_revision_step(
+        payload.task_id,
+        title="文本修订：AI 正在判断修改范围并生成修订内容",
+        detail=payload.instruction,
+        current=3,
+        total=6,
+    )
 
     messages: list[dict] = [
         {"role": "system", "content": get_text_revision_prompt()},
@@ -823,10 +957,22 @@ async def revise_text_chat(payload: TextRevisionChatRequest):
     )
 
     try:
-        raw_text = await simple_chat(revision_llm, messages)
+        response = await revision_llm.chat_stream(
+            history=messages,
+            agent_name=AgentType.WRITER,
+            sub_title="text_revision",
+        )
+        raw_text = response.content
     except Exception as e:
         logger.error(f"AI 文本修订失败: {e}")
         raise HTTPException(status_code=500, detail=f"AI 修改失败: {e}") from e
+
+    await _publish_revision_step(
+        payload.task_id,
+        title="文本修订：正在解析 AI 返回结果",
+        current=4,
+        total=6,
+    )
 
     # 解析 JSON 响应
     try:
@@ -837,6 +983,12 @@ async def revise_text_chat(payload: TextRevisionChatRequest):
             cleaned = cleaned[:cleaned.rfind("```")].strip()
         parsed = json.loads(cleaned)
     except json.JSONDecodeError:
+        await _publish_revision_step(
+            payload.task_id,
+            title="文本修订失败：AI 返回格式异常",
+            detail=raw_text[:500],
+            msg_type="error",
+        )
         return TextRevisionChatResponse(
             success=False,
             message="AI 返回格式异常，请重试",
@@ -846,9 +998,24 @@ async def revise_text_chat(payload: TextRevisionChatRequest):
     updated_paper = parsed.get("updated_paper")
     paper_updated = False
     if parsed.get("status") == "success" and isinstance(updated_paper, str) and updated_paper.strip():
+        await _publish_revision_step(
+            payload.task_id,
+            title="文本修订：正在写入论文 Markdown",
+            current=5,
+            total=6,
+        )
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(updated_paper)
         paper_updated = True
+
+    await _publish_revision_step(
+        payload.task_id,
+        title="文本修订完成",
+        detail="已生成修订文本" if not paper_updated else "已更新完整论文",
+        current=6,
+        total=6,
+        msg_type="success",
+    )
 
     return TextRevisionChatResponse(
         success=parsed.get("status") == "success",
