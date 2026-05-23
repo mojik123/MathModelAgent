@@ -23,8 +23,6 @@ PLOT_TEXT_RE = re.compile(
     r"(?P<quote>['\"])(?P<text>[^'\"]{3,160})(?P=quote)",
     re.IGNORECASE,
 )
-
-# 提取 print("## 图N：中文标题") 中的中文标题
 IMAGE_TITLE_RE = re.compile(
     r"print\(\s*['\"]##\s*图\d+(?:\.\d+)?(?:-\d+)?\s*[：:]\s*(?P<title>[^'\"]{2,60})\s*['\"]\s*\)",
     re.IGNORECASE,
@@ -80,7 +78,6 @@ def _humanize_image_title(filename: str) -> str:
     if match:
         figure_label = match.group(1)
         raw_title = match.group(2) or base
-
     words = re.split(
         r"[_\-\s]+|(?<=[a-z])(?=[A-Z])|(?<=\d)(?=[A-Za-z])|(?<=[A-Za-z])(?=\d)",
         raw_title,
@@ -101,7 +98,6 @@ def _extract_plot_texts(code: str) -> list[str]:
 
 
 def _extract_chinese_title(code: str) -> str:
-    """从代码中提取 print("## 图N：中文标题") 的中文标题。"""
     if not code:
         return ""
     for match in IMAGE_TITLE_RE.finditer(code):
@@ -153,7 +149,7 @@ def _ensure_entry_metadata(entry: dict[str, Any]) -> bool:
 
 
 def index_path(work_dir: str) -> Path:
-    return Path(work_dir) / INDEX_FILENAME
+    return Path(work_dir).resolve() / INDEX_FILENAME
 
 
 def load_image_code_index(work_dir: str) -> dict[str, Any]:
@@ -176,7 +172,7 @@ def save_image_code_index(work_dir: str, index: dict[str, Any]) -> None:
 
 
 def _notebook_paths(work_dir: str) -> list[Path]:
-    root = Path(work_dir)
+    root = Path(work_dir).resolve()
     main_notebook = root / "notebook.ipynb"
     paths: list[Path] = []
     if main_notebook.exists():
@@ -185,6 +181,10 @@ def _notebook_paths(work_dir: str) -> list[Path]:
         if path.name != main_notebook.name:
             paths.append(path)
     return paths
+
+
+def _work_root(work_dir: str) -> Path:
+    return Path(work_dir).resolve()
 
 
 def _safe_relative_image_path(root: Path, candidate: Path) -> Path | None:
@@ -200,33 +200,47 @@ def _safe_relative_image_path(root: Path, candidate: Path) -> Path | None:
 
 
 def _resolve_image_path(work_dir: str, filename: str) -> Path | None:
-    """解析图片路径。
+    """解析图片路径，统一处理绝对路径、章节相对路径和 basename 入参。
 
-    正常情况下 filename 应为章节相对路径，如
-    5.1_问题1的模型建立与求解/profit_trend.png。
-
-    兼容说明：当前部分前端/路由历史逻辑会把章节路径裁成 basename，
-    因此当精确路径不存在时，允许在工作目录内查找唯一同名图片。
-    这不是代码兜底匹配，而是对丢失目录前缀的入参做路径恢复。
+    先按原样解析；若前端或旧路由把章节路径裁成 basename，则在工作目录内
+    查找唯一同名图片。返回值始终为 work_dir 内部的绝对 Path。
     """
-    root = Path(work_dir)
-    image_key = normalize_image_key(filename)
-    direct = _safe_relative_image_path(root, root / image_key)
+    root = _work_root(work_dir)
+    raw = str(filename or "").replace("\\", "/").strip()
+    if not raw:
+        return None
+
+    raw_path = Path(raw)
+    if raw_path.is_absolute():
+        direct = _safe_relative_image_path(root, raw_path)
+    else:
+        image_key = normalize_image_key(raw)
+        direct = _safe_relative_image_path(root, root / image_key)
     if direct:
         return direct
 
-    basename = Path(image_key).name
-    if not basename or basename == image_key and "/" in image_key:
+    basename = Path(raw).name
+    if not basename:
         return None
-
     matches = sorted(
-        path
+        path.resolve()
         for path in root.rglob(basename)
         if path.is_file() and is_image_file(path.name)
     )
     if len(matches) == 1:
         return matches[0]
     return None
+
+
+def _rel_to_work_dir(work_dir: str, path: Path) -> str:
+    root = _work_root(work_dir)
+    resolved = path.resolve()
+    try:
+        rel = resolved.relative_to(root)
+    except ValueError:
+        # 理论上不会发生；兜住异常，避免 API 500。
+        rel = Path(resolved.name)
+    return str(rel).replace("\\", "/")
 
 
 def update_image_code_index(
@@ -288,9 +302,7 @@ def rebuild_image_code_index_from_notebook(work_dir: str) -> dict[str, Any]:
                 existing = previous_images.get(image_key) or index["images"].get(image_key, {})
                 metadata = build_image_description(image_key, code, section)
                 preserve_metadata = existing.get("metadata_source") == "ai_revision"
-                resolved_cell_index = (
-                    code_cell_index if is_main else existing.get("cell_index")
-                )
+                resolved_cell_index = code_cell_index if is_main else existing.get("cell_index")
                 index["images"][image_key] = {
                     "filename": image_key,
                     "basename": Path(image_key).name,
@@ -318,11 +330,10 @@ def get_image_code_entry(work_dir: str, filename: str) -> dict[str, Any] | None:
         return None
 
     code = paired_code_path.read_text(encoding="utf-8", errors="ignore")
-    root = Path(work_dir)
-    image_key = str(image_path.relative_to(root)).replace("\\", "/")
+    image_key = _rel_to_work_dir(work_dir, image_path)
 
     try:
-        section = str(image_path.parent.relative_to(root)).replace("\\", "/")
+        section = str(image_path.parent.resolve().relative_to(_work_root(work_dir))).replace("\\", "/")
     except ValueError:
         section = ""
     if section == ".":
@@ -357,14 +368,14 @@ def update_image_metadata(
     if not image_path:
         return None
 
-    image_key = str(image_path.relative_to(Path(work_dir))).replace("\\", "/")
+    image_key = _rel_to_work_dir(work_dir, image_path)
     index = load_image_code_index(work_dir)
     entry = index.setdefault("images", {}).get(image_key)
     if not entry:
         paired_code_path = image_path.with_suffix(".py")
         code = paired_code_path.read_text(encoding="utf-8", errors="ignore") if paired_code_path.exists() else ""
         try:
-            section = str(image_path.parent.relative_to(Path(work_dir))).replace("\\", "/")
+            section = str(image_path.parent.resolve().relative_to(_work_root(work_dir))).replace("\\", "/")
         except ValueError:
             section = ""
         metadata = build_image_description(image_key, code, section)
@@ -395,7 +406,7 @@ def update_image_metadata(
 
 
 def get_notebook_code_cells(work_dir: str) -> list[str]:
-    notebook_path = Path(work_dir) / "notebook.ipynb"
+    notebook_path = _work_root(work_dir) / "notebook.ipynb"
     if not notebook_path.exists():
         return []
     nb = nbformat.read(str(notebook_path), as_version=4)
