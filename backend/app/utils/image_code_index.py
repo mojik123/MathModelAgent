@@ -187,6 +187,48 @@ def _notebook_paths(work_dir: str) -> list[Path]:
     return paths
 
 
+def _safe_relative_image_path(root: Path, candidate: Path) -> Path | None:
+    try:
+        resolved_root = root.resolve()
+        resolved_candidate = candidate.resolve()
+        resolved_candidate.relative_to(resolved_root)
+    except Exception:
+        return None
+    if resolved_candidate.exists() and resolved_candidate.is_file() and is_image_file(resolved_candidate.name):
+        return resolved_candidate
+    return None
+
+
+def _resolve_image_path(work_dir: str, filename: str) -> Path | None:
+    """解析图片路径。
+
+    正常情况下 filename 应为章节相对路径，如
+    5.1_问题1的模型建立与求解/profit_trend.png。
+
+    兼容说明：当前部分前端/路由历史逻辑会把章节路径裁成 basename，
+    因此当精确路径不存在时，允许在工作目录内查找唯一同名图片。
+    这不是代码兜底匹配，而是对丢失目录前缀的入参做路径恢复。
+    """
+    root = Path(work_dir)
+    image_key = normalize_image_key(filename)
+    direct = _safe_relative_image_path(root, root / image_key)
+    if direct:
+        return direct
+
+    basename = Path(image_key).name
+    if not basename or basename == image_key and "/" in image_key:
+        return None
+
+    matches = sorted(
+        path
+        for path in root.rglob(basename)
+        if path.is_file() and is_image_file(path.name)
+    )
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def update_image_code_index(
     work_dir: str,
     code: str,
@@ -267,10 +309,8 @@ def rebuild_image_code_index_from_notebook(work_dir: str) -> dict[str, Any]:
 
 
 def get_image_code_entry(work_dir: str, filename: str) -> dict[str, Any] | None:
-    image_key = normalize_image_key(filename)
-    image_path = Path(work_dir) / image_key
-
-    if not image_path.exists() or not is_image_file(image_path.name):
+    image_path = _resolve_image_path(work_dir, filename)
+    if not image_path:
         return None
 
     paired_code_path = image_path.with_suffix(".py")
@@ -278,9 +318,11 @@ def get_image_code_entry(work_dir: str, filename: str) -> dict[str, Any] | None:
         return None
 
     code = paired_code_path.read_text(encoding="utf-8", errors="ignore")
+    root = Path(work_dir)
+    image_key = str(image_path.relative_to(root)).replace("\\", "/")
 
     try:
-        section = str(image_path.parent.relative_to(Path(work_dir))).replace("\\", "/")
+        section = str(image_path.parent.relative_to(root)).replace("\\", "/")
     except ValueError:
         section = ""
     if section == ".":
@@ -301,6 +343,7 @@ def get_image_code_entry(work_dir: str, filename: str) -> dict[str, Any] | None:
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
+
 def update_image_metadata(
     work_dir: str,
     filename: str,
@@ -310,14 +353,34 @@ def update_image_metadata(
     caption: str | None = None,
     metadata_source: str = "llm",
 ) -> dict[str, Any] | None:
-    image_key = normalize_image_key(filename)
-    image_name = normalize_image_name(filename)
-    index = load_image_code_index(work_dir)
-    entry = index["images"].get(image_key) if image_key in index.get("images", {}) else None
-    if not entry:
-        entry = index.setdefault("images", {}).get(image_name)
-    if not entry:
+    image_path = _resolve_image_path(work_dir, filename)
+    if not image_path:
         return None
+
+    image_key = str(image_path.relative_to(Path(work_dir))).replace("\\", "/")
+    index = load_image_code_index(work_dir)
+    entry = index.setdefault("images", {}).get(image_key)
+    if not entry:
+        paired_code_path = image_path.with_suffix(".py")
+        code = paired_code_path.read_text(encoding="utf-8", errors="ignore") if paired_code_path.exists() else ""
+        try:
+            section = str(image_path.parent.relative_to(Path(work_dir))).replace("\\", "/")
+        except ValueError:
+            section = ""
+        metadata = build_image_description(image_key, code, section)
+        entry = {
+            "filename": image_key,
+            "basename": image_path.name,
+            "code": code,
+            "cell_index": None,
+            "section": section,
+            "description": metadata["description"],
+            "alt_text": metadata["alt_text"],
+            "caption": metadata["caption"],
+            "metadata_source": "auto",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        index["images"][image_key] = entry
 
     if description is not None:
         entry["description"] = description.strip()
@@ -344,9 +407,4 @@ def get_notebook_code_cells(work_dir: str) -> list[str]:
 
 
 def image_exists(work_dir: str, filename: str) -> bool:
-    image_key = normalize_image_key(filename)
-    target = Path(work_dir) / image_key
-    if target.exists() and is_image_file(target.name):
-        return True
-    target = Path(work_dir) / normalize_image_name(filename)
-    return target.exists() and is_image_file(target.name)
+    return _resolve_image_path(work_dir, filename) is not None
