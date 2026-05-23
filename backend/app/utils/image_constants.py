@@ -72,10 +72,10 @@ def validate_image_filename(filename: str) -> tuple[bool, str]:
 
     if not IMAGE_NAMING_PATTERN.match(name):
         return False, (
-            "Invalid image filename. Expected {section_num}_{english_slug}.png "
-            "(ASCII letters/digits/underscore/hyphen only, no Chinese), "
-            "e.g. 4.2_data_distribution.png, 5.1_prediction_comparison.png, "
-            "5.2_confusion_matrix.png, 6.1_sensitivity_regularization.png. "
+            "Invalid image filename. Expected {english_slug}.png "
+            "or {artifact_tag}_{english_slug}.png (ASCII letters/digits/underscore/hyphen only, no Chinese, no spaces), "
+            "e.g. prediction_result.png, model_diagnostics.png, "
+            "b1_prediction_result.png, r1_sensitivity_curve.png. "
             f"Got: {name}"
         )
 

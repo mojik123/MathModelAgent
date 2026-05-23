@@ -270,26 +270,74 @@ def get_image_code_entry(work_dir: str, filename: str) -> dict[str, Any] | None:
     image_key = normalize_image_key(filename)
     image_name = normalize_image_name(filename)
     index = load_image_code_index(work_dir)
+    images = index.get("images", {})
 
-    entry = index.get("images", {}).get(image_key)
+    # 1. full relative path
+    entry = images.get(image_key)
     if entry:
         if _ensure_entry_metadata(entry):
             save_image_code_index(work_dir, index)
         return entry
 
-    entry = index.get("images", {}).get(image_name)
-    if entry and entry.get("cell_index") is not None:
+    # 2. old basename index
+    entry = images.get(image_name)
+    if entry:
         if _ensure_entry_metadata(entry):
             save_image_code_index(work_dir, index)
         return entry
+
+    # 3. basename fallback scan
+    for candidate_key, candidate_entry in images.items():
+        if normalize_image_name(candidate_key) == image_name:
+            if _ensure_entry_metadata(candidate_entry):
+                save_image_code_index(work_dir, index)
+            return candidate_entry
+
+    # 4. rebuild then retry
     rebuilt = rebuild_image_code_index_from_notebook(work_dir)
-    rebuilt_entry = rebuilt.get("images", {}).get(image_name)
+    rebuilt_images = rebuilt.get("images", {})
+
+    rebuilt_entry = rebuilt_images.get(image_key)
     if rebuilt_entry:
         return rebuilt_entry
-    if entry and _ensure_entry_metadata(entry):
-        index.setdefault("images", {})[image_name] = entry
+    rebuilt_entry = rebuilt_images.get(image_name)
+    if rebuilt_entry:
+        return rebuilt_entry
+    for candidate_key, candidate_entry in rebuilt_images.items():
+        if normalize_image_name(candidate_key) == image_name:
+            return candidate_entry
+
+    # 5. paired .py fallback — same dir, same stem
+    resolved = Path(work_dir) / image_key
+    if not resolved.exists():
+        resolved = Path(work_dir) / image_name
+    paired_code_path = resolved.with_suffix(".py")
+    if resolved.exists() and paired_code_path.exists():
+        code = paired_code_path.read_text(encoding="utf-8", errors="ignore")
+        try:
+            section = str(
+                resolved.parent.relative_to(Path(work_dir))
+            ).replace("\\", "/")
+        except ValueError:
+            section = ""
+        entry = {
+            "filename": image_key,
+            "basename": image_name,
+            "code": code,
+            "cell_index": None,
+            "section": section if section != "." else "",
+            "description": "",
+            "alt_text": "",
+            "caption": "",
+            "metadata_source": "paired_py_fallback",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        index.setdefault("images", {})[image_key] = entry
+        _ensure_entry_metadata(entry)
         save_image_code_index(work_dir, index)
-    return entry
+        return entry
+
+    return None
 
 
 def update_image_metadata(
