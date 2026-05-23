@@ -2194,6 +2194,25 @@ const groupWorkPillClass = (groupId: string) => {
 	return "work-pill-idle";
 };
 
+function effectiveGroupStatus(group: AgentGroup | null): ActionStatus {
+	if (!group) return "pending";
+
+	const workState = groupWorkStatus.value[group.id]?.state;
+
+	if (group.status === "error") return "error";
+	if (group.status === "warning") return "warning";
+
+	if (group.status === "running" || workState === "working") {
+		return "running";
+	}
+
+	if (workState === "commanded") {
+		return "pending";
+	}
+
+	return group.status;
+}
+
 const runningAction = computed(() => {
 	const activeGroup = runtimeActiveGroupId.value;
 	if (activeGroup) {
@@ -2571,7 +2590,8 @@ function coderNodeLabel(row: WorkflowRow): string {
 
 function pipelineNodeClass(group: AgentGroup | null): string {
 	if (!group) return "pipeline-node-pending";
-	switch (group.status) {
+
+	switch (effectiveGroupStatus(group)) {
 		case "running":
 			return "pipeline-node-running";
 		case "done":
@@ -2791,8 +2811,8 @@ onBeforeUnmount(() => {
 					<div class="pipeline-node" :class="pipelineNodeClass(row.winnerCoder ?? row.coders[0] ?? null)" :title="(row.winnerCoder?.name ?? row.coders.map(g => g.name).join(' / ')) || '代码 Agent'">
 						<Code2 class="h-2.5 w-2.5 shrink-0" />
 						<span>{{ coderNodeLabel(row) }}</span>
-						<LoaderCircle v-if="row.coders.some(g => g.status === 'running')" class="h-2 w-2 shrink-0 animate-spin" />
-						<CheckCircle2 v-else-if="row.winnerCoder || row.coders.some(g => g.status === 'done')" class="h-2 w-2 shrink-0" />
+						<LoaderCircle v-if="row.coders.some(g => effectiveGroupStatus(g) === 'running')" class="h-2 w-2 shrink-0 animate-spin" />
+						<CheckCircle2 v-else-if="row.winnerCoder || row.coders.some(g => effectiveGroupStatus(g) === 'done')" class="h-2 w-2 shrink-0" />
 					</div>
 					<span class="pipeline-arrow">→</span>
 					<div class="pipeline-node" :class="pipelineNodeClass(row.writer)" :title="row.writer?.name ?? '撰写 Agent'">
@@ -3043,7 +3063,7 @@ onBeforeUnmount(() => {
 										<div class="min-w-0 flex-1">
 											<div class="flex min-w-0 items-center gap-1.5">
 												<span class="truncate text-xs font-semibold text-slate-800">{{ subGroup.name }}</span>
-												<span class="rounded-full border px-1.5 py-0.5 text-[10px]" :class="statusClass(subGroup.status)">{{ statusLabel(subGroup.status) }}</span>
+												<span class="rounded-full border px-1.5 py-0.5 text-[10px]" :class="statusClass(effectiveGroupStatus(subGroup))">{{ statusLabel(effectiveGroupStatus(subGroup)) }}</span>
 												<span class="shrink-0 font-mono text-[10px] text-slate-500">{{ formatDuration(subGroup.durationMs) }}</span>
 											</div>
 											<div class="mt-0.5 flex items-center gap-1.5 overflow-hidden">
