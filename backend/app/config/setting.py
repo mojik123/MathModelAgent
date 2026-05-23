@@ -81,7 +81,7 @@ class Settings(BaseSettings):
 
     CODE_EXECUTION_TIMEOUT: int = 300  # 单次代码执行最长秒数
     MAX_RETRIES: int = 8
-    CODER_MAX_TOTAL_STEPS: int = 30
+    CODER_MAX_SAME_ERROR: int = 4  # 连续相同错误时提前放弃，避免同一坑里循环
     E2B_API_KEY: Optional[str] = None
     LOG_LEVEL: str = "DEBUG"
     DEBUG: bool = True
