@@ -171,10 +171,10 @@ const inferActiveGroupFromText = (text: string): string | null => {
 	const idxMatch = text.match(/\[组#(\d+)\]/);
 	if (idxMatch) {
 		const idx = idxMatch[1];
-		if (/代码手|求解|Coder/.test(text)) return `coder_${idx}`;
-		if (/论文手|撰写|写作|Writer/.test(text)) return `writer_${idx}`;
-		if (/建模手|Modeler/.test(text)) return `modeler_${idx}`;
-		if (/SubCoordinator|组协调/.test(text)) return `sub_coordinator_${idx}`;
+		if (/代码手|求解|Coder/.test(text)) return `q${idx}.coder.main`;
+		if (/论文手|撰写|写作|Writer/.test(text)) return `q${idx}.writer`;
+		if (/SubCoordinator|组协调|协调/.test(text)) return `q${idx}.sub_coordinator`;
+		if (/建模手|Modeler/.test(text)) return `q${idx}.modeler`;
 	}
 	if (/建模|Modeler/.test(text)) return "modeler";
 	if (/代码|求解|执行|Coder/.test(text)) return "coder";
@@ -2544,6 +2544,31 @@ interface WorkflowRow {
 	return Array.from(rows.values()).sort((a, b) => a.index - b.index);
 });
 
+function coderNodeLabel(row: WorkflowRow): string {
+	if (row.coders.length <= 1) return "代码";
+
+	const parsedCoders = row.coders
+		.map((g) => parseGroupId(g.id))
+		.filter(Boolean) as ParsedQuestionGroupId[];
+
+	const hasRace = parsedCoders.some((p) => p.attemptKind === "race");
+	const hasBackup = parsedCoders.some((p) => p.attemptKind === "backup");
+
+	if (hasRace) {
+		const doneCount = row.coders.filter((g) => g.status === "done").length;
+		return `代码 竞速 ${doneCount}/${row.coders.length}`;
+	}
+
+	if (hasBackup) {
+		const backupCount = parsedCoders.filter(
+			(p) => p.attemptKind === "backup",
+		).length;
+		return `代码 备用${backupCount > 1 ? ` \xd7${backupCount}` : ""}`;
+	}
+
+	return `代码 ${row.coders.length}个`;
+}
+
 function pipelineNodeClass(group: AgentGroup | null): string {
 	if (!group) return "pipeline-node-pending";
 	switch (group.status) {
@@ -2765,7 +2790,7 @@ onBeforeUnmount(() => {
 					<span class="pipeline-arrow">→</span>
 					<div class="pipeline-node" :class="pipelineNodeClass(row.winnerCoder ?? row.coders[0] ?? null)" :title="(row.winnerCoder?.name ?? row.coders.map(g => g.name).join(' / ')) || '代码 Agent'">
 						<Code2 class="h-2.5 w-2.5 shrink-0" />
-						<span>代码<template v-if="row.coders.length > 1"> 竞速 {{ row.coders.filter(g => g.status === 'done').length }}/{{ row.coders.length }}</template></span>
+						<span>{{ coderNodeLabel(row) }}</span>
 						<LoaderCircle v-if="row.coders.some(g => g.status === 'running')" class="h-2 w-2 shrink-0 animate-spin" />
 						<CheckCircle2 v-else-if="row.winnerCoder || row.coders.some(g => g.status === 'done')" class="h-2 w-2 shrink-0" />
 					</div>
