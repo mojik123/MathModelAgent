@@ -756,6 +756,7 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
             description=parsed.get("updated_caption") or parsed.get("updated_alt_text"),
             alt_text=parsed.get("updated_alt_text"),
             caption=parsed.get("updated_caption"),
+            metadata_source="ai_revision",
         )
 
     return ImageRevisionChatResponse(

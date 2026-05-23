@@ -281,6 +281,7 @@ def update_image_metadata(
     description: str | None = None,
     alt_text: str | None = None,
     caption: str | None = None,
+    metadata_source: str = "llm",
 ) -> dict[str, Any] | None:
     image_name = normalize_image_name(filename)
     index = load_image_code_index(work_dir)
@@ -294,7 +295,7 @@ def update_image_metadata(
         entry["alt_text"] = alt_text.strip()
     if caption is not None:
         entry["caption"] = caption.strip()
-    entry["metadata_source"] = "ai_revision"
+    entry["metadata_source"] = metadata_source
     entry["updated_at"] = datetime.now(timezone.utc).isoformat()
     save_image_code_index(work_dir, index)
     return entry

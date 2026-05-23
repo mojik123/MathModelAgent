@@ -283,6 +283,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         filename,
                         description=description,
                         caption=description,
+                        metadata_source="llm",
                     )
                     await redis_manager.publish_message(
                         self.task_id,

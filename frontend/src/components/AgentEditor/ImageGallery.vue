@@ -243,14 +243,28 @@ function getPaperImageDescription(filename: string) {
 		.slice(0, 800);
 }
 
+function isBadImageDescription(text: string) {
+	const lower = text.toLowerCase();
+	return (
+		lower.includes("resume") ||
+		lower.includes("risk management") ||
+		lower.includes("company name") ||
+		lower.includes("chief risk officer") ||
+		lower.includes("consulting resume") ||
+		lower.includes("annual risk management")
+	);
+}
+
 function getIndexedImageDescription(filename: string) {
 	const state = imageCodeStates.value[filename];
-	return (
+	const text =
 		state?.caption?.trim() ||
 		state?.description?.trim() ||
 		state?.altText?.trim() ||
-		""
-	);
+		"";
+
+	if (text && isBadImageDescription(text)) return "";
+	return text;
 }
 
 function getImageDescription(filename: string) {
