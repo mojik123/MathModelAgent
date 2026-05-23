@@ -54,6 +54,7 @@ const loadingFiles = ref(false);
 
 const currentTaskId = computed(
 	() =>
+		props.task_id ||
 		taskStore.currentTaskId ||
 		(typeof route.params.task_id === "string" ? route.params.task_id : "") ||
 		window.localStorage.getItem("currentTaskId") ||
