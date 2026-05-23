@@ -56,6 +56,26 @@ class MathModelWorkFlow(WorkFlow):
     - 最终写作阶段并行（firstPage、RepeatQues 等）
     - 集成 CoordinatorAgent 进行终稿审查
     """
+
+    QUESTION_REQUIRED_FILES = {
+        "ques1": ["result1_1.xlsx", "result1_2.xlsx"],
+        "ques2": ["result2.xlsx"],
+        "ques3": [],
+    }
+
+    def _has_required_result_files(self, key: str) -> bool:
+        from pathlib import Path
+
+        required = self.QUESTION_REQUIRED_FILES.get(key, [])
+        if not required:
+            return True
+        work = Path(self.work_dir)
+        for filename in required:
+            matches = list(work.rglob(filename))
+            if not matches:
+                return False
+        return True
+
     task_id: str
     work_dir: str
     ques_count: int = 0
@@ -249,6 +269,43 @@ class MathModelWorkFlow(WorkFlow):
 
 REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介绍 block
 (所属阶段 / 功能说明 / 预期产出) as required by the system prompt.
+"""
+
+    def _build_fallback_repair_prompt(
+        self,
+        *,
+        key: str,
+        original_prompt: str,
+        failure_reason: str,
+    ) -> str:
+        from pathlib import Path
+
+        existing_files = "\n".join(
+            str(p.relative_to(Path(self.work_dir))).replace("\\", "/")
+            for p in Path(self.work_dir).rglob("*")
+            if p.is_file()
+            and p.suffix.lower() in {".xlsx", ".csv", ".png", ".py", ".json"}
+        )
+
+        return f"""你是备用 Coder。主力 Coder 已失败，失败原因如下：
+
+{failure_reason}
+
+当前工作区已有文件：
+{existing_files}
+
+要求：
+1. 先检查是否已有该小问核心结果文件。
+2. 若核心结果文件已存在，不允许重新完整求解，只允许：
+   - 修复缺失表格；
+   - 补齐必要图片；
+   - 修正文件命名；
+   - 输出简短核验代码。
+3. 只有核心结果文件不存在时，才允许重新求解。
+4. 本次任务必须控制计算量，禁止大规模穷举、禁止 5000 次以上循环。
+
+原始任务：
+{original_prompt}
 """
 
     async def _describe_images(
@@ -465,8 +522,11 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             )
 
         # 图片描述（在 coder_semaphore 外执行，不阻塞下一个 coder）
-        if coder_response.created_images:
-            await self._describe_images(
+        if (
+            coder_response.created_images
+            and getattr(settings, "IMAGE_DESCRIPTION_ENABLED", False)
+        ):
+            desc_coro_eda = self._describe_images(
                 image_filenames=coder_response.created_images,
                 section_label=label,
                 writer_llm=writer_llm,
@@ -959,8 +1019,25 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 self._save_checkpoint(checkpoint)
 
                 if not check.passed:
+                    core_ok = self._has_required_result_files(key)
+                    issue_text = "；".join(check.issues[:8])
+
+                    if core_ok and not getattr(settings, "ARTIFACT_STRICT_FATAL", False):
+                        await redis_manager.publish_message(
+                            self.task_id,
+                            SystemMessage(
+                                content=(
+                                    f"[组#{group_idx}] Coder {attempt_name} 核心结果已生成，"
+                                    f"产物检查存在非致命问题，继续进入 Writer。\n"
+                                    f"问题：{issue_text}"
+                                ),
+                                type="warning",
+                            ),
+                        )
+                        return
+
                     raise RuntimeError(
-                        f"Coder {attempt_name} 产物检查失败：" + "；".join(check.issues)
+                        f"Coder {attempt_name} 产物检查失败：{issue_text}"
                     )
 
             # ── 单次 Coder 尝试（含产物检查） ──
@@ -1147,8 +1224,11 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             )
 
             # 图片描述（在 coder_semaphore 外执行，不阻塞其他 Coder）
-            if winner_coder_response.created_images:
-                await self._describe_images(
+            if (
+                winner_coder_response.created_images
+                and getattr(settings, "IMAGE_DESCRIPTION_ENABLED", False)
+            ):
+                desc_coro = self._describe_images(
                     image_filenames=winner_coder_response.created_images,
                     section_label=label,
                     writer_llm=writer_llm,
@@ -1172,11 +1252,26 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 self.task_id,
                 SystemMessage(content=f"[组#{group_idx}] 论文手开始写 {key} 部分"),
             )
-            writer_response = await group_writer.run(
-                writer_prompt,
-                available_images=winner_coder_response.created_images,
-                sub_title=key,
-            )
+            writer_timeout = int(getattr(settings, "WRITER_ATTEMPT_TIMEOUT", 900))
+            try:
+                writer_response = await asyncio.wait_for(
+                    group_writer.run(
+                        writer_prompt,
+                        available_images=winner_coder_response.created_images,
+                        sub_title=key,
+                    ),
+                    timeout=writer_timeout,
+                )
+            except asyncio.TimeoutError:
+                await self._publish_agent_stop_reason(
+                    group_idx=group_idx,
+                    key=key,
+                    agent_name="Writer",
+                    reason=f"写作超时，超过 {writer_timeout} 秒",
+                    detail="已终止该小问 Writer。建议降低章节内容长度或关闭缺图修复。",
+                    level="error",
+                )
+                raise
             await redis_manager.publish_message(
                 self.task_id,
                 SystemMessage(content=f"[组#{group_idx}] 论文手完成 {key} 部分"),
@@ -1189,7 +1284,10 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 if img not in writer_response.response_content and basename not in writer_response.response_content:
                     missing_images.append(img)
 
-            if missing_images:
+            if (
+                missing_images
+                and getattr(settings, "WRITER_IMAGE_REPAIR_ENABLED", False)
+            ):
                 await redis_manager.publish_message(
                     self.task_id,
                     SystemMessage(
@@ -1249,6 +1347,19 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                             )
                 except Exception as exc:
                     logger.warning(f"[组#{group_idx}] Writer 缺图修复失败: {exc}")
+            elif missing_images:
+                checkpoint.setdefault("writer_missing_images", {})[key] = missing_images
+                self._save_checkpoint(checkpoint)
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=(
+                            f"[组#{group_idx}] Writer 未引用部分图片，已记录为非致命问题，"
+                            f"不阻塞小问完成：{', '.join(missing_images[:5])}"
+                        ),
+                        type="warning",
+                    ),
+                )
 
             async with write_lock:
                 user_output.set_res(key, writer_response)
@@ -1299,7 +1410,30 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         # 所有子问题组并发启动（无上限，有多少问就跑多少组）
         async def run_question_group_limited(group_idx: int, key: str) -> None:
             async with question_semaphore:
-                await run_question_group(group_idx, key)
+                group_timeout = int(getattr(settings, "QUESTION_GROUP_TIMEOUT", 1800))
+                try:
+                    await asyncio.wait_for(
+                        run_question_group(group_idx, key),
+                        timeout=group_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    await self._publish_agent_stop_reason(
+                        group_idx=group_idx,
+                        key=key,
+                        agent_name="SubQuestionGroup",
+                        reason=f"子问题组运行超时，超过 {group_timeout} 秒",
+                        detail="可能卡在 Coder 自我修复、Writer 重写或产物检查。",
+                        level="error",
+                    )
+                    checkpoint.setdefault("question_groups", {})[key] = {
+                        "group_idx": group_idx,
+                        "status": "timeout",
+                        "reason": f"Exceeded {group_timeout}s",
+                    }
+                    self._save_checkpoint(checkpoint)
+                    raise RuntimeError(
+                        f"[组#{group_idx}] {key} 运行超时，超过 {group_timeout} 秒"
+                    )
 
         group_tasks = [
             asyncio.create_task(run_question_group_limited(idx + 1, key))

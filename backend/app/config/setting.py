@@ -70,6 +70,18 @@ class Settings(BaseSettings):
     CODER_MAX_RETRIES: int = 6       # Coder 内部最大重试次数
     CODER_MAX_SAME_ERROR: int = 3    # 连续相同错误上限，防止同类错误无限循环
     CODER_ATTEMPT_TIMEOUT: int = 1200  # 单个 Coder attempt 最长秒数，超时视为失败
+    # ── 速度与阻塞控制 ──
+    IMAGE_DESCRIPTION_ENABLED: bool = False
+    IMAGE_DESCRIPTION_BACKGROUND: bool = True
+    WRITER_IMAGE_REPAIR_ENABLED: bool = False
+
+    # ── 超时保护 ──
+    QUESTION_GROUP_TIMEOUT: int = 1800     # 单个小问组最长秒数
+    WRITER_ATTEMPT_TIMEOUT: int = 900     # 单个 Writer 最长秒数
+    CODER_MAX_TOTAL_STEPS: int = 35       # Coder 最大总执行步数
+
+    # ── 产物检查分级 ──
+    ARTIFACT_STRICT_FATAL: bool = False   # 非核心产物问题不直接判死
 
     # 兼容旧 .env 里的 MAX_RETRIES，下轮彻底删除
     MAX_RETRIES: int | None = None
