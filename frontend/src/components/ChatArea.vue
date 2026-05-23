@@ -399,17 +399,6 @@ const normalizeSystemAction = (
 		let title = "运行：求解代码";
 		let flow: MessageFlow | undefined;
 
-		const codeBlocks = taskStore.interpreterMessage;
-		let codeIndex = -1;
-		if (content && codeBlocks.length > 0) {
-			for (let i = 0; i < codeBlocks.length; i++) {
-				if (content.includes(codeBlocks[i].input?.code?.slice(0, 50) || "")) {
-					codeIndex = i + 1;
-					break;
-				}
-			}
-		}
-
 		if (firstLine.includes("代码手开始求解")) {
 			title = `求解：${label}`;
 			flow = {
@@ -429,14 +418,11 @@ const normalizeSystemAction = (
 				firstLine.match(/代码手调用(.+?)工具/)?.[1]?.trim() || "工具";
 			title = `调用：${tool}工具`;
 		} else if (firstLine.includes("开始执行代码")) {
-			title = codeIndex > 0 ? `运行：代码块 #${codeIndex}` : "运行：代码块";
+			title = "运行：代码块";
 		} else if (firstLine.includes("代码执行完成")) {
-			title =
-				codeIndex > 0
-					? `返回：代码执行结果 #${codeIndex}`
-					: "返回：代码执行结果";
+			title = "返回：代码执行结果";
 		} else if (firstLine.includes("代码手反思纠正错误")) {
-			title = codeIndex > 0 ? `修正：代码错误 #${codeIndex}` : "修正：代码错误";
+			title = "修正：代码错误";
 		} else if (firstLine.includes("代码手完成任务")) {
 			title = "完成：代码任务";
 		} else if (firstLine.includes("初始化代码手")) {
@@ -448,7 +434,7 @@ const normalizeSystemAction = (
 		} else if (firstLine.includes("超过最大重试次数")) {
 			title = "停止：代码重试";
 		} else if (/代码手.*编写代码|代码手.*生成代码/.test(firstLine)) {
-			title = codeIndex > 0 ? `编写：代码块 #${codeIndex}` : "编写：代码块";
+			title = "编写：代码块";
 		}
 		return {
 			title,
@@ -1593,10 +1579,27 @@ const rawActions = computed(() => {
 				typeof message.input.code === "string"
 					? message.input.code
 					: "";
+
+			// 按 execute_code tool 消息在 displayMessages 中的顺序计算真实代码块编号
+			const codeBlockIndex =
+				message.tool_name === "execute_code"
+					? displayMessages.value
+							.slice(0, index + 1)
+							.filter(
+								(msg) =>
+									msg.msg_type === "tool" &&
+									"tool_name" in msg &&
+									msg.tool_name === "execute_code",
+							).length
+					: 0;
+
 			actions.push({
 				id: `${message.id}:call`,
 				kind: "tool",
-				title: `调用：工具 ${message.tool_name}`,
+				title:
+					message.tool_name === "execute_code"
+						? `运行：代码块 #${codeBlockIndex}`
+						: `调用：工具 ${message.tool_name}`,
 				detail:
 					message.tool_name === "execute_code"
 						? "把当前代码块交给本地解释器执行"
@@ -1636,7 +1639,10 @@ const rawActions = computed(() => {
 				actions.push({
 					id: `${message.id}:output`,
 					kind: "output",
-					title: "返回：工具结果",
+					title:
+						message.tool_name === "execute_code"
+							? `返回：代码执行结果 #${codeBlockIndex}`
+							: "返回：工具结果",
 					detail: `${outputSummary}\n\n${toolOutputDetail(message)}`,
 					status: "done",
 					timestamp: timestamp + 500,

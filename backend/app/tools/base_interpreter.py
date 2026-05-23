@@ -295,8 +295,8 @@ class BaseCodeInterpreter(abc.ABC):
         for fname in image_filenames:
             if not fname:
                 continue
-            # 将 .png → .py
-            code_fname = str(_Path(fname).with_suffix(".py"))
+            image_name = _Path(fname).name
+            code_fname = str(_Path(image_name).with_suffix(".py"))
             code_path = _os.path.join(dest_dir, code_fname)
             try:
                 with open(code_path, "w", encoding="utf-8") as f:
@@ -332,19 +332,28 @@ class BaseCodeInterpreter(abc.ABC):
 
         result: list[str] = []
         for fname in filenames:
-            src = os.path.join(self.work_dir, fname)
-            dst = os.path.join(dest_dir, fname)
+            normalized = fname.replace("\\", "/")
+
+            # 如果已经是章节目录里的相对路径，直接返回，不再移动
+            existing_rel_path = os.path.join(self.work_dir, normalized)
+            if "/" in normalized and os.path.isfile(existing_rel_path):
+                result.append(normalized)
+                continue
+
+            base_name = os.path.basename(normalized)
+            src = os.path.join(self.work_dir, base_name)
+            dst = os.path.join(dest_dir, base_name)
             if os.path.isfile(src):
                 try:
                     shutil.move(src, dst)
-                    rel_path = f"{sub_dir_name}/{fname}"
+                    rel_path = f"{sub_dir_name}/{base_name}"
                     result.append(rel_path)
                     logger.info(f"图片已归入目录: {rel_path}")
                 except OSError as exc:
-                    logger.warning(f"移动图片失败 {fname}: {exc}")
-                    result.append(fname)
+                    logger.warning(f"移动图片失败 {base_name}: {exc}")
+                    result.append(normalized)
             else:
-                result.append(fname)
+                result.append(normalized)
         return result
 
     def delete_color_control_char(self, string):
