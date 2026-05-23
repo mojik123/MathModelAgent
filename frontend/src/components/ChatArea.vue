@@ -1362,6 +1362,59 @@ const agentActionTitle = (message: Message) => {
 };
 
 	// extractFileActions removed — now using extractArtifactFilesFromToolMessage
+	const artifactFilePattern =
+		/((?:[\w一-龥.-]+\/)+[\w.-]+\.(?:py|png|jpg|jpeg|svg|webp))/gi;
+
+	const isPreviewImageFile = (file: string) =>
+		/\.(png|jpg|jpeg|svg|webp)$/i.test(file);
+
+	const isFullPythonFile = (file: string) =>
+		/\.py$/i.test(file);
+
+	const artifactFileDescription = (file: string) => {
+		if (isFullPythonFile(file)) {
+			const name = file.split(/[\\/]/).pop() || file;
+			if (name === "code.py" || /^code_[br]\d+\.py$/i.test(name)) {
+				return "本章节完整 Python 汇总代码，可打开查看完整求解流程。";
+			}
+			if (/_step_\d+\.py$/i.test(name)) {
+				return "该步骤保存的完整 Python 文件，可打开查看对应处理过程。";
+			}
+			return "生成该图或该结果的完整 Python 文件，可打开预览。";
+		}
+
+		if (isPreviewImageFile(file)) {
+			return "生成的图片结果，可点击打开预览。";
+		}
+
+		return "任务生成的文件，可打开预览。";
+	};
+
+	const extractArtifactFilesFromToolMessage = (message: ToolMessage) => {
+		const text = [
+			toolOutputDetail(message),
+			toolOutputSummary(message),
+		]
+			.filter(Boolean)
+			.join("\n");
+
+		const files = Array.from(text.matchAll(artifactFilePattern))
+			.map((match) => match[1])
+			.filter(Boolean);
+
+		const uniqueFiles = Array.from(new Set(files));
+
+		return uniqueFiles
+			.filter((file) => isFullPythonFile(file) || isPreviewImageFile(file))
+			.map((file) => ({
+				file,
+				title: isFullPythonFile(file)
+					? "保存：Python 文件"
+					: "生成：图片预览",
+				detail: artifactFileDescription(file),
+			}));
+	};
+
 const toolDetail = (message: ToolMessage) => {
 	const blocks: string[] = [];
 	if (message.input) {
@@ -3151,7 +3204,7 @@ onBeforeUnmount(() => {
 													工具 {{ parseToolActionTitle(action.title) }}
 												</span>
 											</template>
-											<template v-else-if="action.kind === 'file' && parseFileActionTitle(action.title)">
+											<template v-else-if="action.kind === 'file' && action.files?.length">
 												<span class="action-verb-chip action-verb-file shrink-0">{{ parseFileActionTitle(action.title)!.verb }}</span>
 												<a
 													:href="previewUrlFor(parseFileActionTitle(action.title)!.filename)"
