@@ -327,13 +327,16 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             group_index: 并行组编号（1-based）。
             content: 协调消息内容。
         """
-        await redis_manager.publish_message(
-            self.task_id,
-            SubCoordinatorMessage(
-                content=content,
-                agent_index=group_index,
-            ),
+        msg = SubCoordinatorMessage(
+            content=content,
+            agent_index=group_index,
         )
+        msg.question_index = group_index
+        msg.agent_instance_id = f'q{group_index}.sub_coordinator'
+        msg.group_id = f'q{group_index}'
+        msg.phase = 'coordinating'
+
+        await redis_manager.publish_message(self.task_id, msg)
 
     async def _run_solution_step(
         self,
@@ -1188,6 +1191,11 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             )
             group_writer = self._create_writer_agent(problem, agent_index=group_idx)
 
+            group_writer.model.question_index = group_idx
+            group_writer.model.agent_instance_id = f'q{group_idx}.writer'
+            group_writer.model.group_id = f'q{group_idx}'
+            group_writer.model.phase = 'writing'
+
             await redis_manager.publish_message(
                 self.task_id,
                 SystemMessage(content=f"[组#{group_idx}] 论文手开始写 {key} 部分"),
@@ -1357,6 +1365,59 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         write_flows = flows.get_write_flows(
             user_output, config_template, problem.ques_all
         )
+        # TOC 确定性生成（不交给 LLM，确保覆盖所有小问）
+        def _build_deterministic_toc(q_count: int) -> str:
+            lines = [
+                "## 目录",
+                "",
+                "一、问题重述",
+                "1.1 问题背景",
+                "1.2 问题重述",
+                "",
+                "二、问题分析",
+            ]
+            for i in range(1, q_count + 1):
+                lines.append(f"2.{i} 问题{i}的分析")
+            lines.extend([
+                "",
+                "三、模型假设",
+                "",
+                "四、符号说明和数据预处理",
+                "4.1 符号说明",
+                "4.2 描述性统计",
+                "",
+                "五、模型的建立与求解",
+            ])
+            for i in range(1, q_count + 1):
+                lines.extend([
+                    f"5.{i} 问题{i}模型的建立与求解",
+                    f"5.{i}.1 模型的建立",
+                    f"5.{i}.2 模型的求解",
+                ])
+            lines.extend([
+                "",
+                "六、模型的分析与检验",
+                "6.1 灵敏度分析",
+                "",
+                "七、模型的评价、改进与推广",
+            ])
+            return "\n".join(lines).strip() + "\n"
+
+        if "toc" not in user_output.res:
+            from app.schemas.A2A import WriterResponse
+
+            toc_content = _build_deterministic_toc(self.ques_count)
+            toc_response = WriterResponse(
+                response_content=toc_content,
+                footnotes={},
+            )
+            user_output.set_res("toc", toc_response)
+            self._save_writer_checkpoint(checkpoint, "toc", toc_response)
+            await redis_manager.publish_message(
+                self.task_id,
+                SystemMessage(content="目录已按问题数量确定性生成，覆盖所有小问"),
+            )
+
         pending_write_flows: list[tuple[str, str]] = []
         for key, value in write_flows.items():
             await self._check_cancelled()
@@ -1365,6 +1426,9 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 await self._publish_progress(
                     step_counter[0], total_steps, f"从断点恢复：已完成 {key}"
                 )
+                continue
+            # 跳过 toc（已确定性生成）
+            if key == "toc":
                 continue
             pending_write_flows.append((key, value))
 
@@ -1380,19 +1444,22 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 ),
             )
 
-        # 写作手编号：从 n+1 开始（避免与子问题组编号冲突）
-        write_agent_offset = self.ques_count + 1
-
         async def run_write_flow(key: str, value: str, write_idx: int) -> None:
             nonlocal step_counter
             async with write_semaphore:
                 await self._check_cancelled()
                 await redis_manager.publish_message(
                     self.task_id,
-                    SystemMessage(content=f"论文手开始写{key}部分"),
+                    SystemMessage(content=f"论文写作组：开始写 {key} 部分"),
                 )
 
-                section_writer = self._create_writer_agent(problem, agent_index=write_agent_offset + write_idx)
+                section_writer = self._create_writer_agent(problem, agent_index=None)
+
+                # 关键：最后论文写作 Agent 不再使用 writer_7 / writer_8 这种会被误判成子问题的编号
+                section_writer.model.agent_instance_id = f"paper.writer.{key}"
+                section_writer.model.group_id = "paper.writing"
+                section_writer.model.phase = "paper_writing"
+
                 writer_response = await section_writer.run(prompt=value, sub_title=key)
                 await self._check_cancelled()
 
@@ -1405,7 +1472,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 await self._publish_progress(completed, total_steps, f"完成撰写: {key}")
                 await redis_manager.publish_message(
                     self.task_id,
-                    SystemMessage(content=f"论文手完成{key}部分"),
+                    SystemMessage(content=f"论文写作组：完成 {key} 部分"),
                 )
 
         write_tasks = [
@@ -1461,6 +1528,27 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 SystemMessage(content="论文手开始终稿审计：检查章节重复、串位、图片引用"),
             )
 
+            # 终稿前必备章节检查
+            def _missing_required_sections() -> list:
+                missing: list = []
+                for k in user_output.seq:
+                    value = user_output.res.get(k)
+                    c = ""
+                    if isinstance(value, dict):
+                        c = str(value.get("response_content") or "").strip()
+                    if not c:
+                        missing.append(k)
+                return missing
+
+            missing_sections = _missing_required_sections()
+            if missing_sections:
+                checkpoint["missing_required_sections_before_final"] = missing_sections
+                self._save_checkpoint(checkpoint)
+                raise RuntimeError(
+                    "终稿生成前发现章节缺失，停止保存不完整论文："
+                    + "、".join(missing_sections)
+                )
+
             # 按 seq 拼接原始草稿（走 get_result_to_save 包含脚注/参考文献处理）
             raw_draft = user_output.get_result_to_save()
 
@@ -1501,11 +1589,46 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         audit_issues=high_issues,
                         section_order=section_order,
                     )
-                    final_paper = clean_final_paper_markdown(repair_response.response_content)
-                    await redis_manager.publish_message(
-                        self.task_id,
-                        SystemMessage(content="论文手完成终稿轻量修正"),
-                    )
+                    repaired = clean_final_paper_markdown(repair_response.response_content)
+
+                    # 终稿轻量修正保护：不应大幅删减或丢失章节
+                    required_tokens = [
+                        "一、问题重述",
+                        "二、问题分析",
+                        "三、模型假设",
+                        "四、符号说明",
+                        "五、模型的建立与求解",
+                        "六、模型",
+                        "七、模型",
+                    ]
+                    for _i in range(1, self.ques_count + 1):
+                        required_tokens.append(f"5.{_i}")
+
+                    _missing_tokens = [
+                        token for token in required_tokens if token not in repaired
+                    ]
+
+                    if _missing_tokens or len(repaired) < len(raw_draft) * 0.75:
+                        checkpoint["final_repair_rejected"] = {
+                            "missing_tokens": _missing_tokens,
+                            "raw_len": len(raw_draft),
+                            "repaired_len": len(repaired),
+                        }
+                        self._save_checkpoint(checkpoint)
+                        await redis_manager.publish_message(
+                            self.task_id,
+                            SystemMessage(
+                                content="终稿轻量修正疑似删减章节，已拒绝修正版，保留原始拼接稿",
+                                type="warning",
+                            ),
+                        )
+                        final_paper = clean_final_paper_markdown(raw_draft)
+                    else:
+                        final_paper = repaired
+                        await redis_manager.publish_message(
+                            self.task_id,
+                            SystemMessage(content="论文手完成终稿轻量修正"),
+                        )
 
                 checkpoint["final_paper_review"] = final_paper
                 self._save_checkpoint(checkpoint)
