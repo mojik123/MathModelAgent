@@ -258,7 +258,13 @@ const normalizeGroupId = (
 		[AgentType.WRITER]: "writer",
 	};
 	const base = typeMap[agentType] ?? String(agentType).toLowerCase();
-	return agentIndex != null ? `${base}_${agentIndex}` : base;
+	if (agentIndex != null) {
+		if (base === "sub_coordinator") return `q${agentIndex}.sub_coordinator`;
+		if (base === "modeler") return `q${agentIndex}.modeler`;
+		if (base === "coder") return `q${agentIndex}.coder.main`;
+		if (base === "writer") return `q${agentIndex}.writer`;
+	}
+	return base;
 };
 
 const phaseLabelMap: Record<string, string> = {
@@ -307,6 +313,7 @@ const participantLabel = (participant?: string | null) => {
 	const text = participant ?? "";
 	if (/^user$/i.test(text) || text === "用户") return "User";
 	if (/^system$/i.test(text) || text === "系统") return "System";
+	if (/SubCoordinator/i.test(text)) return "SubCoordinatorAgent";
 	if (/Coordinator/i.test(text)) return "CoordinatorAgent";
 	if (/Modeler/i.test(text)) return "ModelerAgent";
 	if (/Coder/i.test(text)) return "CoderAgent";
