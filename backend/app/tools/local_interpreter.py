@@ -298,9 +298,10 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
             self.save_section_code(section)
             return moved
 
-        # ── 兜底路径：文件系统扫描（带 section 前缀过滤，含章节目录）──
-        section_num = get_section_num(section)
-        section_prefix = f"{section_num}_" if section_num else None
+        # ── 兜底路径：文件系统扫描（含章节目录，按 artifact_tag 过滤）──
+        import re as _re
+
+        artifact_prefix = f"{self.artifact_tag}_" if self.artifact_tag else None
 
         scan_dirs = [self.work_dir]
         try:
@@ -319,13 +320,21 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
             for fname in os.listdir(scan_dir):
                 if not is_image_file(fname):
                     continue
-                # 并行隔离：只拾取属于本 section 的图片（按命名前缀过滤）
-                if section_prefix and not fname.startswith(section_prefix):
+                # 并行隔离：
+                # 备用/竞速只拾取自己的 tag 图片，例如 b1_xxx.png / r1_xxx.png
+                if artifact_prefix and not fname.startswith(artifact_prefix):
+                    continue
+                # 主力不拾取备用/竞速图片，避免 b1/r1 混入主力
+                if not artifact_prefix and _re.match(
+                    r"^(?:b\d+|r\d+)_", fname
+                ):
                     continue
                 if scan_dir == self.work_dir:
                     current_images.add(fname)
                 else:
-                    rel_dir = os.path.relpath(scan_dir, self.work_dir).replace("\\", "/")
+                    rel_dir = os.path.relpath(scan_dir, self.work_dir).replace(
+                        "\\", "/"
+                    )
                     current_images.add(f"{rel_dir}/{fname}")
 
         new_images = current_images - self.last_created_images

@@ -91,7 +91,7 @@ class BaseCodeInterpreter(abc.ABC):
         """
         from pathlib import Path as _Path
 
-        from app.utils.image_constants import get_section_num, IMAGE_NAMING_PATTERN
+        from app.utils.image_constants import IMAGE_NAMING_PATTERN
 
         # 已合规则跳过
         if IMAGE_NAMING_PATTERN.match(filename):
@@ -101,15 +101,13 @@ class BaseCodeInterpreter(abc.ABC):
         if not section:
             return filename
 
-        section_num = get_section_num(section)
-        if not section_num:
-            return filename
-
-        # 从旧名称提取英文描述：去除 fig{N}_ / figure{N}_ 前缀
+        # 从旧名称提取英文描述：去除 fig{N}_ / figure{N}_ / 章节号前缀
         stem = _Path(filename).stem
         cleaned = re.sub(
             r"^(fig(?:ure)?\d+[_\s]*)", "", stem, flags=re.IGNORECASE
         )
+        # 也去除已有的章节号前缀，如 5.1_ / 4.2_ 等
+        cleaned = re.sub(r"^\d+\.\d+_", "", cleaned)
         # 只保留 ASCII 字母、数字、下划线、短横线
         cleaned = re.sub(r"[^A-Za-z0-9_\-]", "", cleaned)
         cleaned = re.sub(r"_+", "_", cleaned).strip("_")
@@ -117,7 +115,7 @@ class BaseCodeInterpreter(abc.ABC):
             return filename
 
         tag = f"{self.artifact_tag}_" if self.artifact_tag else ""
-        base_name = f"{section_num}_{tag}{cleaned}"
+        base_name = f"{tag}{cleaned}"
         new_name = f"{base_name}.png"
         if new_name == filename:
             return filename

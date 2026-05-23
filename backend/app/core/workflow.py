@@ -228,22 +228,22 @@ class MathModelWorkFlow(WorkFlow):
         group_index: int | None,
         artifact_tag: str | None = None,
     ) -> str:
-        prefix = self._section_image_prefix(key)
-        image_prefix = f"{prefix}_{artifact_tag}" if artifact_tag else prefix
+        tag_prefix = f"{artifact_tag}_" if artifact_tag else ""
         examples = (
-            f"{image_prefix}_prediction_result.png, "
-            f"{image_prefix}_model_diagnostics.png"
+            f"{tag_prefix}prediction_result.png, "
+            f"{tag_prefix}model_diagnostics.png"
         )
         return f"""{coder_prompt}
 
 [Artifact naming rule — MANDATORY]
-- For the current subtask `{key}`, every saved image filename MUST start with `{image_prefix}_`.
-- Filename format: `{image_prefix}_short_english_name.png`
+- For the current subtask `{key}`, saved image filenames MUST NOT include section numbers such as `5.1_`, `5.2_`, `6.1_`.
+- The section/question information is already represented by the folder name.
+- Filename format: `{tag_prefix}short_english_name.png`
 - The descriptive part MUST use ONLY ASCII letters, digits, underscores and hyphens.
 - NO Chinese characters, NO spaces, NO special chars.
 - Examples: {examples}
-- Do NOT use global figure names such as `fig1_...png`, `fig_q...png`, or `fig_sens...png`.
-- Images violating this naming rule may cause this Coder attempt to fail artifact check.
+- Do NOT use names such as `5.1_prediction_result.png`, `图1_预测结果.png`, `fig1_result.png`.
+- Images violating this naming rule may be automatically renamed or may fail artifact check.
 
 REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介绍 block
 (所属阶段 / 功能说明 / 预期产出) as required by the system prompt.

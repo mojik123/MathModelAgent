@@ -34,20 +34,20 @@ MARKDOWN_IMAGE_RE = re.compile(
 # ---- 图片命名规范（与 coder prompt 一致） ----
 
 # Canonical generated-figure naming rule:
-#   {paper_section}_{short_english_slug}.png
-# {paper_section} must match a known section number: 4.2 / 5.1 / 5.2 / … / 6.1
-# {short_english_slug} must use only ASCII letters, digits, underscores, hyphens —
-#   NO Chinese characters, no spaces.  This keeps names valid on all OS and
-#   ensures parallel agents (ques1 / ques2 / ques3 …) never collide in the
-#   shared work_dir root before images are moved to their section subdirectory.
+#   {short_english_slug}.png  — or  {tag}_{short_english_slug}.png
+# The section/question information is already represented by the folder name
+# (e.g. 5.1_问题1的模型建立与求解/), so image filenames must NOT include
+# section numbers such as "5.1_".  The name must use only ASCII letters,
+# digits, underscores, hyphens — NO Chinese characters, no spaces.
+# For backup/racing agents, the filename may start with bN_ or rN_.
 #
 # Examples:
-#   4.2_data_distribution.png
-#   5.1_prediction_comparison.png
-#   5.2_confusion_matrix.png
-#   6.1_sensitivity_regularization.png
+#   prediction_result.png
+#   model_diagnostics.png
+#   b1_prediction_result.png
+#   r1_prediction_result.png
 IMAGE_NAMING_PATTERN = re.compile(
-    r"^\d+\.\d+_[A-Za-z0-9][A-Za-z0-9_\-]*\.png$",
+    r"^(?:[A-Za-z0-9][A-Za-z0-9_\-]*|(?:b\d+|r\d+)_[A-Za-z0-9][A-Za-z0-9_\-]*)\.png$",
 )
 
 
