@@ -514,6 +514,24 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             user_output.set_res(key, writer_response)
             self._save_writer_checkpoint(checkpoint, key, writer_response)
 
+        # 章节校验（EDA / sensitivity_analysis）
+        section_issues = validate_section_output(
+            key,
+            writer_response.response_content or "",
+            self.ques_count,
+            available_images=coder_response.created_images,
+        )
+        checkpoint["section_ledger"][key] = {
+            "title": solution_label_map.get(key, key),
+            "owner": f"{key}.writer",
+            "status": "invalid" if section_issues else "valid",
+            "attempts": 1,
+            "content_chars": len(writer_response.response_content or ""),
+            "issues": section_issues,
+            "last_action": "generated",
+        }
+        self._save_checkpoint(checkpoint)
+
     async def execute(self, problem: Problem):  # type: ignore[reportIncompatibleMethodOverride]
         """执行数学建模工作流（并行多组架构）。
 
@@ -1442,6 +1460,16 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             )
             user_output.set_res("toc", toc_response)
             self._save_writer_checkpoint(checkpoint, "toc", toc_response)
+            checkpoint["section_ledger"]["toc"] = {
+                "title": "TOC",
+                "owner": "deterministic",
+                "status": "valid",
+                "attempts": 1,
+                "content_chars": len(toc_content),
+                "issues": [],
+                "last_action": "generated_from_template",
+            }
+            self._save_checkpoint(checkpoint)
             await redis_manager.publish_message(
                 self.task_id,
                 SystemMessage(content="目录已按问题数量确定性生成，覆盖所有小问"),
@@ -1641,9 +1669,26 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         if isinstance(coder_result, dict):
                             code_text = str(coder_result.get("code_response") or "")
                             images = coder_result.get("created_images") or []
-                        repair_prompt = flows.get_writer_prompt(
-                            k, code_text, "", config_template
-                        )
+                        question_text = str(self.questions.get(k, "")) if hasattr(self, "questions") else ""
+                        model_summary = user_output.get_model_build_solve()
+                        repair_prompt = f"""You are the dedicated Writer for Question {group_idx}.
+
+[Task]
+Regenerate the model building and solving chapter for {k}.
+
+[Original Question]
+{question_text}
+
+[Model Solution Summary]
+{model_summary}
+
+[Requirements]
+- Write ONLY Section 5.{group_idx} (model building and solving for Question {group_idx}).
+- Must include the 5.{group_idx} section heading.
+- Must include model formulation, solution method, and results interpretation.
+- Do NOT write question restatement, question analysis, model assumptions, or model evaluation.
+- Do NOT write content for other questions.
+"""
                         repair_writer.model.question_index = group_idx
                         repair_writer.model.agent_instance_id = f"q{group_idx}.writer"
                         repair_writer.model.group_id = f"q{group_idx}"
@@ -1721,6 +1766,28 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     if not c:
                         missing.append(k)
                 return missing
+
+            # 终稿前 invalid section 检查
+            invalid_sections = []
+            for k in user_output.seq:
+                value = user_output.res.get(k)
+                content = ""
+                if isinstance(value, dict):
+                    content = str(value.get("response_content") or "").strip()
+                issues = validate_section_output(k, content, self.ques_count)
+                if issues:
+                    invalid_sections.append({"key": k, "issues": issues})
+
+            if invalid_sections:
+                checkpoint["invalid_required_sections_before_final"] = invalid_sections
+                self._save_checkpoint(checkpoint)
+                raise RuntimeError(
+                    "终稿生成前发现章节结构不合格，停止保存："
+                    + "；".join(
+                        f"{x['key']}: {','.join(x['issues'][:2])}"
+                        for x in invalid_sections[:5]
+                    )
+                )
 
             missing_sections = _missing_required_sections()
             if missing_sections:
