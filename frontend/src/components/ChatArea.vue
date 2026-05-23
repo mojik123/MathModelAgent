@@ -985,7 +985,7 @@ const previewUrlFor = (file: string) => buildFileUrl(file, currentTaskId.value);
 
 const openFilePreview = (file: string) => {
 	const info = getArtifactDisplayInfo(file, currentTaskId.value);
-	openPreview(previewUrlFor(info.normalizedPath), info.fullName);
+	openPreview(previewUrlFor(info.normalizedPath), info.normalizedPath);
 };
 
 const artifactDisplayName = (file: string) =>
@@ -996,8 +996,11 @@ function onExpandedClick(e: MouseEvent) {
 	const target = e.target as HTMLElement;
 	if (target.tagName === "IMG" && target.classList.contains("inline-thumb")) {
 		const src = target.getAttribute("src") ?? "";
-		const alt = target.getAttribute("alt") || "image.png";
-		openPreview(src, alt);
+		const rawPath =
+			target.getAttribute("data-artifact-path") ||
+			target.getAttribute("alt") ||
+			"image.png";
+		openPreview(src, rawPath);
 		return;
 	}
 	const fileButton = target.closest<HTMLElement>("[data-preview-file]");
@@ -1019,7 +1022,7 @@ function renderContentWithImages(content: string): string {
 			const imageName = imageInfo.fullName || alt || "图片";
 			const token = `__INLINE_IMAGE_${imageHtml.length}__`;
 			imageHtml.push(
-				`<img src="${escapeAttr(imageUrl)}" alt="${escapeAttr(imageName)}" class="inline-thumb max-w-[200px] max-h-[120px] rounded cursor-pointer hover:opacity-80 transition-opacity border border-white/30" />`,
+				`<img src="${escapeAttr(imageUrl)}" alt="${escapeAttr(imageName)}" data-artifact-path="${escapeAttr(imageInfo.normalizedPath)}" class="inline-thumb max-w-[200px] max-h-[120px] rounded cursor-pointer hover:opacity-80 transition-opacity border border-white/30" />`,
 			);
 			return token;
 		},
@@ -1029,7 +1032,7 @@ function renderContentWithImages(content: string): string {
 		.replace(
 			/(?<![="'>\w])((?:[\w-]+\/)*[\w-]+\.(?:py|md|ipynb|tex|json|toml|txt|csv|xlsx|yaml|yml|cfg|ini|pdf|bib|sh|R))\b/gi,
 			(_match: string, file: string) =>
-				`<button type="button" class="file-action-chip chip-blue cursor-pointer underline decoration-current/40 underline-offset-2" data-preview-file="${escapeAttr(file)}">${escapeHtml(file)}</button>`,
+				`<button type="button" class="file-action-chip chip-blue cursor-pointer underline decoration-current/40 underline-offset-2" data-preview-file="${escapeAttr(file)}">${escapeHtml(getArtifactDisplayInfo(file, currentTaskId.value).fullName)}</button>`,
 		)
 		.replace(
 			/__INLINE_IMAGE_(\d+)__/g,
