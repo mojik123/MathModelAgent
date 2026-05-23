@@ -20,7 +20,7 @@ from app.schemas.A2A import CoordinatorToModeler, ModelerToCoder
 from app.config.setting import settings
 from app.tools.interpreter_factory import create_interpreter
 from app.services.redis_manager import redis_manager
-from app.services.task_state import mark_task_running
+from app.services.task_state import mark_task_running, mark_task_terminal
 from app.tools.notebook_serializer import NotebookSerializer
 from app.core.flows import Flows
 from app.core.llm.llm import LLM
@@ -409,6 +409,24 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 SystemMessage(content=f"{group_tag}代码手求解成功{key}", type="success"),
             )
 
+        # 产物检查（覆盖 EDA / sensitivity_analysis 等共享阶段）
+        if getattr(settings, "ARTIFACT_CHECK_ENABLED", True):
+            from app.utils.artifact_checker import check_section_artifacts
+
+            section_dir = section_dir_name(key)
+            artifact_check = check_section_artifacts(
+                self.work_dir,
+                section_key=key,
+                section_dir=section_dir,
+                created_images=coder_response.created_images,
+                require_image=False,
+                artifact_tag=None,
+            )
+            if not artifact_check.passed:
+                raise RuntimeError(
+                    f"{key} 产物检查失败：" + "；".join(artifact_check.issues)
+                )
+
         # 图片描述（在 coder_semaphore 外执行，不阻塞下一个 coder）
         if coder_response.created_images:
             await self._describe_images(
@@ -524,7 +542,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         # + N*[sub_coord_start + modeler + coder + writer + sub_coord_end](5 per group)
         # + sensitivity coder+writer(2) + write_flows(6) + final_review(1) + save(1)
         n = self.ques_count
-        write_flow_count = 6  # firstPage, RepeatQues, analysisQues, modelAssumption, symbol, judge
+        write_flow_count = 7  # firstPage, toc, RepeatQues, analysisQues, modelAssumption, symbol, judge
         total_steps = (
             1                       # coordinator
             + 1                     # modeler
@@ -707,12 +725,23 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
         solution_flows = flows.get_solution_flows(self.questions, modeler_response)
 
-        # 并发控制：每个子问题完全并行（每组独立 kernel，无共享状态）
-        # coder_semaphore 容量 = 问题数，确保每问最多同时跑一个胜者 Coder；
-        # 竞速输家被 cancel 后会释放额度，空闲额度自动流向其他问题的等待 Coder（跨问协作）
-        question_parallelism = max(1, self.ques_count or 1)
+        # 并发控制：QUESTION_PARALLELISM 限制同时运行的子问题组数
+        # CODER_PARALLELISM 限制同时运行多少个 Coder kernel
+        question_parallelism = max(
+            1,
+            min(
+                self.ques_count or 1,
+                int(getattr(settings, "QUESTION_PARALLELISM", self.ques_count or 1)),
+            ),
+        )
+
+        coder_parallelism = max(
+            1,
+            int(getattr(settings, "CODER_PARALLELISM", question_parallelism)),
+        )
+
         question_semaphore = asyncio.Semaphore(question_parallelism)
-        coder_semaphore = asyncio.Semaphore(question_parallelism)
+        coder_semaphore = asyncio.Semaphore(coder_parallelism)
         # 写入锁：保护 user_output.set_res 并发写入
         write_lock = asyncio.Lock()
 
@@ -825,6 +854,32 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 coder.model.phase = "coding"
                 return interp, coder
 
+            # ── 公共产物检查 helper ──
+            def _check_coder_artifacts(result, attempt_name: str, artifact_tag: str = ""):
+                if not getattr(settings, "ARTIFACT_CHECK_ENABLED", True):
+                    return
+
+                from app.utils.artifact_checker import check_section_artifacts
+
+                section_dir = section_dir_name(key)
+                check = check_section_artifacts(
+                    self.work_dir,
+                    section_key=key,
+                    section_dir=section_dir,
+                    created_images=result.created_images,
+                    require_image=getattr(
+                        settings,
+                        "ARTIFACT_REQUIRE_IMAGE_FOR_QUESTION",
+                        False,
+                    ),
+                    artifact_tag=artifact_tag or None,
+                )
+
+                if not check.passed:
+                    raise RuntimeError(
+                        f"Coder {attempt_name} 产物检查失败：" + "；".join(check.issues)
+                    )
+
             # ── 单次 Coder 尝试（含产物检查） ──
             async def _run_single_coder_attempt(
                 *,
@@ -857,28 +912,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                             prompt=attempt_prompt, subtask_title=key
                         )
 
-                    if getattr(settings, "ARTIFACT_CHECK_ENABLED", True):
-                        from app.utils.artifact_checker import (
-                            check_section_artifacts,
-                        )
-
-                        section_dir = section_dir_name(key)
-                        check = check_section_artifacts(
-                            self.work_dir,
-                            section_key=key,
-                            section_dir=section_dir,
-                            created_images=result.created_images,
-                            require_image=getattr(
-                                settings,
-                                "ARTIFACT_REQUIRE_IMAGE_FOR_QUESTION",
-                                False,
-                            ),
-                        )
-                        if not check.passed:
-                            raise RuntimeError(
-                                f"Coder {attempt_name} 产物检查失败："
-                                + "；".join(check.issues)
-                            )
+                    _check_coder_artifacts(result, attempt_name, artifact_tag)
 
                     return interp, result
 
@@ -988,6 +1022,13 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         result = await coder.run(
                             prompt=racing_prompt, subtask_title=key
                         )
+
+                        _check_coder_artifacts(
+                            result,
+                            attempt_name=f"竞速{worker_num + 1}",
+                            artifact_tag=f"r{worker_num + 1}",
+                        )
+
                     return interp, result
 
                 coder_tasks = [
@@ -1396,3 +1437,8 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
         step_counter[0] += 1
         await self._publish_progress(step_counter[0], total_steps, "论文生成完成")
+        await mark_task_terminal(
+            self.task_id,
+            "completed",
+            "论文生成完成",
+        )

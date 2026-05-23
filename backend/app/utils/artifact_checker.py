@@ -23,6 +23,7 @@ def check_section_artifacts(
     section_dir: str,
     created_images: list[str],
     require_image: bool = False,
+    artifact_tag: str | None = None,
 ) -> ArtifactCheckResult:
     """检查指定章节的产物完整性。
 
@@ -32,6 +33,8 @@ def check_section_artifacts(
         section_dir: 章节子目录名（如 ``"5.1_问题1的模型建立与求解"``）。
         created_images: 已创建的图片相对路径列表。
         require_image: 是否强制要求至少一张图片。
+        artifact_tag: 当前尝试的产物标签（如 ``"b1"``、``"r1"``），
+                      ``None`` 表示主力。
 
     Returns:
         ``ArtifactCheckResult``，``passed=True`` 表示所有检查通过。
@@ -65,12 +68,26 @@ def check_section_artifacts(
     if require_image and not images:
         issues.append("本问未生成有效图片")
 
-    # 检查代码文件
+    # 检查代码文件（按 artifact_tag 严格过滤，避免主力残留"骗过"备用检查）
+    if artifact_tag:
+        expected_code_name = f"code_{artifact_tag}.py"
+        expected_step_pat = f"_{artifact_tag}_step_"
+    else:
+        expected_code_name = "code.py"
+        expected_step_pat = "_step_"
+
     for path in section_path.glob("*.py"):
-        code_files.append(str(path.relative_to(work_dir)).replace("\\", "/"))
+        name = path.name
+        if artifact_tag:
+            if name == expected_code_name or expected_step_pat in name:
+                code_files.append(str(path.relative_to(work_dir)).replace("\\", "/"))
+        else:
+            if name == expected_code_name or (expected_step_pat in name and "_b" not in name and "_r" not in name):
+                code_files.append(str(path.relative_to(work_dir)).replace("\\", "/"))
 
     if not code_files:
-        issues.append(f"章节目录内没有保存代码文件：{section_dir}")
+        target = f"artifact_tag={artifact_tag or 'main'}"
+        issues.append(f"章节目录内没有保存当前尝试的代码文件：{section_dir} ({target})")
 
     # 检查图片是否写入 .image_code_index.json
     index = load_image_code_index(work_dir)
