@@ -133,12 +133,12 @@ async function loadWorkspaceFiles() {
 	loadingFiles.value = true;
 	try {
 		const res = await getFiles(currentTaskId.value);
-			workspaceFiles.value = (res.data ?? []).map((f) => ({
-				filename: f.filename ?? f.name ?? "",
-				file_type: f.file_type ?? f.type ?? "",
-				size: f.size,
-				modified_time: f.modified_time,
-			}));
+		workspaceFiles.value = (res.data ?? []).map((f) => ({
+			filename: f.filename ?? f.name ?? "",
+			file_type: f.file_type ?? f.type ?? "",
+			size: f.size,
+			modified_time: f.modified_time,
+		}));
 	} finally {
 		loadingFiles.value = false;
 	}
