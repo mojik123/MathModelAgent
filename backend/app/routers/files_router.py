@@ -57,17 +57,18 @@ async def _publish_revision_step(
         ),
     )
 
-    if total > 0:
-        percentage = round(current / total * 100)
-        await redis_manager.publish_message(
-            task_id,
-            ProgressMessage(
-                current=current,
-                total=total,
-                percentage=percentage,
-                description=title,
-            ),
-        )
+    # 局部修订不发 ProgressMessage，避免干扰主任务 100% 进度条
+    # if total > 0:
+    #     percentage = round(current / total * 100)
+    #     await redis_manager.publish_message(
+    #         task_id,
+    #         ProgressMessage(
+    #             current=current,
+    #             total=total,
+    #             percentage=percentage,
+    #             description=title,
+    #         ),
+    #     )
 
 
 _IMAGE_REVISION_COMPAT_CODE = r"""
@@ -765,6 +766,12 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
     md_path = os.path.join(work_dir, "res.md")
 
     if not os.path.exists(image_path):
+        await _publish_revision_step(
+            payload.task_id,
+            title="图片修订失败：图片文件不存在",
+            detail=payload.filename,
+            msg_type="error",
+        )
         raise HTTPException(status_code=404, detail="图片不存在")
 
     image_name = normalize_image_name(payload.filename)
@@ -851,6 +858,12 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
         raw_text = response.content
     except Exception as e:
         logger.error(f"AI 图片修订失败: {e}")
+        await _publish_revision_step(
+            payload.task_id,
+            title="图片修订失败：AI 调用异常",
+            detail=str(e),
+            msg_type="error",
+        )
         raise HTTPException(status_code=500, detail=f"AI 修改失败: {e}") from e
 
     await _publish_revision_step(
@@ -881,6 +894,12 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
         )
     revised_code = parsed.get("revised_code")
     if parsed["status"] == "success" and not revised_code:
+        await _publish_revision_step(
+            payload.task_id,
+            title="图片修订失败：AI 没有返回可执行绘图代码",
+            detail="缺少 revised_code",
+            msg_type="error",
+        )
         return ImageRevisionChatResponse(
             success=False,
             status="failed",
@@ -1103,6 +1122,12 @@ async def revise_text_chat(payload: TextRevisionChatRequest):
         raw_text = response.content
     except Exception as e:
         logger.error(f"AI 文本修订失败: {e}")
+        await _publish_revision_step(
+            payload.task_id,
+            title="文本修订失败：AI 调用异常",
+            detail=str(e),
+            msg_type="error",
+        )
         raise HTTPException(status_code=500, detail=f"AI 修改失败: {e}") from e
 
     await _publish_revision_step(

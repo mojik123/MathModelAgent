@@ -108,14 +108,17 @@ export function reviseImageChat(
 ) {
 	return request.post<{
 		success: boolean;
-		status: "success" | "failed";
+		status: "success" | "failed" | "partial_success";
 		message: string;
 		analysis_text: string;
-		revised_code?: string;
-		updated_alt_text?: string;
-		updated_caption?: string;
+		revised_code?: string | null;
+		updated_alt_text?: string | null;
+		updated_caption?: string | null;
 		paper_updated?: boolean;
-		image_url?: string;
+		caption_updated?: boolean;
+		render_success?: boolean;
+		render_message?: string | null;
+		image_url?: string | null;
 		code_found?: boolean;
 	}>(
 		"/revise_image_chat",
