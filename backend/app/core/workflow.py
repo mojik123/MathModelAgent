@@ -392,7 +392,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         )
         msg.question_index = group_index
         msg.agent_instance_id = f'q{group_index}.sub_coordinator'
-        msg.group_id = f'q{group_index}'
+        msg.group_id = f'q{group_index}.sub_coordinator'
         msg.phase = 'coordinating'
 
         await redis_manager.publish_message(self.task_id, msg)
@@ -423,10 +423,12 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         if clean_detail:
             content += f"\n停止详情：{clean_detail}"
 
-        await redis_manager.publish_message(
-            self.task_id,
-            SystemMessage(content=content, type=level),
-        )
+        msg = SystemMessage(content=content, type=level)
+        if group_idx is not None:
+            msg.question_index = group_idx
+            msg.group_id = f"q{group_idx}"
+            msg.phase = "stopped"
+        await redis_manager.publish_message(self.task_id, msg)
 
     async def _run_solution_step(
         self,
