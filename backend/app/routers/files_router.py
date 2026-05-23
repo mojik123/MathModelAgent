@@ -447,6 +447,24 @@ def _parse_text_revision_payload(raw_text: str) -> dict:
     }
 
 
+def _find_normalized_span(source: str, needle: str) -> tuple | None:
+    if not source or not needle:
+        return None
+
+    src_tokens = [(m.group(0), m.start(), m.end()) for m in re.finditer(r"\S+", source)]
+    needle_tokens = [m.group(0) for m in re.finditer(r"\S+", needle)]
+
+    if not src_tokens or not needle_tokens:
+        return None
+
+    n = len(needle_tokens)
+    for i in range(len(src_tokens) - n + 1):
+        if [tok for tok, _, _ in src_tokens[i : i + n]] == needle_tokens:
+            return src_tokens[i][1], src_tokens[i + n - 1][2]
+
+    return None
+
+
 def _apply_local_text_revision(
     paper_content: str,
     selected_text: str,
@@ -463,6 +481,14 @@ def _apply_local_text_revision(
         return paper_content.replace(selected, revised, 1), True, "局部文本已替换"
 
     if count == 0:
+        span = _find_normalized_span(paper_content, selected)
+        if span:
+            start, end = span
+            return (
+                paper_content[:start] + revised + paper_content[end:],
+                True,
+                "局部文本已通过空白归一化匹配替换",
+            )
         return paper_content, False, "未能在当前论文中找到选中文本，可能前端内容已变化"
 
     return paper_content, False, f"选中文本在论文中出现 {count} 次，无法安全自动替换"
@@ -1322,6 +1348,54 @@ async def revise_text_chat(payload: TextRevisionChatRequest):
     )
 
     parsed = _parse_text_revision_payload(raw_text)
+
+    # 二次纠偏：JSON 解析失败或必要字段缺失时让模型重试一次
+    need_repair = (
+        parsed.get("parse_error")
+        or (
+            parsed.get("status") == "success"
+            and requested_scope == "selection"
+            and not parsed.get("revised_text")
+        )
+        or (
+            parsed.get("status") == "success"
+            and requested_scope == "paper"
+            and not parsed.get("updated_paper")
+        )
+    )
+    if need_repair:
+        await _publish_revision_step(
+            payload.task_id,
+            title="文本修订：AI 返回格式不完整，正在自动纠偏",
+            detail="缺少必要字段或 JSON 格式异常",
+            current=4,
+            total=6,
+            msg_type="warning",
+        )
+        scope_rule = (
+            "本次是全文修改，必须返回 updated_paper，revised_text 可为空。"
+            if requested_scope == "paper"
+            else "本次是局部修改，必须返回 revised_text，updated_paper 必须为空。"
+        )
+        repair_message = (
+            messages[-1]["content"]
+            + "\n\n## 上一次 AI 返回内容\n"
+            + _clip_context(raw_text, 4000)
+            + "\n\n## 强制修正要求\n"
+            + "上一次返回没有形成可解析 JSON 或字段不完整。请重新输出一个 JSON 对象，不要输出 Markdown 代码块，不要输出 JSON 之外的解释。\n"
+            + scope_rule
+        )
+        try:
+            repair_response = await simple_chat(
+                revision_llm,
+                [
+                    {"role": "system", "content": get_text_revision_prompt()},
+                    {"role": "user", "content": repair_message},
+                ],
+            )
+            parsed = _parse_text_revision_payload(repair_response)
+        except Exception as e:
+            logger.error(f"AI 文本修订二次纠偏失败: {e}")
 
     revised_text = parsed.get("revised_text")
     updated_paper = parsed.get("updated_paper")
