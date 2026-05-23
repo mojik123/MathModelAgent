@@ -44,6 +44,11 @@ interface CodeFileSection {
 
 // ---- State ----
 
+	const props = defineProps<{
+		task_id: string;
+		refreshKey?: number;
+	}>();
+
 const taskStore = useTaskStore();
 const route = useRoute();
 const { openPreview, buildFileUrl } = useFilePreview();
@@ -266,7 +271,7 @@ watch(codeFileSections, (sections) => {
 // ---- Lifecycle ----
 
 watch(
-	() => [currentTaskId.value],
+	() => [currentTaskId.value, props.refreshKey],
 	() => {
 		void loadWorkspaceFiles();
 	},
