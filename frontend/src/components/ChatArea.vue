@@ -1361,39 +1361,7 @@ const agentActionTitle = (message: Message) => {
 	return `输出：${agentNameMap[message.agent_type] ?? message.agent_type} 消息`;
 };
 
-const extractFileActions = (code: string) => {
-	const actions: Array<{ title: string; detail: string; files: string[] }> = [];
-	const addMatches = (regex: RegExp, title: string) => {
-		for (const match of code.matchAll(regex)) {
-			const file = match[1]?.trim();
-			if (!file) continue;
-			actions.push({ title: `${title}: ${file}`, detail: "", files: [file] });
-		}
-	};
-	addMatches(/read_(?:csv|excel|json|table)\(\s*["']([^"']+)["']/g, "读取");
-	addMatches(/(?:to_csv|to_excel|to_json)\(\s*["']([^"']+)["']/g, "写入");
-	addMatches(/savefig\(\s*["']([^"']+)["']/g, "保存");
-	addMatches(/(?:read_text|read_bytes)\(\s*["']([^"']+)["']/g, "读取");
-	addMatches(/(?:write_text|write_bytes)\(\s*["']([^"']+)["']/g, "修改");
-	for (const match of code.matchAll(
-		/open\(\s*["']([^"']+)["']\s*(?:,\s*["']([^"']+)["'])?/g,
-	)) {
-		const file = match[1]?.trim();
-		const mode = match[2] ?? "r";
-		if (!file) continue;
-		const isWrite = /[wax+]/.test(mode);
-		actions.push({
-			title: `${isWrite ? "修改" : "读取"}: ${file}`,
-			detail: "",
-			files: [file],
-		});
-	}
-	if (/os\.listdir|glob\.glob|Path\(.+\)\.glob|rglob\(/.test(code)) {
-		actions.push({ title: "扫描：工作目录文件", detail: "", files: [] });
-	}
-	return actions;
-};
-
+	// extractFileActions removed — now using extractArtifactFilesFromToolMessage
 const toolDetail = (message: ToolMessage) => {
 	const blocks: string[] = [];
 	if (message.input) {
@@ -1713,71 +1681,63 @@ const rawActions = computed(() => {
 					? message.input.code
 					: "";
 
-			// 按 execute_code tool 消息在 displayMessages 中的顺序计算真实代码块编号
-			const codeBlockIndex =
-				message.tool_name === "execute_code"
-					? displayMessages.value
-							.slice(0, index + 1)
-							.filter(
-								(msg) =>
-									msg.msg_type === "tool" &&
-									"tool_name" in msg &&
-									msg.tool_name === "execute_code",
-							).length
-					: 0;
-
-			actions.push({
-				id: `${message.id}:call`,
-				kind: "tool",
-				title:
-					message.tool_name === "execute_code"
-						? `运行：代码块 #${codeBlockIndex}`
-						: `调用：工具 ${message.tool_name}`,
-				detail:
-					message.tool_name === "execute_code"
-						? "把当前代码块交给本地解释器执行"
-						: "发起外部检索或工具查询",
-				status:
-					Array.isArray(message.output) && message.output.length > 0
-						? "done"
-						: "running",
-				timestamp,
-				timeLabel,
-				durationMs: 0,
-				agent: lastAgentName || "Tool",
-				groupId: lastAgentGroupId || "coder",
-				content: toolDetail(message),
-				codePreview: compactCodePreview(code),
-			});
-
-			extractFileActions(code).forEach((fileAction, fileIndex) => {
+			// 非 execute_code 工具仍然显示工具调用
+			if (message.tool_name !== "execute_code") {
 				actions.push({
-					id: `${message.id}:file:${fileIndex}`,
+					id: `${message.id}:call`,
+					kind: "tool",
+					title: `调用：工具 ${message.tool_name}`,
+					detail: "发起外部检索或工具查询",
+					status:
+						Array.isArray(message.output) && message.output.length > 0
+							? "done"
+							: "running",
+					timestamp,
+					timeLabel,
+					durationMs: 0,
+					agent: lastAgentName || "Tool",
+					groupId: lastAgentGroupId || "coder",
+					content: toolDetail(message),
+				});
+			}
+
+			// execute_code 只显示真实保存的 .py / 图片文件
+			const artifactFiles = extractArtifactFilesFromToolMessage(message);
+
+			artifactFiles.forEach((item, fileIndex) => {
+				actions.push({
+					id: `${message.id}:artifact:${fileIndex}`,
 					kind: "file",
-					title: fileAction.title,
-					detail: fileAction.detail,
-					status: "running",
+					title: item.title,
+					detail: item.detail,
+					status: "done",
 					timestamp: timestamp + fileIndex + 1,
 					timeLabel,
 					durationMs: 0,
 					agent: lastAgentName || "File",
-					files: fileAction.files,
+					files: [item.file],
 					groupId: lastAgentGroupId || "coder",
-					codePreview: compactCodePreview(code),
 				});
 			});
 
-			const outputSummary = toolOutputSummary(message);
-			if (outputSummary) {
+			// 错误结果仍然保留
+			const hasError =
+				Array.isArray(message.output) &&
+				message.output.some(
+					(item) =>
+						typeof item !== "string" &&
+						item &&
+						"res_type" in item &&
+						item.res_type === "error",
+				);
+
+			if (hasError && message.tool_name === "execute_code") {
 				actions.push({
 					id: `${message.id}:output`,
 					kind: "output",
-					title:
-						message.tool_name === "execute_code"
-							? `返回：代码执行结果 #${codeBlockIndex}`
-							: "返回：工具结果",
-					detail: `${outputSummary}\n\n${toolOutputDetail(message)}`,
-					status: "done",
+					title: "返回：代码执行错误",
+					detail: toolOutputDetail(message),
+					status: "error",
 					timestamp: timestamp + 500,
 					timeLabel,
 					durationMs: 0,
@@ -3234,7 +3194,6 @@ onBeforeUnmount(() => {
 													class="expanded-inline flex-1 max-h-52 overflow-y-auto text-[0.72rem] leading-4 text-slate-500"
 												 @click="onExpandedClick"
 												 v-html="renderContentWithImages(action.content)" />
-												<pre v-else-if="action.codePreview" class="code-preview flex-1">{{ action.codePreview }}</pre>
 												<div v-else-if="action.detail" class="detail-preview flex-1">{{ action.detail }}</div>
 												<div v-else-if="action.kind !== 'file' && action.files?.length" class="flex flex-wrap gap-1">
 													<a
