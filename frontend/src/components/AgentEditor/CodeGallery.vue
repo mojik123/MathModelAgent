@@ -322,9 +322,9 @@ watch(
 	() => [currentTaskId.value, props.refreshKey],
 	() => {
 		fileContentCache.value = {};
-			expandedCodeFiles.value = new Set();
-			codeFileError.value = "";
-			void loadWorkspaceFiles();
+		expandedCodeFiles.value = new Set();
+		codeFileError.value = "";
+		void loadWorkspaceFiles();
 	},
 	{ immediate: true },
 );
