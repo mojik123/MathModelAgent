@@ -354,7 +354,7 @@ class BaseCodeInterpreter(abc.ABC):
             if os.path.isfile(src):
                 try:
                     shutil.move(src, dst)
-                    rel_path = f"{sub_dir_name}/{base_name}"
+                    rel_path = f"{sub_dir_name}/{final_base_name}"
                     result.append(rel_path)
                     logger.info(f"图片已归入目录: {rel_path}")
                 except OSError as exc:

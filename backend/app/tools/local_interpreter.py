@@ -296,6 +296,19 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
             logger.info(f"[{section}] 使用已记录图片（代码解析）: {recorded}")
             moved = self.move_images_to_section_dir(list(recorded))
             self.save_section_code(section)
+
+            section_code = "\n\n".join(self.section_codes.get(section, []))
+            if section_code and moved:
+                try:
+                    update_image_code_index(
+                        self.work_dir,
+                        section_code,
+                        section=self.notebook_serializer.current_segmentation,
+                        image_names=moved,
+                    )
+                except Exception as exc:
+                    logger.warning(f"[{section}] 补写图片索引失败: {exc}")
+
             return moved
 
         # ── 兜底路径：文件系统扫描（含章节目录，按 artifact_tag 过滤）──
@@ -343,6 +356,19 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
         logger.info(f"[{section}] 文件系统扫描新图片: {new_images}")
         moved = self.move_images_to_section_dir(list(new_images))
         self.save_section_code(section)
+
+        section_code = "\n\n".join(self.section_codes.get(section, []))
+        if section_code and moved:
+            try:
+                update_image_code_index(
+                    self.work_dir,
+                    section_code,
+                    section=self.notebook_serializer.current_segmentation,
+                    image_names=moved,
+                )
+            except Exception as exc:
+                logger.warning(f"[{section}] 兜底扫描图片补写索引失败: {exc}")
+
         return moved
     async def cleanup(self):
         # 关闭内核

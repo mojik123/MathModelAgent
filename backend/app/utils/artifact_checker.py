@@ -93,9 +93,10 @@ def check_section_artifacts(
     index = load_image_code_index(work_dir)
     image_index = index.get("images", {})
     for img in images:
+        img_key = str(Path(img).as_posix()).replace("\\", "/")
         img_name = Path(img).name
-        if img_name not in image_index:
-            issues.append(f"图片未写入 .image_code_index.json：{img_name}")
+        if img_key not in image_index and img_name not in image_index:
+            issues.append(f"图片未写入 .image_code_index.json：{img_key}")
 
     return ArtifactCheckResult(
         passed=len(issues) == 0,
