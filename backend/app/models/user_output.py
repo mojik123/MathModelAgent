@@ -190,9 +190,15 @@ class UserOutput:
         Returns:
             附带参考文献的完整文本。
         """
-        text += "\n\n ## 参考文献"
+        if not self.footnotes:
+            return text
+
+        text += "\n\n## 参考文献"
         # 将脚注转换为列表并按 number 排序
-        sorted_footnotes = sorted(self.footnotes.items(), key=lambda x: x[1]["number"])
+        sorted_footnotes = sorted(
+            self.footnotes.items(),
+            key=lambda x: x[1].get("number", 10**9),
+        )
         for _, footnote in sorted_footnotes:
             text += f"\n\n[^{footnote['number']}]: {footnote['content']}"
         return text

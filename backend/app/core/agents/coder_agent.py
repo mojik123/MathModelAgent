@@ -93,6 +93,7 @@ class CoderAgent(Agent):
 
         retry_count = 0
         last_error_message = ""
+        has_executed_code = False
 
         while True:
             if retry_count >= self.max_retries:
@@ -218,6 +219,7 @@ class CoderAgent(Agent):
                                 }
                             )
                             retry_count = 0  # 成功后重置重试计数
+                            has_executed_code = True
                             # 成功执行后继续循环，等待下一步指令或 task_complete
                             continue
                     else:
@@ -233,7 +235,26 @@ class CoderAgent(Agent):
                         )
                         continue
                 else:
-                    # 没有工具调用，表示任务完成
+                    # 没有工具调用 —— 必须先执行过代码才允许完成
+                    if not has_executed_code:
+                        logger.info("代码手未调用 execute_code，强制要求至少执行一次")
+                        retry_count += 1
+                        last_error_message = "代码手未调用 execute_code 工具"
+                        await self.append_chat_history(
+                            {"role": "assistant", "content": response.content or ""}
+                        )
+                        await self.append_chat_history(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "你还没有调用 execute_code 工具。"
+                                    "本任务必须至少执行一次 Python 代码，读取数据、建模或生成结果后，"
+                                    "再调用 task_complete。请继续。"
+                                ),
+                            }
+                        )
+                        continue
+
                     logger.info("没有工具调用，任务完成")
                     return CoderToWriter(
                         code_response=response.content,

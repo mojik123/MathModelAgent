@@ -998,6 +998,8 @@ async def get_task_diagnostics(task_id: str):
         },
         "artifact_checks": artifact_checks,
         "final_audit": checkpoint.get("final_paper_audit"),
+        "final_paper_issues": checkpoint.get("final_paper_issues", []),
+        "final_file_issues": checkpoint.get("final_file_issues", []),
         "final_image_ref_issues": checkpoint.get("final_image_ref_issues", []),
         "final_review_failed": checkpoint.get("final_paper_review_failed"),
     }
@@ -1089,7 +1091,17 @@ async def run_modeling_task_async(
             logger.warning(f"清理任务运行标记失败 {task_id}: {e}")
         # 仅在正常完成时转换 DOCX；PDF 改为用户打开 PDF 预览时按需编译。
         if task_completed:
-            md_2_docx(task_id)
+            try:
+                md_2_docx(task_id)
+            except Exception as exc:
+                logger.warning(f"任务 {task_id} DOCX 转换失败: {exc}")
+                await redis_manager.publish_message(
+                    task_id,
+                    SystemMessage(
+                        content=f"DOCX 转换失败，但 Markdown 已生成：{exc}",
+                        type="warning",
+                    ),
+                )
 
 
 class CancelTaskResponse(BaseModel):

@@ -182,7 +182,7 @@ class Flows:
         code_output = code_interpreter.get_code_output(key)
 
         questions_quesx_keys = self.get_questions_quesx_keys()
-        bgc = self.questions["background"]
+        bgc = str(self.questions.get("background") or "")
 
         # 并行子问题写作约束提示：每组 WriterAgent 只负责本问，禁止重复全局章节
         _SUBQUES_SCOPE_CONSTRAINT = """

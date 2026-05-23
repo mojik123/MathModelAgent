@@ -116,7 +116,8 @@ class BaseCodeInterpreter(abc.ABC):
         if not cleaned:
             return filename
 
-        new_name = f"{section_num}_{cleaned}.png"
+        tag = f"{self.artifact_tag}_" if self.artifact_tag else ""
+        new_name = f"{section_num}_{tag}{cleaned}.png"
         if new_name == filename:
             return filename
 

@@ -199,13 +199,18 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
         )
 
     def execute_code_(self, code) -> list[tuple[str, str]]:
+        import time as _time
+
         assert self.kc is not None
         assert self.km is not None
         self.kc.execute(code)
         logger.info(f"执行代码: {code}")
         # Get the output of the code
         msg_list = []
+        start_ts = _time.time()
+        max_seconds = getattr(settings, "CODE_EXECUTION_TIMEOUT", 300)
         while True:
+            is_timeout = _time.time() - start_ts > max_seconds
             try:
                 iopub_msg = self.kc.get_iopub_msg(timeout=1)
                 msg_list.append(iopub_msg)
@@ -215,9 +220,18 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
                 ):
                     break
             except Exception:
-                if self.interrupt_signal:
+                if self.interrupt_signal or is_timeout:
                     self.km.interrupt_kernel()
                     self.interrupt_signal = False
+                if is_timeout and not any(
+                    m.get("msg_type") == "status"
+                    and m.get("content", {}).get("execution_state") == "idle"
+                    for m in msg_list
+                ):
+                    all_output_timeout: list[tuple[str, str]] = [
+                        ("error", f"代码执行超时，超过 {max_seconds} 秒"),
+                    ]
+                    return all_output_timeout
                 continue
 
         all_output: list[tuple[str, str]] = []
