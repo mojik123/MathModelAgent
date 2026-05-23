@@ -118,11 +118,10 @@ LLM 调用基于 LiteLLM 封装，支持多 Provider 架构：
 
 ### Code Interpreter
 
-`tools/interpreter_factory.py` — `create_interpreter()` 工厂函数根据配置创建代码解释器实例，支持两种后端：
-- **Local Jupyter** — 基于 ipykernel + jupyter-client（`local_interpreter.py`），代码保存为 `.ipynb`
-- **E2B** — 云端沙箱解释器（`e2b_interpreter.py`），需要 `E2B_API_KEY`
-
-`tools/base_interpreter.py` 定义抽象基类 `BaseCodeInterpreter`，`notebook_serializer.py` 负责将执行结果序列化为 `.ipynb`。
+`tools/interpreter_factory.py` — `create_interpreter()` 工厂函数根据配置创建代码解释器实例，支持三种后端：
+- **Local Jupyter** — 基于 ipykernel + jupyter-client，代码保存为 `.ipynb`
+- **E2B** — 云端沙箱解释器
+- **Daytona** — 云端解释器（备用）
 
 ### Prompt 模板与 Inject
 
@@ -216,6 +215,8 @@ Agent 之间通过 Pydantic 模型传递结构化数据：
 
 ## 项目结构
 
+`.cursor/rules/` 目录下有额外的架构说明文件（`structure.mdc`、`backend-rules.mdc`、`frontend-rules.mdc`、`ws-frontend-backend-interaction.mdc`），可作为补充参考。
+
 ```
 backend/
   app/
@@ -244,14 +245,10 @@ frontend/
   src/
     apis/              # 后端 API 调用封装（按业务模块拆分）
     components/        # 通用组件 + shadcn-vue UI 库（components/ui/ 不要修改）
-      AgentEditor/     # Coder/Modeler/Writer 编辑器 + 代码/图片画廊
-      FilePreviewer/   # 多格式文件预览（代码、CSV、图片、Markdown、PDF）
-    composables/       # Vue composables（useFilePreview.ts）
-    pages/             # 页面组件（chat/、task/、login/、pdf/、example/）
+    pages/             # 页面组件（chat/、task/、login/）
     stores/            # Pinia 状态管理（apiKeys.ts、task.ts）
     router/            # vue-router 路由配置
     utils/             # 工具函数、类型定义、WebSocket 客户端、axios 封装、图片常量
-      enum.ts          # 后端枚举的 TypeScript 镜像（AgentType、ApiType）
 ```
 
 ## Code Style
@@ -312,6 +309,15 @@ const rendered = computed(() => marked.parse(props.content));
 </script>
 ```
 
+## 根目录辅助脚本
+
+- `check-config.ps1` — 启动前检查 API Key 等配置是否完整
+- `start-docker.ps1` — 一键启动 Docker 所有服务
+- `push-to-github.ps1` — 提交并推送到 GitHub（每次修改后执行）
+- `scripts/` — 环境修复和补丁脚本（Python + PowerShell）
+- `skills/` — 自定义技能定义（`cumcm-latex`、`nature-figure`）
+- `third_party/CUMCMThesis/` — CUMCM LaTeX 论文模板
+
 ## Git Workflow
 
 提交信息格式：`<type>: <描述>`，type 包括：
@@ -324,16 +330,6 @@ const rendered = computed(() => marked.parse(props.content));
 - `docs`: 文档
 
 示例：`feat: 添加 OpenAlex API Key 支持并更新相关配置`
-
-## 根目录辅助脚本
-
-- `check-config.ps1` — 启动前检查 API Key 等配置是否完整
-- `start-docker.ps1` — 一键启动 Docker 所有服务
-- `push-to-github.ps1` — 提交并推送到 GitHub（每次修改后执行）
-- `scripts/` — 环境修复和补丁脚本（Python + PowerShell）
-- `skills/` — 自定义技能定义（`cumcm-latex`、`nature-figure`）
-- `third_party/CUMCMThesis/` — CUMCM LaTeX 论文模板
-- `.cursor/rules/` — 补充架构说明（`structure.mdc`、`backend-rules.mdc`、`frontend-rules.mdc`、`ws-frontend-backend-interaction.mdc`）
 
 ## Boundaries
 
