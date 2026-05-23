@@ -202,7 +202,7 @@ class MathModelWorkFlow(WorkFlow):
             task_id=problem.task_id,
             model=coder_llm,
             work_dir=self.work_dir,
-            max_retries=settings.MAX_RETRIES,
+            max_retries=settings.CODER_MAX_RETRIES,
             code_interpreter=code_interpreter,
             context_window=settings.CODER_CONTEXT_WINDOW,
             cancel_event=self.cancel_event,
