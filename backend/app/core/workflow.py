@@ -1654,9 +1654,13 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         SystemMessage(content="TOC regenerated deterministically"),
                     )
 
-                # quesN missing -> rerun qN.writer with existing coder results
-                repair_writer = self._create_writer_agent(problem, agent_index=None)
-                for k in missing_keys:
+                # quesN missing/invalid -> rerun qN.writer with existing coder results
+                repair_targets = list(dict.fromkeys(
+                    missing_keys + [k for k, _ in invalid_keys]
+                ))
+
+                for k in repair_targets:
+                    repair_writer = self._create_writer_agent(problem, agent_index=None)
                     if k.startswith("ques"):
                         group_idx = int(k[4:])
                         await redis_manager.publish_message(
@@ -1725,7 +1729,30 @@ Regenerate the model building and solving chapter for {k}.
                             checkpoint["section_ledger"][k]["last_action"] = "repair_failed"
                             checkpoint["section_ledger"][k]["status"] = "missing"
 
-                    elif k in ("analysisQues", "modelAssumption", "symbol", "judge", "firstPage", "RepeatQues"):
+                    else:
+                        # 兜底：已有内容则补 ledger，不重跑
+                        value = user_output.res.get(k)
+                        content = ""
+                        if isinstance(value, dict):
+                            content = str(value.get("response_content") or "").strip()
+                        if content:
+                            issues = validate_section_output(k, content, self.ques_count)
+                            checkpoint["section_ledger"][k] = {
+                                "title": k,
+                                "owner": "restored",
+                                "status": "invalid" if issues else "valid",
+                                "attempts": 0,
+                                "content_chars": len(content),
+                                "issues": issues,
+                                "last_action": "ledger_restored_from_user_output",
+                            }
+                            await redis_manager.publish_message(
+                                self.task_id,
+                                SystemMessage(content=f"Ledger: {k} restored from existing content"),
+                            )
+                            continue
+
+                    if k in ("analysisQues", "modelAssumption", "symbol", "judge", "firstPage", "RepeatQues"):
                         repair_writer.model.agent_instance_id = f"paper.writer.{k}"
                         repair_writer.model.group_id = "paper.writing"
                         repair_writer.model.phase = "paper_writing"
