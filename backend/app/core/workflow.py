@@ -1015,11 +1015,19 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         level="error",
                     )
                     try:
+                        interp.cleanup_attempt_artifacts(key)
+                    except Exception:
+                        pass
+                    try:
+                        interp.cleanup_attempt_artifacts(key)
+                    except Exception:
+                        pass
+                    try:
                         await interp.cleanup()
                     except Exception:
                         pass
                     raise
-                except Exception as exc:
+    except Exception as exc:
                     await self._publish_agent_stop_reason(
                         group_idx=group_idx,
                         key=key,

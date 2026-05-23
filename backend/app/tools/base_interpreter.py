@@ -357,6 +357,96 @@ class BaseCodeInterpreter(abc.ABC):
                 result.append(normalized)
         return result
 
+    def cleanup_attempt_artifacts(self, section: str) -> None:
+        """清理当前 Coder attempt 在指定 section 下产生的图片、同名代码和章节代码。
+
+        用于主力/备用 Coder 失败后丢弃本 attempt 产物，避免失败图片进入最终目录。
+        """
+        from pathlib import Path
+
+        from app.utils.image_constants import section_dir_name
+        from app.utils.image_code_index import load_image_code_index, save_image_code_index
+
+        try:
+            sub_dir_name = section_dir_name(section)
+        except ValueError:
+            return
+
+        section_dir = Path(self.work_dir) / sub_dir_name
+        if not section_dir.exists():
+            return
+
+        recorded = set(self.created_images_by_section.get(section, set()))
+        tag = self.artifact_tag or ""
+        deleted_image_keys: set[str] = set()
+
+        for img in recorded:
+            img_name = Path(str(img).replace("\\", "/")).name
+            candidate_paths = [
+                Path(self.work_dir) / img_name,
+                section_dir / img_name,
+            ]
+            if "/" in str(img).replace("\\", "/"):
+                candidate_paths.append(Path(self.work_dir) / str(img).replace("\\", "/"))
+
+            for img_path in candidate_paths:
+                if img_path.exists() and img_path.is_file():
+                    rel = str(img_path.relative_to(self.work_dir)).replace("\\", "/")
+                    deleted_image_keys.add(rel)
+                    deleted_image_keys.add(img_path.name)
+                    try:
+                        img_path.unlink()
+                    except OSError:
+                        pass
+
+                    py_path = img_path.with_suffix(".py")
+                    if py_path.exists() and py_path.is_file():
+                        try:
+                            py_path.unlink()
+                        except OSError:
+                            pass
+
+        if tag:
+            code_name = f"code_{tag}.py"
+        else:
+            code_name = "code.py"
+
+        code_path = section_dir / code_name
+        if code_path.exists() and code_path.is_file():
+            try:
+                code_path.unlink()
+            except OSError:
+                pass
+
+        if tag:
+            step_pattern = f"*_{tag}_step_*.py"
+        else:
+            step_pattern = "*_step_*.py"
+
+        for path in section_dir.glob(step_pattern):
+            if not tag and ("_b" in path.name or "_r" in path.name):
+                continue
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+        try:
+            index = load_image_code_index(self.work_dir)
+            image_map = index.setdefault("images", {})
+            for key in list(image_map.keys()):
+                entry = image_map.get(key, {})
+                filename = str(entry.get("filename") or key)
+                basename = str(entry.get("basename") or Path(filename).name)
+                if key in deleted_image_keys or filename in deleted_image_keys or basename in deleted_image_keys:
+                    image_map.pop(key, None)
+            save_image_code_index(self.work_dir, index)
+        except Exception:
+            pass
+
+        self.created_images_by_section.pop(section, None)
+        self.section_codes.pop(section, None)
+
     def delete_color_control_char(self, string):
         ansi_escape = re.compile(r"(\x9B|\x1B\[)[0-?]*[ -\/]*[@-~]")
         return ansi_escape.sub("", string)
