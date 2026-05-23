@@ -128,6 +128,9 @@ class ImageRevisionChatResponse(BaseModel):
     updated_alt_text: str | None = None
     updated_caption: str | None = None
     paper_updated: bool = False
+    caption_updated: bool = False
+    render_success: bool = False
+    render_message: str | None = None
     image_url: str | None = None
     code_found: bool = False
 
@@ -408,6 +411,31 @@ def _build_task_revision_context(task_id: str, work_dir: str, paper_content: str
     )
 
 
+def _build_focused_image_task_context(
+    task_id: str,
+    work_dir: str,
+    filename: str,
+    code_entry: dict,
+    paper_content: str,
+) -> str:
+    """只传目标图片相关上下文，不塞完整任务上下文，防止混入无关内容。"""
+    image_name = normalize_image_name(filename)
+    section = str(code_entry.get("section") or "")
+    source_code = str(code_entry.get("code") or "")
+    image_context = _extract_image_context(paper_content, image_name)
+
+    return "\n\n".join(
+        part
+        for part in [
+            f"## 目标图片\n{image_name}",
+            f"## 图片所属章节\n{section or '(未知)'}",
+            f"## 图片附近论文上下文\n{_clip_context(image_context, 3000)}",
+            f"## 目标图片原始代码\n```python\n{_clip_context(source_code, 8000)}\n```",
+        ]
+        if part
+    )
+
+
 def _format_revision_history(history: list[dict] | None, limit: int = 5000) -> str:
     if not history:
         return ""
@@ -570,6 +598,56 @@ def _file_sha256(path: str) -> str | None:
     return digest.hexdigest()
 
 
+def _auto_patch_revision_code(code: str, error_text: str) -> tuple[str, bool, str]:
+    """针对图片修订代码的常见 NameError 做保守自动补丁。"""
+    patched = code
+    notes: list[str] = []
+    error_text = error_text or ""
+
+    def ensure_import(import_line: str) -> None:
+        nonlocal patched
+        if import_line not in patched:
+            patched = import_line + "\n" + patched
+
+    if "name 'sign' is not defined" in error_text:
+        if "import numpy as np" in patched:
+            patched = re.sub(r"(?<![\w.])sign\s*\(", "np.sign(", patched)
+            notes.append("已将 sign(...) 修正为 np.sign(...)")
+        else:
+            ensure_import("import numpy as np")
+            patched = re.sub(r"(?<![\w.])sign\s*\(", "np.sign(", patched)
+            notes.append("已补充 import numpy as np，并将 sign(...) 修正为 np.sign(...)")
+
+    if "name 'np' is not defined" in error_text:
+        ensure_import("import numpy as np")
+        notes.append("已补充 import numpy as np")
+
+    if "name 'pd' is not defined" in error_text:
+        ensure_import("import pandas as pd")
+        notes.append("已补充 import pandas as pd")
+
+    if "name 'plt' is not defined" in error_text:
+        ensure_import("import matplotlib.pyplot as plt")
+        notes.append("已补充 import matplotlib.pyplot as plt")
+
+    if "name 'sns' is not defined" in error_text:
+        ensure_import("import seaborn as sns")
+        notes.append("已补充 import seaborn as sns")
+
+    return patched, patched != code, "；".join(notes)
+
+
+async def _execute_revision_once(
+    interpreter: LocalCodeInterpreter,
+    code_to_run: str,
+) -> tuple[bool, str]:
+    """执行一次修订代码，返回 (成功, 错误信息)。"""
+    _, error_occurred, error_message = await interpreter.execute_code(code_to_run)
+    if error_occurred:
+        return False, error_message
+    return True, ""
+
+
 async def _rerun_revised_image_code(
     task_id: str,
     work_dir: str,
@@ -597,24 +675,22 @@ async def _rerun_revised_image_code(
         if compat_errors:
             return False, f"图片修订兼容环境初始化失败：{compat_errors[-1]}"
 
-        code_cells = get_notebook_code_cells(work_dir)
-        if cell_index is None:
-            # 尝试从所有 cell 中找到能生成目标图片的那一个
-            for idx, cell_code in enumerate(code_cells):
-                if normalize_image_name(filename) in extract_saved_images(cell_code):
-                    cell_index = idx
-                    break
-        prefix_cells = code_cells[:cell_index] if cell_index is not None else code_cells
-        for index, code in enumerate(prefix_cells):
-            outputs = await asyncio.to_thread(interpreter.execute_code_, code)
-            errors = [out for mark, out in outputs if mark == "error"]
-            if errors:
-                return False, f"依赖代码第 {index + 1} 段执行失败：{errors[-1]}"
-
+        # 第一优先级：只执行 revised_code，不执行任何前置依赖
         before_digest = _file_sha256(target)
-        _, error_occurred, error_message = await interpreter.execute_code(revised_code)
-        if error_occurred:
-            return False, error_message
+        ok, err = await _execute_revision_once(interpreter, revised_code)
+
+        # 第二优先级：常见 NameError 自动补丁后重试
+        if not ok:
+            patched_code, changed, note = _auto_patch_revision_code(revised_code, err)
+            if changed:
+                ok, patched_err = await _execute_revision_once(interpreter, patched_code)
+                if ok:
+                    revised_code = patched_code
+                else:
+                    err = f"{err}\n自动补丁后仍失败：{patched_err}"
+
+        if not ok:
+            return False, f"修改后的绘图代码执行失败：{err}"
 
         if not os.path.exists(target):
             return False, "修改代码执行完成，但没有生成目标图片文件"
@@ -729,7 +805,13 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
     )
 
     image_context = _extract_image_context(paper_content, payload.filename)
-    task_context = _build_task_revision_context(payload.task_id, work_dir, paper_content)
+    task_context = _build_focused_image_task_context(
+        payload.task_id,
+        work_dir,
+        image_name,
+        code_entry,
+        paper_content,
+    )
     user_message = _build_revision_message(
         payload.filename,
         payload.instruction,
@@ -824,14 +906,67 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
             code_entry.get("cell_index"),
         )
         if not image_regenerated:
+            # 即使重绘失败，也尽量更新 caption/alt-text
+            await _publish_revision_step(
+                payload.task_id,
+                title="图片修订：图片重绘失败，尝试更新文案说明",
+                detail=run_message,
+                current=8,
+                total=9,
+                msg_type="warning",
+            )
+            caption_updated = False
+            paper_updated_fallback = False
+
+            if os.path.exists(md_path) and (
+                parsed.get("updated_alt_text") or parsed.get("updated_caption")
+            ):
+                updated_content, paper_updated_fallback = _apply_image_text_revision(
+                    paper_content,
+                    image_name,
+                    parsed.get("updated_alt_text"),
+                    parsed.get("updated_caption"),
+                )
+                if paper_updated_fallback:
+                    with open(md_path, "w", encoding="utf-8") as f:
+                        f.write(updated_content)
+                    caption_updated = True
+
+                update_image_metadata(
+                    work_dir,
+                    image_name,
+                    description=parsed.get("updated_caption") or parsed.get("updated_alt_text"),
+                    alt_text=parsed.get("updated_alt_text"),
+                    caption=parsed.get("updated_caption"),
+                    metadata_source="ai_revision",
+                )
+
+            await _publish_revision_step(
+                payload.task_id,
+                title="图片修订完成（部分成功）",
+                detail="文案已更新，但图片重绘失败" if caption_updated else run_message or "图片重绘失败",
+                current=9,
+                total=9,
+                msg_type="warning" if caption_updated else "error",
+            )
+
             return ImageRevisionChatResponse(
-                success=False,
-                status="failed",
-                message=run_message or "修改代码执行失败，图片没有重新生成",
+                success=caption_updated,
+                status="partial_success" if caption_updated else "failed",
+                message=(
+                    "图片说明已更新，但图片重绘失败："
+                    + (run_message or "修改代码执行失败，图片没有重新生成")
+                    if caption_updated
+                    else run_message or "修改代码执行失败，图片没有重新生成"
+                ),
                 analysis_text=parsed["analysis_text"],
                 revised_code=str(revised_code),
                 updated_alt_text=parsed.get("updated_alt_text"),
                 updated_caption=parsed.get("updated_caption"),
+                paper_updated=paper_updated_fallback if not image_regenerated else False,
+                caption_updated=caption_updated,
+                render_success=False,
+                render_message=run_message,
                 code_found=True,
             )
 
@@ -881,6 +1016,9 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
         updated_alt_text=parsed.get("updated_alt_text"),
         updated_caption=parsed.get("updated_caption"),
         paper_updated=paper_updated,
+        caption_updated=paper_updated,
+        render_success=image_regenerated,
+        render_message=run_message if not image_regenerated else None,
         image_url=f"http://localhost:8000/static/{payload.task_id}/{image_name}",
         code_found=True,
     )
