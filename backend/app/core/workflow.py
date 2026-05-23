@@ -340,6 +340,37 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
         await redis_manager.publish_message(self.task_id, msg)
 
+    async def _publish_agent_stop_reason(
+        self,
+        *,
+        group_idx: int | None,
+        key: str,
+        agent_name: str,
+        reason: str,
+        detail: str = "",
+        level: str = "error",
+    ) -> None:
+        group_text = f"[组#{group_idx}] " if group_idx is not None else ""
+        clean_detail = str(detail or "").strip()
+        if len(clean_detail) > 1200:
+            clean_detail = (
+                clean_detail[:600]
+                + "\n...（中间省略）...\n"
+                + clean_detail[-500:]
+            )
+
+        content = (
+            f"{group_text}{agent_name} 已停止：{reason}\n"
+            f"子任务：{key}"
+        )
+        if clean_detail:
+            content += f"\n停止详情：{clean_detail}"
+
+        await redis_manager.publish_message(
+            self.task_id,
+            SystemMessage(content=content, type=level),
+        )
+
     async def _run_solution_step(
         self,
         key: str,
@@ -968,7 +999,29 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
                     return interp, result
 
-                except Exception:
+                except asyncio.TimeoutError as exc:
+                    await self._publish_agent_stop_reason(
+                        group_idx=group_idx,
+                        key=key,
+                        agent_name=f"Coder {attempt_name}",
+                        reason="运行超时",
+                        detail=str(exc),
+                        level="error",
+                    )
+                    try:
+                        await interp.cleanup()
+                    except Exception:
+                        pass
+                    raise
+                except Exception as exc:
+                    await self._publish_agent_stop_reason(
+                        group_idx=group_idx,
+                        key=key,
+                        agent_name=f"Coder {attempt_name}",
+                        reason="求解失败",
+                        detail=str(exc),
+                        level="error",
+                    )
                     try:
                         await interp.cleanup()
                     except Exception:
@@ -992,6 +1045,14 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     logger.warning(
                         f"[组#{group_idx}] 主力 Coder 失败: {exc}"
                     )
+                    await self._publish_agent_stop_reason(
+                        group_idx=group_idx,
+                        key=key,
+                        agent_name="Coder 主力",
+                        reason="主力尝试失败，准备切换备用",
+                        detail=str(exc),
+                        level="warning",
+                    )
 
                 # 固定一层备用
                 try:
@@ -1013,10 +1074,26 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     logger.warning(
                         f"[组#{group_idx}] 备用 Coder 1 失败: {exc}"
                     )
+                    await self._publish_agent_stop_reason(
+                        group_idx=group_idx,
+                        key=key,
+                        agent_name="Coder 备用1",
+                        reason="备用尝试失败",
+                        detail=str(exc),
+                        level="error",
+                    )
 
+                final_reason = "；".join(failures)
+                await self._publish_agent_stop_reason(
+                    group_idx=group_idx,
+                    key=key,
+                    agent_name="Coder",
+                    reason="所有 Coder 尝试均失败，子问题终止",
+                    detail=final_reason,
+                    level="error",
+                )
                 raise RuntimeError(
-                    f"[组#{group_idx}] 所有 Coder 尝试均失败："
-                    + "；".join(failures)
+                    f"[组#{group_idx}] 所有 Coder 尝试均失败：" + final_reason
                 )
 
             # ── 入口：固定主力 → 备用1 ──

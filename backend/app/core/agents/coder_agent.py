@@ -120,7 +120,7 @@ class CoderAgent(Agent):
                     ),
                 )
                 raise RuntimeError(
-                    f"代码手求解失败：连续 {max_same_error} 次相同错误 "
+                    f"代码手求解失败：连续 {max_same_error} 次相同错误，子任务：{subtask_title}，"
                     f"（{last_error_type}），"
                     f"最后错误：{last_error_message}"
                 )
@@ -129,12 +129,12 @@ class CoderAgent(Agent):
                 await redis_manager.publish_message(
                     self.task_id,
                     SystemMessage(
-                        content=f"代码手求解失败：超过最大重试次数({self.max_retries})",
+                        content=f"代码手已停止：超过最大重试次数({self.max_retries})\\n子任务：{subtask_title}\\n停止原因：连续修复代码仍未通过执行\\n最后错误：{last_error_message[:1000]}",
                         type="error",
                     ),
                 )
                 raise RuntimeError(
-                    f"代码手求解失败：达到最大重试次数 {self.max_retries}，"
+                    f"代码手求解失败：达到最大重试次数 {self.max_retries}，子任务：{subtask_title}，"
                     f"最后错误：{last_error_message}"
                 )
 
