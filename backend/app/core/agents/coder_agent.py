@@ -27,14 +27,22 @@ class CoderAgent(Agent):
         task_id: str,
         model: LLM,
         work_dir: str,  # 工作目录
-        max_retries: int = settings.MAX_RETRIES,  # 最大错误重试次数
+        max_retries: int | None = None,  # None 时自动从 settings 读取
         code_interpreter: BaseCodeInterpreter | None = None,
         context_window: int = 128000,
         cancel_event: asyncio.Event | None = None,
     ) -> None:
         super().__init__(task_id, model, context_window, cancel_event=cancel_event)
         self.work_dir = work_dir
-        self.max_retries = max_retries
+        self.max_retries = (
+            max_retries
+            if max_retries is not None
+            else int(
+                settings.MAX_RETRIES
+                if getattr(settings, "MAX_RETRIES", None) is not None
+                else settings.CODER_MAX_RETRIES
+            )
+        )
         self.is_first_run = True
         self.system_prompt = CODER_PROMPT
         self.code_interpreter = code_interpreter
@@ -60,9 +68,10 @@ class CoderAgent(Agent):
         if section_num:
             naming_reminder = (
                 f"【系统提示】你当前正在处理章节：{subtask_title}（论文编号 {section_num}）。"
-                f"所有图片文件名必须以 `{section_num}_` 开头（如 `{section_num}_prediction_comparison.png`），"
-                "禁止使用 `fig1`、`fig2` 等不符合规范的命名。"
-                "代码文件将自动以图片文件名为基础命名，图片命名违规会导致代码文件命名也违规。"
+                "章节编号由系统目录管理，图片文件名只写英文语义名，"
+                "例如 prediction_result.png、model_diagnostics.png、sensitivity_curve.png。"
+                "不要使用中文、空格、fig1、figure1、图1，也不要在图片名前重复添加章节号前缀。"
+                "系统会自动把图片和对应 Python 文件归入当前章节目录。"
             )
             prompt = f"{naming_reminder}\n\n{prompt}"
 

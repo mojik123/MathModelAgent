@@ -65,23 +65,13 @@ class Settings(BaseSettings):
     WRITER_PARALLELISM: int = 3
     QUESTION_PARALLELISM: int = 4
 
-    # 并行求解配置
-    CODER_PARALLELISM: int = 4
-
-    # Coder 执行模式：默认关闭竞速，每问单 Coder
-    CODER_RACING_ENABLED: bool = False
-    CODER_RACING_WORKERS: int = 1
-
-    # 主力 Coder 失败后最多启动几个备用 Coder
-    CODER_FALLBACK_WORKERS: int = 1
-
-    # 产物检查
-    ARTIFACT_CHECK_ENABLED: bool = True
-    ARTIFACT_REQUIRE_IMAGE_FOR_QUESTION: bool = False
-
+    # ── Coder 执行配置 ──
     CODE_EXECUTION_TIMEOUT: int = 300  # 单次代码执行最长秒数
-    MAX_RETRIES: int = 8
-    CODER_MAX_SAME_ERROR: int = 4  # 连续相同错误时提前放弃，避免同一坑里循环
+    CODER_MAX_RETRIES: int = 6       # Coder 内部最大重试次数
+    CODER_MAX_SAME_ERROR: int = 3    # 连续相同错误上限，防止同类错误无限循环
+
+    # 兼容旧 .env 里的 MAX_RETRIES，下轮彻底删除
+    MAX_RETRIES: int | None = None
     E2B_API_KEY: Optional[str] = None
     LOG_LEVEL: str = "DEBUG"
     DEBUG: bool = True
@@ -106,15 +96,7 @@ class Settings(BaseSettings):
     RAG_EMBEDDING_MODEL: str = "BAAI/bge-m3"
     RAG_RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
 
-    # HIL 人机协作配置
-    HIL_ENABLED: bool = True
-    HIL_TIMEOUT: int = 300  # 审批超时时间（秒）
-    HIL_CHECKPOINTS: dict = {
-        "problem_split": True,
-        "model_selection": True,
-        "code_review": False,
-        "paper_review": True,
-    }
+    HIL_TIMEOUT: int = 300  # 审批超时时间（秒），保留兼容
 
     model_config = SettingsConfigDict(
         env_file=".env.dev",

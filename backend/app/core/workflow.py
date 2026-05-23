@@ -417,22 +417,21 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             )
 
         # 产物检查（覆盖 EDA / sensitivity_analysis 等共享阶段）
-        if getattr(settings, "ARTIFACT_CHECK_ENABLED", True):
-            from app.utils.artifact_checker import check_section_artifacts
+        from app.utils.artifact_checker import check_section_artifacts
 
-            section_dir = section_dir_name(key)
-            artifact_check = check_section_artifacts(
-                self.work_dir,
-                section_key=key,
-                section_dir=section_dir,
-                created_images=coder_response.created_images,
-                require_image=False,
-                artifact_tag=None,
+        section_dir = section_dir_name(key)
+        artifact_check = check_section_artifacts(
+            self.work_dir,
+            section_key=key,
+            section_dir=section_dir,
+            created_images=coder_response.created_images,
+            require_image=False,
+            artifact_tag=None,
+        )
+        if not artifact_check.passed:
+            raise RuntimeError(
+                f"{key} 产物检查失败：" + "；".join(artifact_check.issues)
             )
-            if not artifact_check.passed:
-                raise RuntimeError(
-                    f"{key} 产物检查失败：" + "；".join(artifact_check.issues)
-                )
 
         # 图片描述（在 coder_semaphore 外执行，不阻塞下一个 coder）
         if coder_response.created_images:
@@ -787,7 +786,6 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         solution_flows = flows.get_solution_flows(self.questions, modeler_response)
 
         # 并发控制：QUESTION_PARALLELISM 限制同时运行的子问题组数
-        # CODER_PARALLELISM 限制同时运行多少个 Coder kernel
         question_parallelism = max(
             1,
             min(
@@ -796,13 +794,8 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             ),
         )
 
-        coder_parallelism = max(
-            1,
-            int(getattr(settings, "CODER_PARALLELISM", question_parallelism)),
-        )
-
         question_semaphore = asyncio.Semaphore(question_parallelism)
-        coder_semaphore = asyncio.Semaphore(coder_parallelism)
+        coder_semaphore = asyncio.Semaphore(question_parallelism)
         # 写入锁：保护 user_output.set_res 并发写入
         write_lock = asyncio.Lock()
 
@@ -844,18 +837,12 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         question_keys = [k for k in solution_flows if k.startswith("ques")]
 
         if question_keys:
-            racing_enabled = getattr(settings, "CODER_RACING_ENABLED", False)
-            worker_desc = (
-                f"每问竞速 {max(1, int(getattr(settings, 'CODER_RACING_WORKERS', 2)))} 个 Coder"
-                if racing_enabled
-                else "每问单 Coder，失败自动启动备用"
-            )
             await redis_manager.publish_message(
                 self.task_id,
                 SystemMessage(
                     content=(
                         f"全局协调者：启动 {len(question_keys)} 个子问题并行组，"
-                        f"{worker_desc}"
+                        "每问单 Coder，失败自动启动备用"
                     )
                 ),
             )
@@ -865,7 +852,6 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
             默认每问单 Coder，主力失败后自动启动备用 Coder。
             产物检查保证图片、代码、论文引用可靠。
-            竞速模式（多 Coder 同时抢跑）通过 CODER_RACING_ENABLED 手动开启。
             """
             label = solution_label_map.get(key, key)
             if key in user_output.res:
@@ -917,9 +903,6 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
             # ── 公共产物检查 helper ──
             def _check_coder_artifacts(result, attempt_name: str, artifact_tag: str = ""):
-                if not getattr(settings, "ARTIFACT_CHECK_ENABLED", True):
-                    return
-
                 from app.utils.artifact_checker import check_section_artifacts
 
                 section_dir = section_dir_name(key)
@@ -928,11 +911,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     section_key=key,
                     section_dir=section_dir,
                     created_images=result.created_images,
-                    require_image=getattr(
-                        settings,
-                        "ARTIFACT_REQUIRE_IMAGE_FOR_QUESTION",
-                        False,
-                    ),
+                    require_image=False,
                     artifact_tag=artifact_tag or None,
                 )
 
@@ -1014,162 +993,36 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         f"[组#{group_idx}] 主力 Coder 失败: {exc}"
                     )
 
-                fallback_workers = max(
-                    0, int(getattr(settings, "CODER_FALLBACK_WORKERS", 1))
-                )
-                for i in range(fallback_workers):
-                    tag = f"b{i + 1}"
-                    try:
-                        await redis_manager.publish_message(
-                            self.task_id,
-                            SystemMessage(
-                                content=(
-                                    f"[组#{group_idx}] 启动备用 Coder "
-                                    f"{i + 1}/{fallback_workers}"
-                                ),
-                                type="warning",
-                            ),
-                        )
-                        return await _run_single_coder_attempt(
-                            attempt_name=f"备用{i + 1}",
-                            worker_suffix=f"_b{i + 1}",
-                            artifact_tag=tag,
-                            race_index=i + 2,
-                        )
-                    except Exception as exc:
-                        failures.append(f"备用{i + 1}失败：{exc}")
-                        logger.warning(
-                            f"[组#{group_idx}] 备用 Coder {i + 1} 失败: {exc}"
-                        )
+                # 固定一层备用
+                try:
+                    await redis_manager.publish_message(
+                        self.task_id,
+                        SystemMessage(
+                            content=f"[组#{group_idx}] 启动备用 Coder 1/1",
+                            type="warning",
+                        ),
+                    )
+                    return await _run_single_coder_attempt(
+                        attempt_name="备用1",
+                        worker_suffix="_b1",
+                        artifact_tag="b1",
+                        race_index=2,
+                    )
+                except Exception as exc:
+                    failures.append(f"备用1失败：{exc}")
+                    logger.warning(
+                        f"[组#{group_idx}] 备用 Coder 1 失败: {exc}"
+                    )
 
                 raise RuntimeError(
                     f"[组#{group_idx}] 所有 Coder 尝试均失败："
                     + "；".join(failures)
                 )
 
-            # ── 竞速模式保留 ──
-            async def _run_coder_racing_mode():
-                racing_workers = max(
-                    1, int(getattr(settings, "CODER_RACING_WORKERS", 2))
-                )
-                racing_interpreters: list = []
-                racing_coders: list[CoderAgent] = []
-                for w in range(racing_workers):
-                    artifact_tag = f"r{w + 1}"
-                    interp = await self._create_code_interpreter(
-                        key,
-                        worker_suffix=f"_r{w + 1}",
-                        artifact_tag=artifact_tag,
-                    )
-                    coder = self._create_coder_agent(
-                        problem, interp, agent_index=group_idx
-                    )
-                    coder.model.question_index = group_idx
-                    coder.model.race_index = w + 1
-                    coder.model.agent_instance_id = (
-                        f"q{group_idx}.coder.r{w + 1}"
-                    )
-                    coder.model.group_id = f"q{group_idx}.coder"
-                    coder.model.phase = "coding"
-                    racing_interpreters.append(interp)
-                    racing_coders.append(coder)
-
-                async def _run_one_racing_coder(interp, coder, worker_num: int):
-                    async with coder_semaphore:
-                        await self._check_cancelled()
-                        await redis_manager.publish_message(
-                            self.task_id,
-                            SystemMessage(
-                                content=(
-                                    f"[组#{group_idx}·竞速{worker_num + 1}/{racing_workers}]"
-                                    f" 代码手开始求解 {key}"
-                                )
-                            ),
-                        )
-                        racing_prompt = self._with_image_position_hint(
-                            solution_flows[key]["coder_prompt"],
-                            key,
-                            group_idx,
-                            artifact_tag=f"r{worker_num + 1}",
-                        )
-                        result = await coder.run(
-                            prompt=racing_prompt, subtask_title=key
-                        )
-
-                        _check_coder_artifacts(
-                            result,
-                            attempt_name=f"竞速{worker_num + 1}",
-                            artifact_tag=f"r{worker_num + 1}",
-                        )
-
-                    return interp, result
-
-                coder_tasks = [
-                    asyncio.create_task(
-                        _run_one_racing_coder(interp, coder, w)
-                    )
-                    for w, (interp, coder) in enumerate(
-                        zip(racing_interpreters, racing_coders)
-                    )
-                ]
-
-                winner_interp = None
-                winner_coder_response = None
-                try:
-                    remaining = set(coder_tasks)
-                    while remaining and winner_coder_response is None:
-                        done, remaining = await asyncio.wait(
-                            remaining, return_when=asyncio.FIRST_COMPLETED
-                        )
-                        for t in done:
-                            try:
-                                winner_interp, winner_coder_response = (
-                                    t.result()
-                                )
-                                break
-                            except Exception as exc:
-                                logger.warning(
-                                    f"[组#{group_idx}] 竞速 Coder 失败: {exc}"
-                                )
-
-                    if winner_coder_response is None:
-                        raise RuntimeError(
-                            f"[组#{group_idx}] 所有 {racing_workers} 个竞速 Coder 均失败"
-                        )
-
-                    for t in remaining:
-                        t.cancel()
-                    await asyncio.gather(*remaining, return_exceptions=True)
-
-                except Exception:
-                    for t in coder_tasks:
-                        t.cancel()
-                    await asyncio.gather(*coder_tasks, return_exceptions=True)
-                    for interp in racing_interpreters:
-                        try:
-                            await interp.cleanup()
-                        except Exception:
-                            pass
-                    raise
-                else:
-                    for interp in racing_interpreters:
-                        if interp is not winner_interp:
-                            try:
-                                await interp.cleanup()
-                            except Exception:
-                                pass
-
-                return winner_interp, winner_coder_response
-
-            # ── 入口：默认走普通模式，开启竞速才走竞速 ──
-            if getattr(settings, "CODER_RACING_ENABLED", False):
-                winner_interp, winner_coder_response = (
-                    await _run_coder_racing_mode()
-                )
-            else:
-                winner_interp, winner_coder_response = (
-                    await _run_coder_with_fallback()
-                )
+            # ── 入口：固定主力 → 备用1 ──
+            winner_interp, winner_coder_response = (
+                await _run_coder_with_fallback()
+            )
 
             step_counter[0] += 1
             await self._publish_progress(
@@ -1177,11 +1030,11 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 f"[组#{group_idx}] 求解完成: {key}，正在撰写",
             )
             # 确定胜出 Coder 标识
-            winner_tag = getattr(winner_interp, "artifact_tag", "") or "主力"
+            winner_tag = getattr(winner_interp, "artifact_tag", "") or "主力"  # 可能为 "b1" 备用
             winner_label = {
                 "": "主力",
                 **{f"b{i}": f"备用{i}" for i in range(1, 10)},
-                **{f"r{i}": f"竞速{i}" for i in range(1, 10)},
+
             }.get(winner_tag, winner_tag)
 
             await redis_manager.publish_message(
