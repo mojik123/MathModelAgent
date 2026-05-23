@@ -3205,16 +3205,17 @@ onBeforeUnmount(() => {
 												</span>
 											</template>
 											<template v-else-if="action.kind === 'file' && action.files?.length">
-												<span class="action-verb-chip action-verb-file shrink-0">{{ parseFileActionTitle(action.title)!.verb }}</span>
+												<span class="action-verb-chip action-verb-file shrink-0">{{ action.title.split('：')[0] || '文件' }}</span>
 												<a
-													:href="previewUrlFor(parseFileActionTitle(action.title)!.filename)"
+													v-for="file in action.files"
+													:key="file"
+													:href="previewUrlFor(file)"
 													class="action-file-chip inline-flex shrink-0 cursor-pointer items-center gap-0.5"
 													:class="chipKindClass(action.kind, action.title)"
-													@click.prevent.stop="openFilePreview(parseFileActionTitle(action.title)!.filename)"
+													@click.prevent.stop="openFilePreview(file)"
 												>
-													<Download v-if="isWriteAction(action.title)" class="h-3 w-3 shrink-0" />
-													<FolderOpen v-else class="h-3 w-3 shrink-0" />
-													{{ artifactDisplayName(parseFileActionTitle(action.title)!.filename) }}
+													<FolderOpen class="h-3 w-3 shrink-0" />
+													{{ getArtifactDisplayInfo(file, currentTaskId).shortName }}
 												</a>
 											</template>
 											<template v-else-if="parseAgentActionTitle(action.title)">
