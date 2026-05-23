@@ -147,6 +147,7 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
         if not error_occurred:
             has_images = False
             current_section = self.notebook_serializer.current_segmentation
+            final_images: list[str] = []
             try:
                 saved_images = extract_saved_images(code)
                 if saved_images:

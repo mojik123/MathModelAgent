@@ -532,6 +532,11 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 writer_llm=writer_llm,
             )
 
+            if getattr(settings, "IMAGE_DESCRIPTION_BACKGROUND", True):
+                asyncio.create_task(desc_coro_eda)
+            else:
+                await desc_coro_eda
+
         # Writer 阶段：立即执行，无需等待其他组
         writer_prompt = flows.get_writer_prompt(
             key, coder_response.code_response or "", code_interpreter, config_template
@@ -1233,6 +1238,11 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     section_label=label,
                     writer_llm=writer_llm,
                 )
+
+                if getattr(settings, "IMAGE_DESCRIPTION_BACKGROUND", True):
+                    asyncio.create_task(desc_coro)
+                else:
+                    await desc_coro
 
             # Writer 阶段：立即执行
             writer_prompt = flows.get_writer_prompt(
