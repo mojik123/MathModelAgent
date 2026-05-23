@@ -2280,7 +2280,7 @@ const hiddenRunningAgentCount = computed(() => {
 const activeGroupIds = computed(() => {
 	const ids = new Set<string>();
 	for (const group of agentGroups.value) {
-		if (group.status === "running") ids.add(group.id);
+		if (effectiveGroupStatus(group) === "running") ids.add(group.id);
 	}
 	return ids;
 });
@@ -2331,25 +2331,51 @@ const questionGroupsData = computed<QuestionGroupData[]>(() => {
 	return Array.from(indexed.entries())
 		.sort(([a], [b]) => a - b)
 		.map(([idx, groups]) => {
-			const allDone = groups.every((g) => g.status === "done");
-			const hasError = groups.some((g) => g.status === "error");
-			const hasWarning = groups.some((g) => g.status === "warning");
-			const isRunning = groups.some((g) => g.status === "running");
+			const effectiveStatuses = groups.map((g) =>
+				effectiveGroupStatus(g),
+			);
+
+			const allDone =
+				effectiveStatuses.length > 0 &&
+				effectiveStatuses.every((status) => status === "done");
+
+			const hasError = effectiveStatuses.some(
+				(status) => status === "error",
+			);
+			const hasWarning = effectiveStatuses.some(
+				(status) => status === "warning",
+			);
+			const isRunning = effectiveStatuses.some(
+				(status) => status === "running",
+			);
+			const hasPending = effectiveStatuses.some(
+				(status) => status === "pending",
+			);
 			const status: ActionStatus = hasError
 				? "error"
 				: hasWarning
 					? "warning"
-					: allDone
-						? "done"
-						: isRunning
-							? "running"
+					: isRunning
+						? "running"
+						: allDone
+							? "done"
 							: "pending";
-			const runningGroup = groups.find((g) => g.status === "running");
-			const runningCount = groups.filter((g) => g.status === "running").length;
+			const runningGroup = groups.find(
+				(g) => effectiveGroupStatus(g) === "running",
+			);
+			const runningCount = groups.filter(
+				(g) => effectiveGroupStatus(g) === "running",
+			).length;
+			const pendingCount = groups.filter(
+				(g) => effectiveGroupStatus(g) === "pending",
+			).length;
+			const doneCount = groups.filter(
+				(g) => effectiveGroupStatus(g) === "done",
+			).length;
 			let progressText = `${groups.length} 个 Agent`;
 			if (runningCount > 1) {
 				const names = groups
-					.filter((g) => g.status === "running")
+					.filter((g) => effectiveGroupStatus(g) === "running")
 					.map((g) =>
 						g.name
 							.replace(/Agent.*/, "")
@@ -2362,18 +2388,26 @@ const questionGroupsData = computed<QuestionGroupData[]>(() => {
 				progressText = `${runningGroup.name} 进行中`;
 			} else if (allDone) {
 				progressText = "全部完成";
+			} else if (pendingCount > 0) {
+				progressText = `${doneCount}/${groups.length} 完成，${pendingCount} 个等待`;
 			} else {
-				const doneCount = groups.filter((g) => g.status === "done").length;
-				if (doneCount > 0) progressText = `${doneCount}/${groups.length} 完成`;
+				if (doneCount > 0)
+					progressText = `${doneCount}/${groups.length} 完成`;
 			}
-			const totalActions = groups.reduce((sum, g) => sum + g.actions.length, 0);
-			const durationMs = groups.reduce((sum, g) => sum + g.durationMs, 0);
+			const totalActions = groups.reduce(
+				(sum, g) => sum + g.actions.length,
+				0,
+			);
+			const durationMs = groups.reduce(
+				(sum, g) => sum + g.durationMs,
+				0,
+			);
 			return {
 				index: idx,
 				groups,
 				status,
 				progressText,
-				isActive: isRunning,
+				isActive: isRunning || hasPending,
 				totalActions,
 				durationMs,
 			};
@@ -2551,14 +2585,22 @@ interface WorkflowRow {
 			row.winnerCoder ?? row.coders[0],
 			row.writer,
 		].filter(Boolean) as AgentGroup[];
-		if (groups.some((g) => g.status === "error")) row.overallStatus = "error";
-		else if (groups.some((g) => g.status === "warning"))
+		const statuses = groups.map((g) => effectiveGroupStatus(g));
+
+		if (statuses.some((status) => status === "error")) {
+			row.overallStatus = "error";
+		} else if (statuses.some((status) => status === "warning")) {
 			row.overallStatus = "warning";
-		else if (groups.some((g) => g.status === "running"))
+		} else if (statuses.some((status) => status === "running")) {
 			row.overallStatus = "running";
-		else if (groups.length > 0 && groups.every((g) => g.status === "done"))
+		} else if (
+			statuses.length > 0 &&
+			statuses.every((status) => status === "done")
+		) {
 			row.overallStatus = "done";
-		else row.overallStatus = "pending";
+		} else {
+			row.overallStatus = "pending";
+		}
 	}
 	return Array.from(rows.values()).sort((a, b) => a.index - b.index);
 });
@@ -2804,8 +2846,8 @@ onBeforeUnmount(() => {
 					<div class="pipeline-node" :class="pipelineNodeClass(row.subCoordinator)" :title="row.subCoordinator?.name ?? '协调 Agent'">
 						<Settings2 class="h-2.5 w-2.5 shrink-0" />
 						<span>协调</span>
-						<LoaderCircle v-if="row.subCoordinator?.status === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
-						<CheckCircle2 v-else-if="row.subCoordinator?.status === 'done'" class="h-2 w-2 shrink-0" />
+						<LoaderCircle v-if="effectiveGroupStatus(row.subCoordinator) === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
+						<CheckCircle2 v-else-if="effectiveGroupStatus(row.subCoordinator) === 'done'" class="h-2 w-2 shrink-0" />
 					</div>
 					<span class="pipeline-arrow">→</span>
 					<div class="pipeline-node" :class="pipelineNodeClass(row.winnerCoder ?? row.coders[0] ?? null)" :title="(row.winnerCoder?.name ?? row.coders.map(g => g.name).join(' / ')) || '代码 Agent'">
@@ -2818,8 +2860,8 @@ onBeforeUnmount(() => {
 					<div class="pipeline-node" :class="pipelineNodeClass(row.writer)" :title="row.writer?.name ?? '撰写 Agent'">
 						<PenLine class="h-2.5 w-2.5 shrink-0" />
 						<span>撰写</span>
-						<LoaderCircle v-if="row.writer?.status === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
-						<CheckCircle2 v-else-if="row.writer?.status === 'done'" class="h-2 w-2 shrink-0" />
+						<LoaderCircle v-if="effectiveGroupStatus(row.writer) === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
+						<CheckCircle2 v-else-if="effectiveGroupStatus(row.writer) === 'done'" class="h-2 w-2 shrink-0" />
 					</div>
 				</div>
 			</div>
