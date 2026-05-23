@@ -164,7 +164,6 @@ const isWorkflowTerminal = computed(() => {
 
 	if ((runtimeProgress ?? currentProgress ?? 0) >= 100) return true;
 
-	if (latestSystemType.value === "success") return true;
 
 	return false;
 });
