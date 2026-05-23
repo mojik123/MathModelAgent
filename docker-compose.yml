@@ -29,6 +29,7 @@ services:
       --port 8000
       --reload
       --reload-dir app
+      --reload-exclude "project/*"
       --ws-ping-interval 60
       --ws-ping-timeout 120
     depends_on:
