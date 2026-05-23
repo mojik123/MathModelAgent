@@ -1000,7 +1000,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 return interp, coder
 
             # ── 公共产物检查 helper ──
-            def _check_coder_artifacts(result, attempt_name: str, artifact_tag: str = ""):
+            async def _check_coder_artifacts(result, attempt_name: str, artifact_tag: str = ""):
                 from app.utils.artifact_checker import check_section_artifacts
 
                 section_dir = section_dir_name(key)
@@ -1087,7 +1087,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                             timeout=attempt_timeout,
                         )
 
-                    _check_coder_artifacts(result, attempt_name, artifact_tag)
+                    await _check_coder_artifacts(result, attempt_name, artifact_tag)
 
                     return interp, result
 
