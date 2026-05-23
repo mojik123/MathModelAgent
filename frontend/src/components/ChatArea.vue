@@ -4,6 +4,7 @@ import { useFilePreview } from "@/composables/useFilePreview";
 import { useApiKeyStore } from "@/stores/apiKeys";
 import { useTaskStore } from "@/stores/task";
 import { AgentType } from "@/utils/enum";
+import { getArtifactDisplayInfo } from "@/utils/artifactDisplay";
 import { resolveTaskImageUrl } from "@/utils/markdown";
 import type {
 	Message,
@@ -983,9 +984,12 @@ const escapeAttr = (value: string) =>
 const previewUrlFor = (file: string) => buildFileUrl(file, currentTaskId.value);
 
 const openFilePreview = (file: string) => {
-	const cleanName = file.split(/[?#]/)[0].split(/[\\/]/).pop() || file;
-	openPreview(previewUrlFor(file), cleanName);
+	const info = getArtifactDisplayInfo(file, currentTaskId.value);
+	openPreview(previewUrlFor(info.normalizedPath), info.fullName);
 };
+
+const artifactDisplayName = (file: string) =>
+	getArtifactDisplayInfo(file, currentTaskId.value).fullName;
 
 /** 展开区域图片点击委托 */
 function onExpandedClick(e: MouseEvent) {
@@ -1011,8 +1015,8 @@ function renderContentWithImages(content: string): string {
 		/!\[([^\]]*)\]\(([^)]+)\)/g,
 		(_match: string, alt: string, src: string) => {
 			const imageUrl = resolveTaskImageUrl(src, currentTaskId.value);
-			const imageName =
-				src.split(/[?#]/)[0].split(/[\\/]/).pop() || alt || "image.png";
+			const imageInfo = getArtifactDisplayInfo(src, currentTaskId.value);
+			const imageName = imageInfo.fullName || alt || "图片";
 			const token = `__INLINE_IMAGE_${imageHtml.length}__`;
 			imageHtml.push(
 				`<img src="${escapeAttr(imageUrl)}" alt="${escapeAttr(imageName)}" class="inline-thumb max-w-[200px] max-h-[120px] rounded cursor-pointer hover:opacity-80 transition-opacity border border-white/30" />`,
@@ -2990,7 +2994,7 @@ onBeforeUnmount(() => {
 												>
 													<Download v-if="isWriteAction(action.title)" class="h-3 w-3 shrink-0" />
 													<FolderOpen v-else class="h-3 w-3 shrink-0" />
-													{{ parseFileActionTitle(action.title)!.filename }}
+													{{ artifactDisplayName(parseFileActionTitle(action.title)!.filename) }}
 												</a>
 											</template>
 											<template v-else-if="parseAgentActionTitle(action.title)">
@@ -3038,7 +3042,7 @@ onBeforeUnmount(() => {
 														<TerminalSquare v-else-if="action.kind === 'output'" class="h-3 w-3 shrink-0" />
 														<Download v-else-if="isWriteAction(action.title)" class="h-3 w-3 shrink-0" />
 														<FolderOpen v-else class="h-3 w-3 shrink-0" />
-														{{ file }}
+														{{ artifactDisplayName(file) }}
 													</a>
 												</div>
 											</div>

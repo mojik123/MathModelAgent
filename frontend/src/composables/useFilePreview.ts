@@ -1,4 +1,5 @@
 import { ref } from "vue";
+import { getArtifactDisplayInfo } from "@/utils/artifactDisplay";
 
 export type PreviewFormat =
 	| "image"
@@ -78,9 +79,11 @@ function detectFormat(name: string): PreviewFormat {
 // ---- Public API ----
 
 function openPreview(url: string, name: string, size?: number) {
+	const info = getArtifactDisplayInfo(name);
+
 	fileUrl.value = url;
-	fileName.value = (name.split(/[?#]/)[0].split(/[\\/]/).pop() || name).trim();
-	format.value = detectFormat(name);
+	fileName.value = info.fullName;
+	format.value = detectFormat(info.fileName);
 	sizeBytes.value = size;
 	scale.value = 1;
 	isOpen.value = true;
