@@ -65,6 +65,20 @@ class Settings(BaseSettings):
     WRITER_PARALLELISM: int = 3
     QUESTION_PARALLELISM: int = 4
 
+    # 并行求解配置
+    CODER_PARALLELISM: int = 4
+
+    # Coder 执行模式：默认关闭竞速，每问单 Coder
+    CODER_RACING_ENABLED: bool = False
+    CODER_RACING_WORKERS: int = 1
+
+    # 主力 Coder 失败后最多启动几个备用 Coder
+    CODER_FALLBACK_WORKERS: int = 1
+
+    # 产物检查
+    ARTIFACT_CHECK_ENABLED: bool = True
+    ARTIFACT_REQUIRE_IMAGE_FOR_QUESTION: bool = False
+
     MAX_RETRIES: int = 8
     E2B_API_KEY: Optional[str] = None
     LOG_LEVEL: str = "DEBUG"

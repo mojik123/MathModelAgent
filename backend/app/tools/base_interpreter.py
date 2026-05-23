@@ -30,6 +30,8 @@ class BaseCodeInterpreter(abc.ABC):
         self.section_codes: dict[str, list[str]] = {}
         # 各 section 内非图片代码步数计数器，用于自动命名 5.1_step_01.py 等文件
         self._section_step_counter: dict[str, int] = {}
+        # 产物标签：区分主力/备用/竞速 Coder 的产物文件（"" 表示主力）
+        self.artifact_tag: str = ""
 
     @abc.abstractmethod
     async def initialize(self):
@@ -191,7 +193,8 @@ class BaseCodeInterpreter(abc.ABC):
 
         n = self._section_step_counter.get(section, 0) + 1
         self._section_step_counter[section] = n
-        code_fname = f"{section_num}_step_{n:02d}.py"
+        tag = f"_{self.artifact_tag}" if self.artifact_tag else ""
+        code_fname = f"{section_num}{tag}_step_{n:02d}.py"
         code_path = _os.path.join(dest_dir, code_fname)
         try:
             with open(code_path, "w", encoding="utf-8") as f:
@@ -238,13 +241,14 @@ class BaseCodeInterpreter(abc.ABC):
         dest_dir = os.path.join(self.work_dir, sub_dir_name)
         os.makedirs(dest_dir, exist_ok=True)
 
-        code_path = os.path.join(dest_dir, "code.py")
+        code_filename = f"code_{self.artifact_tag}.py" if self.artifact_tag else "code.py"
+        code_path = os.path.join(dest_dir, code_filename)
         separator = "\n\n# " + "─" * 60 + "\n\n"
         full_code = separator.join(cells)
         try:
             with open(code_path, "w", encoding="utf-8") as f:
                 f.write(full_code)
-            rel_path = f"{sub_dir_name}/code.py"
+            rel_path = f"{sub_dir_name}/{code_filename}"
             logger.info(f"章节代码已保存: {rel_path}")
             return rel_path
         except OSError as exc:

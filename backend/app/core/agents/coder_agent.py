@@ -99,11 +99,15 @@ class CoderAgent(Agent):
                 logger.error(f"超过最大重试次数: {self.max_retries}")
                 await redis_manager.publish_message(
                     self.task_id,
-                    SystemMessage(content=f"超过最大重试次数({self.max_retries})，返回已有结果", type="warning"),
+                    SystemMessage(
+                        content=f"代码手求解失败：超过最大重试次数({self.max_retries})",
+                        type="error",
+                    ),
                 )
-                return CoderToWriter(
-                    code_response=f"达到最大重试次数{self.max_retries}, 最后错误: {last_error_message}",
-                    created_images=await self.code_interpreter.get_created_images(subtask_title))
+                raise RuntimeError(
+                    f"代码手求解失败：达到最大重试次数 {self.max_retries}，"
+                    f"最后错误：{last_error_message}"
+                )
 
             try:
                 response = await self._chat(

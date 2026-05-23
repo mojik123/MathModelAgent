@@ -99,6 +99,75 @@ class WriterAgent(Agent):
         ]
         return sum(marker in reviewed for marker in required_markers) >= 5
 
+    async def audit_full_paper(
+        self,
+        paper_markdown: str,
+        section_order: list[str] | None = None,
+    ) -> dict:
+        section_order_text = "\n".join(
+            f"{idx + 1}. {title}"
+            for idx, title in enumerate(section_order or [])
+        )
+
+        prompt = f"""
+你是数学建模论文终稿审查 Agent。请只审查，不要重写论文。
+
+检查项目：
+1. 是否有章节重复，例如问题重述、模型假设、模型评价重复出现。
+2. 是否有章节串位，例如模型求解内容跑到问题分析里。
+3. 是否有 Markdown 图片引用缺失或明显不相关。
+4. 是否有参考文献重复。
+5. 是否有标题、摘要、关键词重复。
+6. 是否有同一问题的建模求解内容重复出现。
+
+章节顺序：
+{section_order_text}
+
+输出 JSON：
+{{
+  "passed": true,
+  "issues": [
+    {{
+      "type": "duplicate|misplaced|image_missing|reference_duplicate|other",
+      "section": "section_key_or_title",
+      "detail": "...",
+      "severity": "low|medium|high"
+    }}
+  ]
+}}
+
+论文：
+```markdown
+{paper_markdown}
+```
+"""
+        response = await self._chat(
+            stream=False,
+            history=[
+                {"role": "system", "content": "你只输出 JSON，不输出 Markdown 正文。"},
+                {"role": "user", "content": prompt},
+            ],
+            tools=None,
+            tool_choice=None,
+            agent_name=self.__class__.__name__,
+            sub_title="final_audit",
+        )
+
+        try:
+            return json.loads(response.content or "{}")
+        except Exception:
+            return {
+                "passed": False,
+                "issues": [
+                    {
+                        "type": "other",
+                        "section": "global",
+                        "detail": "终稿审查 JSON 解析失败",
+                        "severity": "medium",
+                    }
+                ],
+            }
+
     async def review_full_paper(
         self,
         paper_markdown: str,

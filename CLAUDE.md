@@ -35,6 +35,9 @@ npx pyright app/
 
 # 运行测试
 .\.venv\Scripts\python.exe -m pytest app/tests/ -v
+
+# 运行单个测试
+.\.venv\Scripts\python.exe -m pytest app/tests/test_common_utils.py::TestCommonUtils::test_split_footnotes -v
 ```
 
 ### 前端
@@ -84,8 +87,6 @@ docker-compose down        # 停止
 | CoderAgent | `coder_agent.py` | 代码生成与执行 |
 | WriterAgent | `writer_agent.py` | 论文撰写 |
 
-`core/prompts/` 下每个 Agent 有独立的 prompt 模板文件（`coordinator.py`, `modeler.py`, `coder.py`, `writer.py`），`shared.py` 存放共享模板。
-
 ### LLM 调用层 (`core/llm/`)
 
 LLM 调用基于 LiteLLM 封装，支持多 Provider 架构：
@@ -97,7 +98,7 @@ LLM 调用基于 LiteLLM 封装，支持多 Provider 架构：
 ### 工作流编排
 
 - `core/workflow.py` — `MathModelWorkFlow` 是主工作流类，编排多 Agent 协作完成完整建模任务，包含 checkpoint 断点续传、cancel 取消机制
-- `core/flows.py` — `Flows` 类定义任务的求解阶段序列（firstPage → analysisQues → modelAssumption → 各子问题 → sensitivity_analysis → judge），根据问题数量动态生成流程节点
+- `core/flows.py` — `Flows` 类定义任务的求解阶段序列（firstPage → toc → RepeatQues → analysisQues → modelAssumption → symbol → eda → ques{N} → sensitivity_analysis → judge），根据问题数量动态生成流程节点
 
 ### WebSocket 实时推送
 
@@ -113,11 +114,22 @@ LLM 调用基于 LiteLLM 封装，支持多 Provider 架构：
 - **E2B** — 云端沙箱解释器
 - **Daytona** — 云端解释器（备用）
 
+### Prompt 模板与 Inject
+
+`core/prompts/` 下每个 Agent 有独立的 prompt 模板文件（`coordinator.py`, `modeler.py`, `coder.py`, `writer.py`），`shared.py` 存放共享模板。
+
+`config/md_template.toml` 是用户可自定义的论文模板（Prompt Inject），定义每个求解阶段（firstPage、toc、analysisQues 等）的输出格式要求。用户可按需修改模板来控制论文风格，不需要改代码。
+
 ### 核心功能特性
 
 **HIL 人机协作**（`HIL_ENABLED`）：关键节点（问题拆分、模型选择、论文审查）暂停等待用户审批，支持 6 种决策动作：confirm / edit / regenerate / ask / skip / abort。
 
 **四层容错**：有限重试 → Fallback Hand Off（主模型故障自动切换备用模型）→ Evaluator Shadow Mode（输出质量评估）→ Feedback Rerun（评估反馈注入重跑）。
+
+**Coder 执行模式**：默认每问单 Coder（主力失败自动启动备用），竞速模式（多 Coder 同时抢跑）通过 `CODER_RACING_ENABLED` 手动开启。
+- `CODER_RACING_ENABLED`（默认 `False`）— 是否开启竞速模式
+- `CODER_FALLBACK_WORKERS`（默认 `1`）— 主力失败后备用 Coder 数量
+- `ARTIFACT_CHECK_ENABLED`（默认 `True`）— 是否在 Coder 完成后检查产物（图片、代码、目录）
 
 **RAG 知识库**（`RAG_ENABLED`）：基于 ChromaDB + sentence-transformers 嵌入 + BGE Reranker 重排序，从本地知识库检索建模方法、代码模板、论文写作参考。
 
@@ -129,9 +141,9 @@ LLM 调用基于 LiteLLM 封装，支持多 Provider 架构：
 
 ## 配置系统
 
-`config/setting.py` 使用 pydantic-settings，根据 `ENV` 环境变量加载 `.env.{env}` 配置文件（如 `ENV=DEV` → `.env.dev`）。每个 Agent 有独立的 API 配置（类型、Key、模型、Base URL、Max Tokens、Context Window）。
+`config/setting.py` 使用 pydantic-settings，根据 `ENV` 环境变量加载 `.env.{env}` 配置文件（如 `ENV=DEV` → `.env.dev`）。从 `.env.example` 复制并重命名来创建配置，每个 Agent 有独立的 API 配置（类型、Key、模型、Base URL、Max Tokens、Context Window）。
 
-可选功能通过环境变量开关控制，未配置外部依赖时自动降级跳过。主要开关：`SEARCH_ENABLED`、`RAG_ENABLED`、`HIL_ENABLED`、`FALLBACK_*` 系列、`EVALUATOR_*` 系列。
+可选功能通过环境变量开关控制，未配置外部依赖时自动降级跳过。主要开关：`SEARCH_ENABLED`、`RAG_ENABLED`、`HIL_ENABLED`、`CODER_RACING_ENABLED`、`ARTIFACT_CHECK_ENABLED`、`FALLBACK_*` 系列、`EVALUATOR_*` 系列。
 
 ## 用户交互流程
 
@@ -139,7 +151,16 @@ LLM 调用基于 LiteLLM 封装，支持多 Provider 架构：
 
 支持上传的数据文件格式：`.txt`、`.csv`、`.xlsx`。
 
+## 输出目录
+
+每次建模任务的结果保存在 `backend/project/work_dir/{task_id}/` 下：
+- `notebook.ipynb` — 运行过程中产生的代码
+- `res.md` — 最终结果为 markdown 格式
+- 生成的图片文件（`fig{N}_{描述}.png` 等）
+
 ## 项目结构
+
+`.cursor/rules/` 目录下有额外的架构说明文件（`structure.mdc`、`backend-rules.mdc`、`frontend-rules.mdc`、`ws-frontend-backend-interaction.mdc`），可作为补充参考。
 
 ```
 backend/

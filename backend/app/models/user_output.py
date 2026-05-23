@@ -79,15 +79,30 @@ class UserOutput:
         """获取所有章节的写作结果。"""
         return self.res
 
-    def get_model_build_solve(self) -> str:
-        """获取模型求解结果的摘要字符串。"""
-        model_build_solve = ",".join(
-            f"{key}-{value}"
-            for key, value in self.res.items()
-            if key.startswith("ques") and key != "ques_count"
-        )
+    @staticmethod
+    def _clip(text: str, max_len: int = 900) -> str:
+        text = re.sub(r"\s+", " ", text or "").strip()
+        if len(text) <= max_len:
+            return text
+        return text[:max_len] + "……"
 
-        return model_build_solve
+    def get_model_build_solve(self) -> str:
+        """获取模型求解结果的摘要字符串（每个问题截断到 900 字）。"""
+        parts: list[str] = []
+
+        for key, value in self.res.items():
+            if not key.startswith("ques") or key == "ques_count":
+                continue
+
+            content = ""
+            if isinstance(value, dict):
+                content = str(value.get("response_content") or "")
+            else:
+                content = str(value or "")
+
+            parts.append(f"{key}: {self._clip(content, 900)}")
+
+        return "\n".join(parts)
 
     def replace_references_with_uuid(self, text: str) -> str:
         """将文本中的引用标记替换为 UUID，用于去重和排序。

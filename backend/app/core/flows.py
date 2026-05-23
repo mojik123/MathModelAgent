@@ -3,6 +3,7 @@
 from app.models.user_output import UserOutput
 from app.tools.base_interpreter import BaseCodeInterpreter
 from app.core.agents.modeler_agent import ModelerToCoder
+from app.core.section_contracts import SECTION_CONTRACTS
 
 
 class Flows:
@@ -95,14 +96,70 @@ class Flows:
             tpl = config_template.get(key, "")
             return tpl.replace("{问题}", model_build_solve).replace("{模型的建立与求解}", model_build_solve).replace("{题目}", bg_ques_all)
 
+        def contract_prompt(key: str, base_prompt: str) -> str:
+            contract = SECTION_CONTRACTS.get(key)
+            if not contract:
+                return base_prompt
+
+            must = "\n".join(f"- {item}" for item in contract.must_include)
+            forbidden = "\n".join(f"- {item}" for item in contract.forbidden)
+
+            return f"""
+【章节写作合同】
+当前章节：{contract.title}
+章节标识：{key}
+
+必须包含：
+{must}
+
+禁止写入：
+{forbidden}
+
+图片规则：
+{contract.image_policy}
+
+输出规则：
+{contract.output_rule}
+
+【原始写作任务】
+{base_prompt}
+
+【强制要求】
+你只能写"{contract.title}"这一节。
+不要输出其他章节标题。
+不要复述其他章节内容。
+不要写"以下是"等解释性文字。
+"""
+
         flows = {
-            "firstPage": f"""问题背景{bg_ques_all},不需要编写代码,根据模型的求解的信息{model_build_solve}，按照如下模板撰写：{fill_template("firstPage")}，撰写标题，摘要，关键词""",
-            "toc": f"""不需要编写代码,根据已生成的论文标题和章节结构，按照如下模板撰写：{fill_template("toc")}，生成论文目录（列出所有一级和二级标题，带页码占位符）""",
-            "RepeatQues": f"""问题背景{bg_ques_all},不需要编写代码,根据模型的求解的信息{model_build_solve}，按照如下模板撰写：{fill_template("RepeatQues")}，撰写问题重述""",
-            "analysisQues": f"""问题背景{bg_ques_all},不需要编写代码,根据模型的求解的信息{model_build_solve}，按照如下模板撰写：{fill_template("analysisQues")}，撰写问题分析""",
-            "modelAssumption": f"""问题背景{bg_ques_all},不需要编写代码,根据模型的求解的信息{model_build_solve}，按照如下模板撰写：{fill_template("modelAssumption")}，撰写模型假设""",
-            "symbol": f"""不需要编写代码,根据模型的求解的信息{model_build_solve}，按照如下模板撰写：{fill_template("symbol")}，撰写符号说明部分""",
-            "judge": f"""不需要编写代码,根据模型的求解的信息{model_build_solve}，按照如下模板撰写：{fill_template("judge")}，撰写模型的评价部分""",
+            "firstPage": contract_prompt(
+                "firstPage",
+                f"问题背景{bg_ques_all}，根据模型求解摘要{model_build_solve}，按照模板撰写：{fill_template('firstPage')}",
+            ),
+            "toc": contract_prompt(
+                "toc",
+                f"根据论文标题和章节结构，按照模板撰写目录：{fill_template('toc')}",
+            ),
+            "RepeatQues": contract_prompt(
+                "RepeatQues",
+                f"问题背景{bg_ques_all}，按照模板撰写问题重述：{fill_template('RepeatQues')}",
+            ),
+            "analysisQues": contract_prompt(
+                "analysisQues",
+                f"问题背景{bg_ques_all}，结合各问题模型求解摘要{model_build_solve}，按照模板撰写问题分析：{fill_template('analysisQues')}",
+            ),
+            "modelAssumption": contract_prompt(
+                "modelAssumption",
+                f"结合建模方案和求解摘要{model_build_solve}，按照模板撰写模型假设：{fill_template('modelAssumption')}",
+            ),
+            "symbol": contract_prompt(
+                "symbol",
+                f"结合模型变量和求解摘要{model_build_solve}，按照模板撰写符号说明：{fill_template('symbol')}",
+            ),
+            "judge": contract_prompt(
+                "judge",
+                f"结合模型求解摘要{model_build_solve}，按照模板撰写模型评价、改进与推广：{fill_template('judge')}",
+            ),
         }
         return flows
 
