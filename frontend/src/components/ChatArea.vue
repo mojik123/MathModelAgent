@@ -3020,25 +3020,25 @@ onBeforeUnmount(() => {
 			<div v-for="row in workflowRows" :key="row.index" class="pipeline-row">
 				<span class="pipeline-label">Q{{ row.index }}</span>
 				<div class="pipeline-nodes">
-					<div class="pipeline-node" :class="pipelineNodeClass(row.subCoordinator)" :title="row.subCoordinator?.name ?? '协调 Agent'">
+					<div class="pipeline-node" :class="pipelineNodeClassByStatus(inferredPipelineStatus(row, 'subCoordinator'))" :title="row.subCoordinator?.name ?? '协调 Agent'">
 						<Settings2 class="h-2.5 w-2.5 shrink-0" />
 						<span>协调</span>
 						<LoaderCircle v-if="inferredPipelineStatus(row, 'subCoordinator') === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
-						<CheckCircle2 v-else-if="effectiveGroupStatus(row.subCoordinator) === 'done'" class="h-2 w-2 shrink-0" />
+						<CheckCircle2 v-else-if="inferredPipelineStatus(row, 'subCoordinator') === 'done'" class="h-2 w-2 shrink-0" />
 					</div>
 					<span class="pipeline-arrow">→</span>
-					<div class="pipeline-node" :class="pipelineNodeClass(row.winnerCoder ?? row.coders[0] ?? null)" :title="(row.winnerCoder?.name ?? row.coders.map(g => g.name).join(' / ')) || '代码 Agent'">
+					<div class="pipeline-node" :class="pipelineNodeClassByStatus(inferredPipelineStatus(row, 'coder'))" :title="(row.winnerCoder?.name ?? row.coders.map(g => g.name).join(' / ')) || '代码 Agent'">
 						<Code2 class="h-2.5 w-2.5 shrink-0" />
 						<span>{{ coderNodeLabel(row) }}</span>
-						<LoaderCircle v-if="row.coders.some(g => effectiveGroupStatus(g) === 'running')" class="h-2 w-2 shrink-0 animate-spin" />
-						<CheckCircle2 v-else-if="row.winnerCoder || row.coders.some(g => effectiveGroupStatus(g) === 'done')" class="h-2 w-2 shrink-0" />
+						<LoaderCircle v-if="inferredPipelineStatus(row, 'coder') === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
+						<CheckCircle2 v-else-if="inferredPipelineStatus(row, 'coder') === 'done'" class="h-2 w-2 shrink-0" />
 					</div>
 					<span class="pipeline-arrow">→</span>
-					<div class="pipeline-node" :class="pipelineNodeClass(row.writer)" :title="row.writer?.name ?? '撰写 Agent'">
+					<div class="pipeline-node" :class="pipelineNodeClassByStatus(inferredPipelineStatus(row, 'writer'))" :title="row.writer?.name ?? '撰写 Agent'">
 						<PenLine class="h-2.5 w-2.5 shrink-0" />
 						<span>撰写</span>
 						<LoaderCircle v-if="inferredPipelineStatus(row, 'writer') === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
-						<CheckCircle2 v-else-if="effectiveGroupStatus(row.writer) === 'done'" class="h-2 w-2 shrink-0" />
+						<CheckCircle2 v-else-if="inferredPipelineStatus(row, 'writer') === 'done'" class="h-2 w-2 shrink-0" />
 					</div>
 				</div>
 			</div>
