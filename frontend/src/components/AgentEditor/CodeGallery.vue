@@ -260,6 +260,51 @@ function openFilePreview(file: string) {
 	openPreview(url, cleanName);
 }
 
+async function loadSelectedFileContent(filePath: string) {
+	if (!filePath || !currentTaskId.value) return;
+	if (fileContentCache.value[filePath]) { codeFileError.value = ""; return; }
+	loadingCodeFile.value = true;
+	codeFileError.value = "";
+	try {
+		const url = buildFileUrl(filePath, currentTaskId.value);
+		const res = await fetch(url);
+		if (!res.ok) throw new Error("HTTP " + res.status);
+		const text = await res.text();
+		fileContentCache.value = { ...fileContentCache.value, [filePath]: text };
+	} catch (e: unknown) {
+		codeFileError.value = e instanceof Error ? e.message : "读取 Python 文件失败";
+	} finally {
+		loadingCodeFile.value = false;
+	}
+}
+
+const selectedFileContent = computed(() => {
+	const path = selectedFile.value?.path;
+	return path ? (fileContentCache.value[path] ?? "") : "";
+});
+const rxNewline = /\r?\n/;
+const selectedFileLines = computed(() => selectedFileContent.value.split(rxNewline));
+const selectedFileExpanded = computed(() => {
+	const path = selectedFile.value?.path;
+	return !!path && expandedCodeFiles.value.has(path);
+});
+const selectedFileDisplayedCode = computed(() => {
+	if (selectedFileExpanded.value) return selectedFileContent.value;
+	return selectedFileLines.value.slice(0, 10).join("\n");
+});
+const selectedFileHasMoreThan10Lines = computed(() => selectedFileLines.value.length > 10);
+function toggleSelectedFileExpanded() {
+	const path = selectedFile.value?.path;
+	if (!path) return;
+	const next = new Set(expandedCodeFiles.value);
+	next.has(path) ? next.delete(path) : next.add(path);
+	expandedCodeFiles.value = next;
+}
+
+watch(() => selectedFile.value?.path, (path) => {
+	if (path) void loadSelectedFileContent(path);
+}, { immediate: true });
+
 watch(codeFileSections, (sections) => {
 	if (
 		!selectedFilePath.value ||
