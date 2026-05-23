@@ -1188,15 +1188,29 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
         searching = sorted([k for k, v in progress.items() if v == "searching"])
         generating = sorted([k for k, v in progress.items() if v == "generating"])
         done = sorted([k for k, v in progress.items() if v == "done"])
+        failed = sorted([k for k, v in progress.items() if v == "failed"])
+
         parts: list[str] = []
+
         if searching:
             parts.append(f"第 {'、'.join(str(i) for i in searching)} 问正在检索文献")
+
         if generating:
             parts.append(f"第 {'、'.join(str(i) for i in generating)} 问正在生成模型方案")
+
         if done:
             parts.append(f"第 {'、'.join(str(i) for i in done)} 问已完成")
+
+        if failed:
+            parts.append(f"第 {'、'.join(str(i) for i in failed)} 问生成失败")
+
         msg = "；".join(parts) if parts else "正在准备..."
-        await redis_manager.publish_message(safe_task_id, SystemMessage(content=msg))
+        msg_type = "error" if failed else "info"
+
+        await redis_manager.publish_message(
+            safe_task_id,
+            SystemMessage(content=msg, type=msg_type),
+        )
 
     async def _generate_for_question(q: dict[str, Any]) -> dict[str, Any] | None:
         """每问一个独立协程：检索 → LLM 生成 → 质检 → 返回结果。"""
@@ -1261,11 +1275,28 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
             except Exception as e:
                 logger.warning(f"第{q_idx}问候选生成异常: {e}")
 
-        logger.warning(f"第{q_idx}问候选生成失败（3次尝试均未通过质检）")
+        last_issues_text = "；".join(quality_issues) if quality_issues else "未生成有效候选模型"
+
+        logger.warning(f"第{q_idx}问候选生成失败（3次尝试均未通过质检）：{last_issues_text}")
+
         async with progress_lock:
-            progress[q_idx] = "done"
+            progress[q_idx] = "failed"
             await _publish_progress()
-        return None
+
+        await redis_manager.publish_message(
+            safe_task_id,
+            SystemMessage(
+                content=(
+                    f"第 {q_idx} 问模型候选生成失败："
+                    f"3 次自动质检均未通过。原因：{last_issues_text}"
+                ),
+                type="error",
+            ),
+        )
+
+        raise RuntimeError(
+            f"第 {q_idx} 问模型候选生成失败：3 次自动质检均未通过。原因：{last_issues_text}"
+        )
 
     # 每问一个独立协程并行执行
     try:
@@ -1276,22 +1307,78 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
         raise HTTPException(status_code=500, detail=f"动态模型候选生成失败: {e}") from e
 
     normalized: list[dict[str, Any]] = []
+    failed_questions: list[int] = []
+
     for i, r in enumerate(raw_results):
         q_idx = int(questions[i].get("questionIndex", i + 1))
-        if isinstance(r, Exception):
-            logger.error(f"第{q_idx}问模型候选生成异常: {r}")
-        elif r is not None:
-            normalized.append(r)
 
-    if not normalized:
-        raise HTTPException(status_code=500, detail="所有问题的模型候选生成均失败")
+        if isinstance(r, Exception):
+            logger.error(f"第{q_idx}问模型候选生成失败: {r}")
+            failed_questions.append(q_idx)
+            continue
+
+        if r is None:
+            logger.error(f"第{q_idx}问模型候选生成结果为空")
+            failed_questions.append(q_idx)
+            continue
+
+        normalized.append(r)
+
+    expected_question_count = len(questions)
+    actual_question_count = len(normalized)
+
+    missing_questions = sorted(
+        set(int(q.get("questionIndex", idx + 1)) for idx, q in enumerate(questions))
+        - set(int(item.get("questionIndex", 0)) for item in normalized)
+    )
+
+    failed_questions = sorted(set(failed_questions + missing_questions))
+
+    if failed_questions:
+        failed_text = "、".join(str(i) for i in failed_questions)
+
+        await redis_manager.publish_message(
+            safe_task_id,
+            SystemMessage(
+                content=(
+                    f"模型候选方案生成未完成：第 {failed_text} 问失败。"
+                    "请修改问题描述后重新生成，或降低自动质检约束。"
+                ),
+                type="error",
+            ),
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"模型候选方案生成未完成：第 {failed_text} 问失败",
+        )
+
+    if actual_question_count != expected_question_count:
+        await redis_manager.publish_message(
+            safe_task_id,
+            SystemMessage(
+                content=(
+                    f"模型候选方案生成数量不完整：应生成 {expected_question_count} 问，"
+                    f"实际生成 {actual_question_count} 问。"
+                ),
+                type="error",
+            ),
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"模型候选方案生成数量不完整：应生成 {expected_question_count} 问，"
+                f"实际生成 {actual_question_count} 问"
+            ),
+        )
 
     _save_model_options_cache(safe_task_id, cache_key, normalized)
 
     await redis_manager.publish_message(
         safe_task_id,
         SystemMessage(
-            content=f"模型候选方案生成完成，共 {len(normalized)} 问，请在各卡片中选择建模方案",
+            content=f"模型候选方案生成完成，共 {expected_question_count} 问，请在各卡片中选择建模方案",
             type="success",
         ),
     )

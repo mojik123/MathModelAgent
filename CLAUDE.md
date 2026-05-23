@@ -59,9 +59,17 @@ npx biome check --write src/  # 自动修复
 ### Docker
 
 ```bash
-docker-compose up -d      # 后台启动
+docker-compose up -d      # 后台启动所有服务
 docker-compose down        # 停止
 ```
+
+`docker-compose.yml` 启动 3 个服务：
+
+| 服务 | 端口 | 说明 |
+|------|------|------|
+| redis | 6379 | Redis 消息队列 |
+| backend | 8000 | FastAPI 后端（含 WebSocket） |
+| frontend | 5174 | Vite 开发服务器（--strictPort） |
 
 ## 架构设计
 
@@ -115,11 +123,21 @@ LLM 调用基于 LiteLLM 封装，支持多 Provider 架构：
 
 **Web Search**（`SEARCH_ENABLED` + `TAVILY_API_KEY`）：Agent 通过 Tavily API 自主搜索互联网获取真实数据，搜索结果带缓存（默认 86400 秒 TTL）。
 
+## 日志
+
+后端使用 loguru 进行日志记录，初始化逻辑位于 `app/utils/log_util.py`。日志输出到控制台和 `logs/` 目录（按天轮转，自动压缩）。
+
 ## 配置系统
 
 `config/setting.py` 使用 pydantic-settings，根据 `ENV` 环境变量加载 `.env.{env}` 配置文件（如 `ENV=DEV` → `.env.dev`）。每个 Agent 有独立的 API 配置（类型、Key、模型、Base URL、Max Tokens、Context Window）。
 
 可选功能通过环境变量开关控制，未配置外部依赖时自动降级跳过。主要开关：`SEARCH_ENABLED`、`RAG_ENABLED`、`HIL_ENABLED`、`FALLBACK_*` 系列、`EVALUATOR_*` 系列。
+
+## 用户交互流程
+
+前端页面路由：`/login` (登录) → `/chat` (主页面：文件上传、题目输入、参数选择、提交任务) → `/task/{task_id}` (任务详情：实时进度、代码 Tab、论文 Tab、下载)。
+
+支持上传的数据文件格式：`.txt`、`.csv`、`.xlsx`。
 
 ## 项目结构
 
