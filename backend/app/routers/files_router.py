@@ -1157,6 +1157,7 @@ async def revise_image_chat(payload: ImageRevisionChatRequest):
                 caption_updated=caption_updated,
                 render_success=False,
                 render_message=run_message,
+                image_url=f"http://localhost:8000/static/{payload.task_id}/{image_name}",
                 code_found=True,
             )
 
