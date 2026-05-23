@@ -1322,12 +1322,8 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 SystemMessage(content="论文手开始终稿审计：检查章节重复、串位、图片引用"),
             )
 
-            # 按 seq 拼接原始草稿
-            raw_draft = "\n\n".join(
-                str(user_output.res.get(key, {}).get("response_content") or "")
-                for key in user_output.seq
-                if key in user_output.res
-            )
+            # 按 seq 拼接原始草稿（走 get_result_to_save 包含脚注/参考文献处理）
+            raw_draft = user_output.get_result_to_save()
 
             final_review_writer = self._create_writer_agent(problem, agent_index=None)
 
@@ -1343,7 +1339,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
                 high_issues = [
                     item for item in audit_result.get("issues", [])
-                    if item.get("severity") in ("medium", "high")
+                    if str(item.get("severity", "")).lower() in ("medium", "high")
                 ]
 
                 if not high_issues:
@@ -1361,11 +1357,12 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         ),
                     )
 
-                    review_response = await final_review_writer.review_full_paper(
+                    repair_response = await final_review_writer.repair_full_paper_by_audit(
                         paper_markdown=raw_draft,
+                        audit_issues=high_issues,
                         section_order=section_order,
                     )
-                    final_paper = clean_final_paper_markdown(review_response.response_content)
+                    final_paper = clean_final_paper_markdown(repair_response.response_content)
                     await redis_manager.publish_message(
                         self.task_id,
                         SystemMessage(content="论文手完成终稿轻量修正"),

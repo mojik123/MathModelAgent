@@ -156,6 +156,13 @@ class WriterAgent(Agent):
         try:
             return json.loads(response.content or "{}")
         except Exception:
+            raw = (response.content or "").strip()
+            match = re.search(r"\{[\s\S]*\}", raw)
+            if match:
+                try:
+                    return json.loads(match.group(0))
+                except Exception:
+                    pass
             return {
                 "passed": False,
                 "issues": [
@@ -167,6 +174,67 @@ class WriterAgent(Agent):
                     }
                 ],
             }
+
+    async def repair_full_paper_by_audit(
+        self,
+        paper_markdown: str,
+        audit_issues: list[dict],
+        section_order: list[str] | None = None,
+    ) -> WriterResponse:
+        section_order_text = "\n".join(
+            f"{idx + 1}. {title}"
+            for idx, title in enumerate(section_order or [])
+        )
+        issues_text = json.dumps(audit_issues, ensure_ascii=False, indent=2)
+
+        prompt = f"""
+你是数学建模论文终稿轻量修正 Agent。
+
+你只能根据审查问题做最小必要修改：
+1. 删除重复章节和重复段落。
+2. 修正明显章节串位。
+3. 合并重复参考文献。
+4. 保留全部已有公式、数值结果、模型结论。
+5. 保留全部 Markdown 图片引用，不得删除图片。
+6. 不要新增未经提供的模型结果、数据、图表和参考文献。
+
+章节顺序：
+{section_order_text}
+
+审查问题：
+```json
+{issues_text}
+```
+
+待修正文稿：
+```markdown
+{paper_markdown}
+```
+
+输出要求：
+- 只输出修正后的完整 Markdown 正文。
+- 不要输出解释、检查报告或代码块围栏。
+"""
+        response = await self._chat(
+            stream=False,
+            history=[
+                {
+                    "role": "system",
+                    "content": "你只做终稿轻量修正，必须保留图片引用、公式和数值结果。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            tools=None,
+            tool_choice=None,
+            agent_name=self.__class__.__name__,
+            sub_title="final_repair",
+        )
+
+        repaired = self._strip_markdown_wrapper(response.content or "")
+        if not repaired.strip():
+            raise RuntimeError("WriterAgent final repair returned empty paper")
+
+        return WriterResponse(response_content=repaired, footnotes=[])
 
     async def review_full_paper(
         self,

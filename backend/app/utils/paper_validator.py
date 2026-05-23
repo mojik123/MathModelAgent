@@ -16,9 +16,11 @@ def validate_markdown_image_refs(work_dir: str, markdown: str) -> list[str]:
 
         img_path = root / raw_path
         if not img_path.exists():
-            # 兼容只写 basename 的情况
+            # 兼容只写 basename 的情况：先查根目录，再递归查子目录
             basename_path = root / Path(raw_path).name
             if not basename_path.exists():
-                issues.append(f"Markdown 图片引用不存在：{raw_path}")
+                candidates = list(root.glob(f"**/{Path(raw_path).name}"))
+                if not candidates:
+                    issues.append(f"Markdown 图片引用不存在：{raw_path}")
 
     return issues
