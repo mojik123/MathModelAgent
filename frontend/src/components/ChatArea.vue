@@ -860,12 +860,37 @@ const getGroupMeta = (
 	if (static_meta[groupId]) return static_meta[groupId];
 
 		// 新格式 q1.coder.r2
-		const modernMatch = groupId.match(/^q(\d+)\.(sub_coordinator|modeler|coder|writer)(?:\.r(\d+))?$/);
-		if (modernMatch) {
-			const [, qIdx, role, raceIdx] = modernMatch;
-			const qNameMap: Record<string, string> = { sub_coordinator: `Q${qIdx} · SubCoordinatorAgent`, modeler: `Q${qIdx} · ModelerAgent`, coder: raceIdx ? `Q${qIdx} · CoderAgent 竞速${raceIdx}` : `Q${qIdx} · CoderAgent`, writer: `Q${qIdx} · WriterAgent` };
-			const qRoleMap: Record<string, string> = { sub_coordinator: `负责第 ${qIdx} 问任务协调  ·  ${modelInfo("coordinator")}`, modeler: `负责第 ${qIdx} 问建模细化  ·  ${modelInfo("modeler")}`, coder: raceIdx ? `第 ${qIdx} 问代码竞速 ${raceIdx}  ·  ${modelInfo("coder")}` : `负责第 ${qIdx} 问代码求解  ·  ${modelInfo("coder")}`, writer: `负责第 ${qIdx} 问结果撰写  ·  ${modelInfo("writer")}` };
-			return { name: qNameMap[role] ?? groupId, role: qRoleMap[role] ?? "等待执行" };
+		const parsed = parseGroupId(groupId);
+		if (parsed) {
+			const qIdx = parsed.index;
+			const role = parsed.role;
+
+			const attemptLabel =
+				parsed.attemptKind === "main"
+					? "主力"
+					: parsed.attemptKind === "backup"
+						? `备用${parsed.attemptIndex}`
+						: parsed.attemptKind === "race"
+							? `竞速${parsed.attemptIndex}`
+							: "";
+
+			const nameMap: Record<QuestionRole, string> = {
+				sub_coordinator: `Q${qIdx} · SubCoordinatorAgent`,
+				modeler: `Q${qIdx} · ModelerAgent`,
+				coder: `Q${qIdx} · CoderAgent${attemptLabel ? ` ${attemptLabel}` : ""}`,
+				writer: `Q${qIdx} · WriterAgent`,
+			};
+
+			const roleMap: Record<QuestionRole, string> = {
+				sub_coordinator: `负责第 ${qIdx} 问任务协调  ·  ${modelInfo("coordinator")}`,
+				modeler: `负责第 ${qIdx} 问建模细化  ·  ${modelInfo("modeler")}`,
+				coder: attemptLabel
+					? `第 ${qIdx} 问代码求解 · ${attemptLabel}  ·  ${modelInfo("coder")}`
+					: `负责第 ${qIdx} 问代码求解  ·  ${modelInfo("coder")}`,
+				writer: `负责第 ${qIdx} 问结果撰写  ·  ${modelInfo("writer")}`,
+			};
+
+			return { name: nameMap[role] ?? groupId, role: roleMap[role] ?? "等待执行" };
 		}
 
 	const idxMatch = groupId.match(
@@ -1896,18 +1921,50 @@ const buildGroupOrder = (groupIds: Iterable<string>): string[] => {
 		if (!fixed.has(id)) dynamic.push(id);
 	}
 	dynamic.sort((a, b) => {
+		const pa = parseGroupId(a);
+		const pb = parseGroupId(b);
+
+		if (pa && pb) {
+			if (pa.index !== pb.index) return pa.index - pb.index;
+
+			const roleOrder: Record<QuestionRole, number> = {
+				sub_coordinator: 0,
+				modeler: 1,
+				coder: 2,
+				writer: 3,
+			};
+
+			if (roleOrder[pa.role] !== roleOrder[pb.role]) {
+				return roleOrder[pa.role] - roleOrder[pb.role];
+			}
+
+			const attemptOrder = (p: ParsedQuestionGroupId) => {
+				if (p.attemptKind === "main") return 0;
+				if (p.attemptKind === "backup") return 10 + (p.attemptIndex ?? 0);
+				if (p.attemptKind === "race") return 20 + (p.attemptIndex ?? 0);
+				return 0;
+			};
+
+			return attemptOrder(pa) - attemptOrder(pb);
+		}
+
+		if (pa) return -1;
+		if (pb) return 1;
+
 		const typeOrder: Record<string, number> = {
 			sub_coordinator: 0,
 			modeler: 1,
 			coder: 2,
 			writer: 3,
 		};
-		const [typeA, idxA] = a.split("_");
-		const [typeB, idxB] = b.split("_");
-		const orderA = typeOrder[typeA] ?? 9;
-		const orderB = typeOrder[typeB] ?? 9;
+
+		const ma = a.match(/^(sub_coordinator|modeler|coder|writer)_(\d+)$/);
+		const mb = b.match(/^(sub_coordinator|modeler|coder|writer)_(\d+)$/);
+		const orderA = ma ? typeOrder[ma[1]] : 9;
+		const orderB = mb ? typeOrder[mb[1]] : 9;
+
 		if (orderA !== orderB) return orderA - orderB;
-		return Number(idxA ?? 0) - Number(idxB ?? 0);
+		return Number(ma?.[2] ?? 0) - Number(mb?.[2] ?? 0);
 	});
 
 	// 子问题组放到所有固定主 Agent 之后，按编号排序
@@ -2169,14 +2226,10 @@ const runningAgentPills = computed(() => {
 	return agentGroups.value
 		.filter((group) => {
 			if (group.id === "user" || group.id === "system") return false;
-
 			const workState = groupWorkStatus.value[group.id]?.state;
-			return (
-				group.status === "running" ||
-				workState === "working" ||
-				workState === "commanded"
-			);
+			return group.status === "running" || workState === "working";
 		})
+		.slice(0, 6)
 		.map((group) => {
 			const work = groupWorkStatus.value[group.id];
 			const lastTimestamp = group.lastAction?.timestamp ?? now.value;
@@ -2193,6 +2246,15 @@ const runningAgentPills = computed(() => {
 						: group.durationMs,
 			};
 		});
+});
+
+const hiddenRunningAgentCount = computed(() => {
+	const all = agentGroups.value.filter((group) => {
+		if (group.id === "user" || group.id === "system") return false;
+		const workState = groupWorkStatus.value[group.id]?.state;
+		return group.status === "running" || workState === "working";
+	});
+	return Math.max(0, all.length - 6);
 });
 
 // 所有正在运行的 Agent 组（支持并行多 Agent 同时高亮）
@@ -2372,11 +2434,62 @@ const statusClass = (status: ActionStatus) => {
 
 // ---- 子问题流水线 ----
 
-function parseGroupId(groupId: string) {
-	const modern = groupId.match(/^q(\d+)\.(sub_coordinator|modeler|coder|writer)(?:\.r(\d+))?$/);
-	if (modern) return { index: Number(modern[1]), role: modern[2], raceIndex: modern[3] ? Number(modern[3]) : null };
-	const legacy = groupId.match(/^(sub_coordinator|modeler|coder|writer)_(\d+)$/);
-	if (legacy) return { index: Number(legacy[2]), role: legacy[1], raceIndex: null };
+type QuestionRole = "sub_coordinator" | "modeler" | "coder" | "writer";
+type QuestionAttemptKind = "main" | "backup" | "race" | null;
+
+interface ParsedQuestionGroupId {
+	index: number;
+	role: QuestionRole;
+	attempt: string | null;
+	attemptKind: QuestionAttemptKind;
+	attemptIndex: number | null;
+}
+
+function parseGroupId(groupId: string): ParsedQuestionGroupId | null {
+	const modern = groupId.match(
+		/^q(\d+)\.(sub_coordinator|modeler|coder|writer)(?:\.(main|b\d+|r\d+))?$/,
+	);
+
+	if (modern) {
+		const [, indexText, role, attemptText] = modern;
+		let attemptKind: QuestionAttemptKind = null;
+		let attemptIndex: number | null = null;
+
+		if (attemptText === "main") {
+			attemptKind = "main";
+			attemptIndex = 1;
+		} else if (attemptText?.startsWith("b")) {
+			attemptKind = "backup";
+			attemptIndex = Number(attemptText.slice(1));
+		} else if (attemptText?.startsWith("r")) {
+			attemptKind = "race";
+			attemptIndex = Number(attemptText.slice(1));
+		}
+
+		return {
+			index: Number(indexText),
+			role: role as QuestionRole,
+			attempt: attemptText ?? null,
+			attemptKind,
+			attemptIndex,
+		};
+	}
+
+	const legacy = groupId.match(
+		/^(sub_coordinator|modeler|coder|writer)_(\d+)$/,
+	);
+
+	if (legacy) {
+		const [, role, indexText] = legacy;
+		return {
+			index: Number(indexText),
+			role: role as QuestionRole,
+			attempt: null,
+			attemptKind: null,
+			attemptIndex: null,
+		};
+	}
+
 	return null;
 }
 
@@ -2624,6 +2737,9 @@ onBeforeUnmount(() => {
 							<span class="parallel-agent-pill-detail">{{ pill.text }}</span>
 							<span class="parallel-agent-pill-time">{{ formatDuration(pill.durationMs) }}</span>
 						</div>
+						<span v-if="hiddenRunningAgentCount > 0" class="parallel-agent-more">
+							+{{ hiddenRunningAgentCount }}
+						</span>
 					</div>
 				</div>
 			</div>
@@ -2645,13 +2761,6 @@ onBeforeUnmount(() => {
 						<span>协调</span>
 						<LoaderCircle v-if="row.subCoordinator?.status === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
 						<CheckCircle2 v-else-if="row.subCoordinator?.status === 'done'" class="h-2 w-2 shrink-0" />
-					</div>
-					<span class="pipeline-arrow">→</span>
-					<div class="pipeline-node" :class="pipelineNodeClass(row.modeler)" :title="row.modeler?.name ?? '建模 Agent'">
-						<Wrench class="h-2.5 w-2.5 shrink-0" />
-						<span>建模</span>
-						<LoaderCircle v-if="row.modeler?.status === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
-						<CheckCircle2 v-else-if="row.modeler?.status === 'done'" class="h-2 w-2 shrink-0" />
 					</div>
 					<span class="pipeline-arrow">→</span>
 					<div class="pipeline-node" :class="pipelineNodeClass(row.winnerCoder ?? row.coders[0] ?? null)" :title="(row.winnerCoder?.name ?? row.coders.map(g => g.name).join(' / ')) || '代码 Agent'">
@@ -2901,9 +3010,9 @@ onBeforeUnmount(() => {
 									@click.prevent="toggleDetailOpen('sub_group', subGroup.id)"
 								>
 										<div class="pt-0.5">
-											<Settings2 v-if="subGroup.id.startsWith('sub_coordinator')" class="h-4 w-4 text-blue-600" />
-											<Code2 v-else-if="subGroup.id.startsWith('coder')" class="h-4 w-4 text-slate-700" />
-											<PenLine v-else-if="subGroup.id.startsWith('writer')" class="h-4 w-4 text-slate-700" />
+											<Settings2 v-if="parseGroupId(subGroup.id)?.role === 'sub_coordinator' || subGroup.id.startsWith('sub_coordinator')" class="h-4 w-4 text-blue-600" />
+											<Code2 v-else-if="parseGroupId(subGroup.id)?.role === 'coder' || subGroup.id.startsWith('coder')" class="h-4 w-4 text-slate-700" />
+											<PenLine v-else-if="parseGroupId(subGroup.id)?.role === 'writer' || subGroup.id.startsWith('writer')" class="h-4 w-4 text-slate-700" />
 											<Wrench v-else class="h-4 w-4 text-violet-600" />
 										</div>
 										<div class="min-w-0 flex-1">
@@ -3160,6 +3269,23 @@ onBeforeUnmount(() => {
 	opacity: 1 !important;
 	transform: translateY(-1px);
 	box-shadow: 0 0 18px rgba(59, 130, 246, 0.22), 0 6px 18px rgba(15, 23, 42, 0.08);
+}
+
+.parallel-agent-more {
+	flex-shrink: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	height: 2rem;
+	min-width: 2rem;
+	padding: 0 0.45rem;
+	border-radius: 999px;
+	border: 1px solid rgba(148, 163, 184, 0.4);
+	background: rgba(248, 250, 252, 0.75);
+	font-size: 0.7rem;
+	font-weight: 700;
+	color: #64748b;
+	margin-left: 0.2rem;
 }
 
 .parallel-agent-pill-working {
