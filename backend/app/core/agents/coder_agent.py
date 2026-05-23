@@ -92,10 +92,28 @@ class CoderAgent(Agent):
         await self.append_chat_history({"role": "user", "content": prompt})
 
         retry_count = 0
+        consecutive_error_count = 0
+        total_execute_count = 0
         last_error_message = ""
+        last_error_signature = ""
         has_executed_code = False
+        max_total_steps = getattr(settings, "CODER_MAX_TOTAL_STEPS", 30)
 
         while True:
+            if total_execute_count >= max_total_steps:
+                logger.error(f"超过最大总执行步数: {max_total_steps}")
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=f"代码手求解失败：总执行步数超过上限({max_total_steps})，终止求解",
+                        type="error",
+                    ),
+                )
+                raise RuntimeError(
+                    f"代码手求解失败：超过最大总步数 {max_total_steps}，"
+                    f"最后错误：{last_error_message}"
+                )
+
             if retry_count >= self.max_retries:
                 logger.error(f"超过最大重试次数: {self.max_retries}")
                 await redis_manager.publish_message(
@@ -108,6 +126,19 @@ class CoderAgent(Agent):
                 raise RuntimeError(
                     f"代码手求解失败：达到最大重试次数 {self.max_retries}，"
                     f"最后错误：{last_error_message}"
+                )
+
+            if consecutive_error_count >= max(3, self.max_retries):
+                logger.error(f"连续相同错误超过阈值: {consecutive_error_count}")
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=f"代码手求解失败：连续 {consecutive_error_count} 次遇到相同错误，终止求解",
+                        type="error",
+                    ),
+                )
+                raise RuntimeError(
+                    f"代码手求解失败：连续相同错误，最后错误：{last_error_message}"
                 )
 
             try:
@@ -220,8 +251,19 @@ class CoderAgent(Agent):
 
                             logger.warning(f"代码执行错误: {error_message}")
                             retry_count += 1
+                            total_execute_count += 1
+                            has_executed_code = True
                             logger.info(f"当前重试次数: {retry_count} / {self.max_retries}")
                             last_error_message = error_message
+
+                            # 检测连续相同错误（提取错误签名：前 120 字符）
+                            error_sig = error_message[:120].strip()
+                            if error_sig == last_error_signature:
+                                consecutive_error_count += 1
+                            else:
+                                consecutive_error_count = 1
+                                last_error_signature = error_sig
+
                             reflection_prompt = get_reflection_prompt(error_message, code)
 
                             await redis_manager.publish_message(
@@ -244,6 +286,8 @@ class CoderAgent(Agent):
                                 }
                             )
                             retry_count = 0  # 成功后重置重试计数
+                            consecutive_error_count = 0  # 成功后重置连续错误计数
+                            total_execute_count += 1
                             has_executed_code = True
                             # 成功执行后继续循环，等待下一步指令或 task_complete
                             continue
