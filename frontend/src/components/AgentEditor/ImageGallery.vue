@@ -193,10 +193,23 @@ function imageUrl(filename: string) {
 }
 
 function titleFromFilename(filename: string) {
-	return filename.replace(
+	const normalized = filename.replace(/\\/g, "/");
+	const baseName = normalized.split("/").filter(Boolean).pop() || normalized;
+
+	const withoutExt = baseName.replace(
 		new RegExp(`\\.(?:${IMAGE_EXTENSION_RE_FRAGMENT})$`, "i"),
 		"",
 	);
+
+	const dir = sectionPath(normalized);
+	const sectionPrefixMatch = dir.match(/^(\d+(?:\.\d+)*)_/);
+	const sectionPrefix = sectionPrefixMatch?.[1];
+
+	if (sectionPrefix && withoutExt.startsWith(`${sectionPrefix}_`)) {
+		return withoutExt.slice(`${sectionPrefix}_`.length);
+	}
+
+	return withoutExt;
 }
 
 function openImagePreview(image: ImageItem) {
