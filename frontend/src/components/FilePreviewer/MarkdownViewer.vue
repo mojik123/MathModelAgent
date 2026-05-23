@@ -17,21 +17,24 @@ const state = ref<LoadState>({ status: "loading", html: "" });
 
 const fontSize = computed(() => `${Math.max(0.5, props.scale) * 0.875}rem`);
 
-let aborted = false;
+let controller: AbortController | null = null;
 
 async function load() {
+	controller?.abort();
+	controller = new AbortController();
+	const { signal } = controller;
+
 	state.value = { status: "loading", html: "" };
-	aborted = false;
 	try {
-		const res = await fetch(props.url);
+		const res = await fetch(props.url, { signal });
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		const text = await res.text();
-		if (aborted) return;
+		if (signal.aborted) return;
 		const html = await marked.parse(text, { breaks: true, gfm: true });
-		if (aborted) return;
+		if (signal.aborted) return;
 		state.value = { status: "loaded", html };
 	} catch (err) {
-		if (aborted) return;
+		if (signal.aborted) return;
 		state.value = {
 			status: "error",
 			html: "",
@@ -43,7 +46,7 @@ async function load() {
 watch(() => props.url, load, { immediate: true });
 
 onBeforeUnmount(() => {
-	aborted = true;
+	controller?.abort();
 });
 </script>
 

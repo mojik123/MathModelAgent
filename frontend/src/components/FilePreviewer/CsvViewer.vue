@@ -21,13 +21,16 @@ const fontSize = computed(() => `${Math.max(0.5, props.scale) * 0.8125}rem`);
 
 const isExcel = computed(() => /\.xlsx?$/i.test(props.fileName));
 
-let aborted = false;
+let controller: AbortController | null = null;
 
 async function load() {
+	controller?.abort();
+	controller = new AbortController();
+	const { signal } = controller;
+
 	state.value = { status: "loading", headers: [], rows: [] };
-	aborted = false;
 	try {
-		const res = await fetch(props.url);
+		const res = await fetch(props.url, { signal });
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
 		if (isExcel.value) {
@@ -39,7 +42,7 @@ async function load() {
 				header: 1,
 				defval: "",
 			});
-			if (aborted) return;
+			if (signal.aborted) return;
 			const headers =
 				data.length > 0 ? (data[0] as string[]).map((c) => String(c)) : [];
 			const rows = data
@@ -48,7 +51,7 @@ async function load() {
 			state.value = { status: "loaded", headers, rows };
 		} else {
 			const text = await res.text();
-			if (aborted) return;
+			if (signal.aborted) return;
 			const lines = text.trim().split("\n");
 			const delimiter = props.fileName.endsWith(".tsv") ? "\t" : ",";
 			const parseRow = (line: string) => {
@@ -88,7 +91,7 @@ async function load() {
 			state.value = { status: "loaded", headers, rows };
 		}
 	} catch (err) {
-		if (aborted) return;
+		if (signal.aborted) return;
 		state.value = {
 			status: "error",
 			headers: [],
@@ -101,7 +104,7 @@ async function load() {
 watch(() => props.url, load, { immediate: true });
 
 onBeforeUnmount(() => {
-	aborted = true;
+	controller?.abort();
 });
 </script>
 

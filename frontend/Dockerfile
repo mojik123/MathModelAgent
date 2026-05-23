@@ -18,4 +18,4 @@ COPY . .
 EXPOSE 5174
 
 # 运行开发服务器
-CMD ["pnpm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5174", "--strictPort"]
+CMD ["pnpm", "exec", "vite", "--host", "0.0.0.0", "--port", "5174", "--strictPort"]

@@ -57,13 +57,16 @@ const fileMode = computed(() => {
 	return extToLang[ext] || "plaintext";
 });
 
-let aborted = false;
+let controller: AbortController | null = null;
 
 async function load() {
+	controller?.abort();
+	controller = new AbortController();
+	const { signal } = controller;
+
 	state.value = { status: "loading", content: "", language: "" };
-	aborted = false;
 	try {
-		const res = await fetch(props.url);
+		const res = await fetch(props.url, { signal });
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		let text = await res.text();
 
@@ -91,7 +94,7 @@ async function load() {
 			}
 		}
 
-		if (aborted) return;
+		if (signal.aborted) return;
 		const lang =
 			fileMode.value === "notebook"
 				? "python"
@@ -105,10 +108,10 @@ async function load() {
 						.replace(/</g, "&lt;")
 						.replace(/>/g, "&gt;");
 
-		if (aborted) return;
+		if (signal.aborted) return;
 		state.value = { status: "loaded", content: highlighted, language: lang };
 	} catch (err) {
-		if (aborted) return;
+		if (signal.aborted) return;
 		state.value = {
 			status: "error",
 			content: "",
@@ -121,7 +124,7 @@ async function load() {
 watch(() => props.url, load, { immediate: true });
 
 onBeforeUnmount(() => {
-	aborted = true;
+	controller?.abort();
 });
 </script>
 
