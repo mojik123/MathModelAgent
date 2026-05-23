@@ -3,8 +3,8 @@ import type { TaskRuntimeStatus } from "@/apis/commonApi";
 import { useFilePreview } from "@/composables/useFilePreview";
 import { useApiKeyStore } from "@/stores/apiKeys";
 import { useTaskStore } from "@/stores/task";
-import { AgentType } from "@/utils/enum";
 import { getArtifactDisplayInfo } from "@/utils/artifactDisplay";
+import { AgentType } from "@/utils/enum";
 import { resolveTaskImageUrl } from "@/utils/markdown";
 import type {
 	Message,
@@ -149,8 +149,29 @@ const isTerminalMessage = (message: Message) =>
 	message.type != null &&
 	terminalSystemTypes.has(message.type);
 
+const terminalTaskStatuses = new Set<TaskRuntimeStatus>([
+	"completed",
+	"failed",
+	"interrupted",
+	"stopped",
+]);
+
+const isWorkflowTerminal = computed(() => {
+	if (terminalTaskStatuses.has(props.taskStatus ?? "ready")) return true;
+
+	const runtimeProgress = taskStore.taskRuntimeState?.progress;
+	const currentProgress = taskStore.currentProgress?.percentage;
+
+	if ((runtimeProgress ?? currentProgress ?? 0) >= 100) return true;
+
+	if (latestSystemType.value === "success") return true;
+
+	return false;
+});
+
 const isTaskActive = computed(
 	() =>
+		!isWorkflowTerminal.value &&
 		props.taskStatus !== "ready" &&
 		props.taskStatus !== "completed" &&
 		props.taskStatus !== "failed" &&
@@ -174,7 +195,8 @@ const inferActiveGroupFromText = (text: string): string | null => {
 		const idx = idxMatch[1];
 		if (/代码手|求解|Coder/.test(text)) return `q${idx}.coder.main`;
 		if (/论文手|撰写|写作|Writer/.test(text)) return `q${idx}.writer`;
-		if (/SubCoordinator|组协调|协调/.test(text)) return `q${idx}.sub_coordinator`;
+		if (/SubCoordinator|组协调|协调/.test(text))
+			return `q${idx}.sub_coordinator`;
 		if (/建模手|Modeler/.test(text)) return `q${idx}.modeler`;
 	}
 	if (/建模|Modeler/.test(text)) return "modeler";
@@ -550,7 +572,11 @@ const normalizeSystemAction = (
 			detail: content,
 			agent: "CoordinatorAgent",
 			kind: "agent",
-			flow: { from: "CoordinatorAgent", to: "CoderAgent", label: "启动 EDA 分析" },
+			flow: {
+				from: "CoordinatorAgent",
+				to: "CoderAgent",
+				label: "启动 EDA 分析",
+			},
 		};
 	}
 	if (firstLine.includes("开始灵敏度分析")) {
@@ -559,7 +585,11 @@ const normalizeSystemAction = (
 			detail: content,
 			agent: "CoordinatorAgent",
 			kind: "agent",
-			flow: { from: "CoordinatorAgent", to: "CoderAgent", label: "启动灵敏度分析" },
+			flow: {
+				from: "CoordinatorAgent",
+				to: "CoderAgent",
+				label: "启动灵敏度分析",
+			},
 		};
 	}
 	if (firstLine.includes("并行写作启动")) {
@@ -568,7 +598,11 @@ const normalizeSystemAction = (
 			detail: content,
 			agent: "CoordinatorAgent",
 			kind: "agent",
-			flow: { from: "CoordinatorAgent", to: "WriterAgent", label: "分发写作任务" },
+			flow: {
+				from: "CoordinatorAgent",
+				to: "WriterAgent",
+				label: "分发写作任务",
+			},
 		};
 	}
 	if (firstLine.includes("集成协调者")) {
@@ -605,7 +639,12 @@ const normalizeSystemAction = (
 		};
 	}
 	if (firstLine.includes("从断点恢复：已复用问题划分")) {
-		return { title: "恢复：问题划分", detail: content, agent: "System", kind: "system" };
+		return {
+			title: "恢复：问题划分",
+			detail: content,
+			agent: "System",
+			kind: "system",
+		};
 	}
 	// ── 模型候选生成 ───────────────────────────────────────────
 	if (/正在结合题目和联网检索|模型候选方案生成完成/.test(firstLine)) {
@@ -664,7 +703,11 @@ const normalizeSystemAction = (
 		const isComplete = firstLine.includes("完成");
 		const isStop = firstLine.includes("停止") || firstLine.includes("失败");
 		return {
-			title: isComplete ? "完成：任务流程" : isStop ? "更新：任务流程" : "启动：任务流程",
+			title: isComplete
+				? "完成：任务流程"
+				: isStop
+					? "更新：任务流程"
+					: "启动：任务流程",
 			detail: content,
 			agent: "System",
 			kind: "system",
@@ -858,41 +901,57 @@ const getGroupMeta = (
 		},
 		tool: { name: "Tool / File", role: "空闲，等待工具调用" },
 	};
+	const paperWriterMatch = groupId.match(/^paper\.writer\.(.+)$/);
+	if (paperWriterMatch) {
+		const key = paperWriterMatch[1];
+		const sectionName =
+			phaseLabelMap[key] ??
+			paperSections.find((s) => s.id === key)?.label ??
+			key;
+		return {
+			name: `论文写作 · ${sectionName}`,
+			role: `负责终稿章节「${sectionName}」并行写作`,
+		};
+	}
+
 	if (static_meta[groupId]) return static_meta[groupId];
 
-		// 新格式 q1.coder.r2
-		const parsed = parseGroupId(groupId);
-		if (parsed) {
-			const qIdx = parsed.index;
-			const role = parsed.role;
+	// 新格式 q1.coder.r2
+	const parsed = parseGroupId(groupId);
+	if (parsed) {
+		const qIdx = parsed.index;
+		const role = parsed.role;
 
-			const attemptLabel =
-				parsed.attemptKind === "main"
-					? "主力"
-					: parsed.attemptKind === "backup"
-						? `备用${parsed.attemptIndex}`
-						: parsed.attemptKind === "race"
-							? `竞速${parsed.attemptIndex}`
-							: "";
+		const attemptLabel =
+			parsed.attemptKind === "main"
+				? "主力"
+				: parsed.attemptKind === "backup"
+					? `备用${parsed.attemptIndex}`
+					: parsed.attemptKind === "race"
+						? `竞速${parsed.attemptIndex}`
+						: "";
 
-			const nameMap: Record<QuestionRole, string> = {
-				sub_coordinator: `Q${qIdx} · SubCoordinatorAgent`,
-				modeler: `Q${qIdx} · ModelerAgent`,
-				coder: `Q${qIdx} · CoderAgent${attemptLabel ? ` ${attemptLabel}` : ""}`,
-				writer: `Q${qIdx} · WriterAgent`,
-			};
+		const nameMap: Record<QuestionRole, string> = {
+			sub_coordinator: `Q${qIdx} · SubCoordinatorAgent`,
+			modeler: `Q${qIdx} · ModelerAgent`,
+			coder: `Q${qIdx} · CoderAgent${attemptLabel ? ` ${attemptLabel}` : ""}`,
+			writer: `Q${qIdx} · WriterAgent`,
+		};
 
-			const roleMap: Record<QuestionRole, string> = {
-				sub_coordinator: `负责第 ${qIdx} 问任务协调  ·  ${modelInfo("coordinator")}`,
-				modeler: `负责第 ${qIdx} 问建模细化  ·  ${modelInfo("modeler")}`,
-				coder: attemptLabel
-					? `第 ${qIdx} 问代码求解 · ${attemptLabel}  ·  ${modelInfo("coder")}`
-					: `负责第 ${qIdx} 问代码求解  ·  ${modelInfo("coder")}`,
-				writer: `负责第 ${qIdx} 问结果撰写  ·  ${modelInfo("writer")}`,
-			};
+		const roleMap: Record<QuestionRole, string> = {
+			sub_coordinator: `负责第 ${qIdx} 问任务协调  ·  ${modelInfo("coordinator")}`,
+			modeler: `负责第 ${qIdx} 问建模细化  ·  ${modelInfo("modeler")}`,
+			coder: attemptLabel
+				? `第 ${qIdx} 问代码求解 · ${attemptLabel}  ·  ${modelInfo("coder")}`
+				: `负责第 ${qIdx} 问代码求解  ·  ${modelInfo("coder")}`,
+			writer: `负责第 ${qIdx} 问结果撰写  ·  ${modelInfo("writer")}`,
+		};
 
-			return { name: nameMap[role] ?? groupId, role: roleMap[role] ?? "等待执行" };
-		}
+		return {
+			name: nameMap[role] ?? groupId,
+			role: roleMap[role] ?? "等待执行",
+		};
+	}
 
 	const idxMatch = groupId.match(
 		/^(sub_coordinator|modeler|coder|writer)_(\d+)$/,
@@ -1453,7 +1512,7 @@ const baseTimestamp = computed(() => {
 const rawActions = computed(() => {
 	const actions: AgentAction[] = [];
 	let lastAgentName = "";
-		let lastAgentGroupId = "";
+	let lastAgentGroupId = "";
 	// 追踪每个 Agent 的最后一个流式动作，用于合并重复的 streaming 消息
 	const lastStreamingAction = new Map<string, AgentAction>();
 
@@ -1592,7 +1651,11 @@ const rawActions = computed(() => {
 					streamState,
 					flow: message.action?.flow,
 					localAction: message.local_action,
-						groupId: normalizeGroupId(message.agent_type, agentIndex, message as any),
+					groupId: normalizeGroupId(
+						message.agent_type,
+						agentIndex,
+						message as any,
+					),
 				};
 				actions.push(action);
 				if (streamState === "streaming") {
@@ -1600,7 +1663,11 @@ const rawActions = computed(() => {
 				}
 			}
 			lastAgentName = agentDisplayLabel;
-				lastAgentGroupId = normalizeGroupId(message.agent_type, agentIndex, message as any);
+			lastAgentGroupId = normalizeGroupId(
+				message.agent_type,
+				agentIndex,
+				message as any,
+			);
 			return;
 		}
 
@@ -1661,7 +1728,7 @@ const rawActions = computed(() => {
 					durationMs: 0,
 					agent: lastAgentName || "File",
 					files: fileAction.files,
-						groupId: lastAgentGroupId || "coder",
+					groupId: lastAgentGroupId || "coder",
 					codePreview: compactCodePreview(code),
 				});
 			});
@@ -1709,22 +1776,26 @@ const actionItems = computed<AgentAction[]>(() => {
 		const status: ActionStatus =
 			action.status === "error"
 				? "error"
-				: action.localAction
-					? action.status
-					: action.status === "warning" && isLast
-						? "warning"
-						: terminal
-							? "done"
-							: isStreaming
-								? "running"
-								: !isLast
+				: action.status === "warning"
+					? "warning"
+					: isWorkflowTerminal.value
+						? "done"
+						: action.localAction
+							? action.status
+							: action.status === "warning" && isLast
+								? "warning"
+								: terminal
 									? "done"
-									: inferredRuntimeGroup &&
-											getGroupId(action) !== inferredRuntimeGroup
-										? "done"
-										: isTaskActive.value || props.taskStatus === "ready"
-											? "running"
-											: "done";
+									: isStreaming
+										? "running"
+										: !isLast
+											? "done"
+											: inferredRuntimeGroup &&
+													getGroupId(action) !== inferredRuntimeGroup
+												? "done"
+												: isTaskActive.value || props.taskStatus === "ready"
+													? "running"
+													: "done";
 		const endTime =
 			status === "running" ? now.value : (next?.timestamp ?? action.timestamp);
 		return {
@@ -2069,12 +2140,23 @@ const groupWorkStatus = computed<Record<string, GroupWork>>(() => {
 		}
 		const c = `${action.title}\n${action.content ?? ""}`;
 		const ownerGroup = getGroupId(action);
-			const setWork = (baseGroup: string, text: string, state: GroupWork["state"]) => {
-				const target = (ownerGroup && (ownerGroup === baseGroup || ownerGroup.startsWith(baseGroup + "_") || ownerGroup.includes("." + baseGroup))) ? ownerGroup : baseGroup;
-				if (!map[target]) map[target] = { text: getGroupMeta(target).role, state: "idle" };
-				map[target] = { text, state };
-				if (target !== baseGroup) map[baseGroup] = { text, state };
-			};
+		const setWork = (
+			baseGroup: string,
+			text: string,
+			state: GroupWork["state"],
+		) => {
+			const target =
+				ownerGroup &&
+				(ownerGroup === baseGroup ||
+					ownerGroup.startsWith(baseGroup + "_") ||
+					ownerGroup.includes("." + baseGroup))
+					? ownerGroup
+					: baseGroup;
+			if (!map[target])
+				map[target] = { text: getGroupMeta(target).role, state: "idle" };
+			map[target] = { text, state };
+			if (target !== baseGroup) map[baseGroup] = { text, state };
+		};
 
 		// ── CoderAgent ──
 		if (c.includes("创建代码沙盒") || c.includes("初始化代码手")) {
@@ -2090,14 +2172,24 @@ const groupWorkStatus = computed<Record<string, GroupWork>>(() => {
 			c.includes("代码执行完成")
 		) {
 			const curText = (ownerGroup && map[ownerGroup]?.text) || map.coder.text;
-			setWork("coder", curText.startsWith("正在求解") ? curText : "正在执行代码", "working");
+			setWork(
+				"coder",
+				curText.startsWith("正在求解") ? curText : "正在执行代码",
+				"working",
+			);
 		} else if (c.includes("代码手反思纠正错误")) {
 			setWork("coder", "正在改错修复", "working");
 		} else if (c.includes("超过最大重试次数")) {
 			setWork("coder", "改错中止，沿用现有结果", "idle");
-			} else if (c.includes("代码手完成任务")) {
-				const prev = (ownerGroup && map[ownerGroup]?.text) || map.coder.text;
-				setWork("coder", prev.startsWith("正在求解") ? `${prev.replace("正在求解", "已完成")}求解` : "代码任务完成", "idle");
+		} else if (c.includes("代码手完成任务")) {
+			const prev = (ownerGroup && map[ownerGroup]?.text) || map.coder.text;
+			setWork(
+				"coder",
+				prev.startsWith("正在求解")
+					? `${prev.replace("正在求解", "已完成")}求解`
+					: "代码任务完成",
+				"idle",
+			);
 		} else if (c.includes("代码手求解成功")) {
 			const key = extractFlowKey(c);
 			const lbl = keyLabel(key);
@@ -2160,13 +2252,24 @@ const groupWorkStatus = computed<Record<string, GroupWork>>(() => {
 		}
 	}
 
-	// 各 group 独立反映自身状态，支持多 Agent 并行执行
-	if (!isTaskActive.value) {
+	if (isWorkflowTerminal.value || !isTaskActive.value) {
+		for (const group of agentGroups.value) {
+			map[group.id] = {
+				text: "已完成，等待查看结果",
+				state: "idle",
+			};
+		}
+
 		for (const id of ["coordinator", "modeler", "coder", "writer", "system"]) {
-			if (map[id]?.state !== "idle") {
-				map[id] = { ...map[id], state: "idle" };
+			if (map[id]) {
+				map[id] = {
+					text: id === "system" ? "任务全部完成" : "已完成，等待查看结果",
+					state: "idle",
+				};
 			}
 		}
+
+		return map;
 	}
 
 	// 任意正在运行的 group 升级为 working 状态
@@ -2204,10 +2307,14 @@ const groupWorkPillClass = (groupId: string) => {
 function effectiveGroupStatus(group: AgentGroup | null): ActionStatus {
 	if (!group) return "pending";
 
-	const workState = groupWorkStatus.value[group.id]?.state;
-
 	if (group.status === "error") return "error";
 	if (group.status === "warning") return "warning";
+
+	if (isWorkflowTerminal.value) {
+		return group.actions.length > 0 ? "done" : "pending";
+	}
+
+	const workState = groupWorkStatus.value[group.id]?.state;
 
 	if (group.status === "running" || workState === "working") {
 		return "running";
@@ -2249,6 +2356,8 @@ const runningAction = computed(() => {
 });
 
 const runningAgentPills = computed(() => {
+	if (isWorkflowTerminal.value) return [];
+
 	return agentGroups.value
 		.filter((group) => {
 			if (group.id === "user" || group.id === "system") return false;
@@ -2275,6 +2384,8 @@ const runningAgentPills = computed(() => {
 });
 
 const hiddenRunningAgentCount = computed(() => {
+	if (isWorkflowTerminal.value) return 0;
+
 	const all = agentGroups.value.filter((group) => {
 		if (group.id === "user" || group.id === "system") return false;
 		const workState = groupWorkStatus.value[group.id]?.state;
@@ -2286,6 +2397,7 @@ const hiddenRunningAgentCount = computed(() => {
 // 所有正在运行的 Agent 组（支持并行多 Agent 同时高亮）
 const activeGroupIds = computed(() => {
 	const ids = new Set<string>();
+	if (isWorkflowTerminal.value) return ids;
 	for (const group of agentGroups.value) {
 		if (effectiveGroupStatus(group) === "running") ids.add(group.id);
 	}
@@ -2329,26 +2441,22 @@ interface QuestionGroupData {
 
 const questionGroupsData = computed<QuestionGroupData[]>(() => {
 	const indexed = new Map<number, AgentGroup[]>();
-		for (const group of agentGroups.value) {
-			const parsed = parseGroupId(group.id);
-			if (!parsed) continue;
-			if (!indexed.has(parsed.index)) indexed.set(parsed.index, []);
-			indexed.get(parsed.index)?.push(group);
-		}
+	for (const group of agentGroups.value) {
+		const parsed = parseGroupId(group.id);
+		if (!parsed) continue;
+		if (!indexed.has(parsed.index)) indexed.set(parsed.index, []);
+		indexed.get(parsed.index)?.push(group);
+	}
 	return Array.from(indexed.entries())
 		.sort(([a], [b]) => a - b)
 		.map(([idx, groups]) => {
-			const effectiveStatuses = groups.map((g) =>
-				effectiveGroupStatus(g),
-			);
+			const effectiveStatuses = groups.map((g) => effectiveGroupStatus(g));
 
 			const allDone =
 				effectiveStatuses.length > 0 &&
 				effectiveStatuses.every((status) => status === "done");
 
-			const hasError = effectiveStatuses.some(
-				(status) => status === "error",
-			);
+			const hasError = effectiveStatuses.some((status) => status === "error");
 			const hasWarning = effectiveStatuses.some(
 				(status) => status === "warning",
 			);
@@ -2398,39 +2506,44 @@ const questionGroupsData = computed<QuestionGroupData[]>(() => {
 			} else if (pendingCount > 0) {
 				progressText = `${doneCount}/${groups.length} 完成，${pendingCount} 个等待`;
 			} else {
-				if (doneCount > 0)
-					progressText = `${doneCount}/${groups.length} 完成`;
+				if (doneCount > 0) progressText = `${doneCount}/${groups.length} 完成`;
 			}
-			const totalActions = groups.reduce(
-				(sum, g) => sum + g.actions.length,
-				0,
-			);
-			const durationMs = groups.reduce(
-				(sum, g) => sum + g.durationMs,
-				0,
-			);
+			const totalActions = groups.reduce((sum, g) => sum + g.actions.length, 0);
+			const durationMs = groups.reduce((sum, g) => sum + g.durationMs, 0);
 			return {
 				index: idx,
 				groups,
 				status,
 				progressText,
-				isActive: isRunning || hasPending,
+				isActive: !isWorkflowTerminal.value && (isRunning || hasPending),
 				totalActions,
 				durationMs,
 			};
 		});
-	});
+});
 
-	// 论文写作组：收集所有 WriterAgent，独立于求解子问题组
-	const writerGroupsData = computed<AgentGroup[]>(() => {
-		return agentGroups.value
-			.filter((group) => /^writer_\d+$/.test(group.id))
-			.sort((a, b) => {
-				const ma = a.id.match(/^writer_(\d+)$/);
-				const mb = b.id.match(/^writer_(\d+)$/);
-				return (ma ? Number(ma[1]) : 0) - (mb ? Number(mb[1]) : 0);
-			});
-	});
+// 论文写作组：收集 paper.writer.* Agent，独立于求解子问题组
+const writerSectionOrder = [
+	"firstPage",
+	"toc",
+	"RepeatQues",
+	"analysisQues",
+	"modelAssumption",
+	"symbol",
+	"judge",
+];
+
+function paperWriterOrder(id: string): number {
+	const key = id.match(/^paper\.writer\.(.+)$/)?.[1] ?? "";
+	const idx = writerSectionOrder.indexOf(key);
+	return idx >= 0 ? idx : 999;
+}
+
+const writerGroupsData = computed<AgentGroup[]>(() => {
+	return agentGroups.value
+		.filter((group) => /^paper\.writer\./.test(group.id))
+		.sort((a, b) => paperWriterOrder(a.id) - paperWriterOrder(b.id));
+});
 
 const indexedGroupIdSet = computed(() => {
 	const ids = new Set<string>();
@@ -2453,21 +2566,22 @@ const topLevelItems = computed<TopLevelItem[]>(() => {
 	for (const group of agentGroups.value) {
 		if (!indexedIds.has(group.id)) {
 			items.push({ kind: "group", group });
-			} else {
-				const parsed = parseGroupId(group.id);
-				if (parsed && !seenQGroups.has(parsed.index)) {
-					seenQGroups.add(parsed.index);
-					const qg = questionGroupsData.value.find((q) => q.index === parsed.index);
-					if (qg) items.push({ kind: "question_group", ...qg });
-				}
+		} else {
+			const parsed = parseGroupId(group.id);
+			if (parsed && !seenQGroups.has(parsed.index)) {
+				seenQGroups.add(parsed.index);
+				const qg = questionGroupsData.value.find(
+					(q) => q.index === parsed.index,
+				);
+				if (qg) items.push({ kind: "question_group", ...qg });
 			}
+		}
 	}
 	if (writerGroupsData.value.length > 0) {
 		items.push({ kind: "writer_group", groups: writerGroupsData.value });
 	}
 	return items;
 });
-
 
 const statusLabel = (status: ActionStatus) => {
 	if (status === "running") return "动作中";
@@ -2535,9 +2649,7 @@ function parseGroupId(groupId: string): ParsedQuestionGroupId | null {
 		};
 	}
 
-	const legacy = groupId.match(
-		/^(sub_coordinator|modeler|coder|writer)_(\d+)$/,
-	);
+	const legacy = groupId.match(/^(sub_coordinator|modeler|coder)_(\d+)$/);
 
 	if (legacy) {
 		const [, role, indexText] = legacy;
@@ -2563,28 +2675,39 @@ interface WorkflowRow {
 	overallStatus: ActionStatus;
 }
 
-	const workflowRows = computed<WorkflowRow[]>(() => {
-		const rows = new Map<number, WorkflowRow>();
-		const ensureRow = (idx: number) => {
-			if (!rows.has(idx)) {
-				rows.set(idx, { index: idx, subCoordinator: null, modeler: null, coders: [], winnerCoder: null, writer: null, overallStatus: "pending" });
-			}
-			return rows.get(idx)!;
-		};
-		for (const group of agentGroups.value) {
-			const parsed = parseGroupId(group.id);
-			if (!parsed) continue;
-			const row = ensureRow(parsed.index);
-			if (parsed.role === "sub_coordinator") row.subCoordinator = group;
-			else if (parsed.role === "modeler") row.modeler = group;
-			else if (parsed.role === "coder") {
-				row.coders.push(group);
-				if (group.actions.some((a) => `${a.title}\n${a.content ?? ""}`.includes("代码手求解成功"))) {
-						row.winnerCoder = group;
-				}
-			}
-			else if (parsed.role === "writer") row.writer = group;
+const workflowRows = computed<WorkflowRow[]>(() => {
+	const rows = new Map<number, WorkflowRow>();
+	const ensureRow = (idx: number) => {
+		if (!rows.has(idx)) {
+			rows.set(idx, {
+				index: idx,
+				subCoordinator: null,
+				modeler: null,
+				coders: [],
+				winnerCoder: null,
+				writer: null,
+				overallStatus: "pending",
+			});
 		}
+		return rows.get(idx)!;
+	};
+	for (const group of agentGroups.value) {
+		const parsed = parseGroupId(group.id);
+		if (!parsed) continue;
+		const row = ensureRow(parsed.index);
+		if (parsed.role === "sub_coordinator") row.subCoordinator = group;
+		else if (parsed.role === "modeler") row.modeler = group;
+		else if (parsed.role === "coder") {
+			row.coders.push(group);
+			if (
+				group.actions.some((a) =>
+					`${a.title}\n${a.content ?? ""}`.includes("代码手求解成功"),
+				)
+			) {
+				row.winnerCoder = group;
+			}
+		} else if (parsed.role === "writer") row.writer = group;
+	}
 	for (const row of rows.values()) {
 		const groups = [
 			row.subCoordinator,
@@ -2637,6 +2760,51 @@ function coderNodeLabel(row: WorkflowRow): string {
 	return `代码 ${row.coders.length}个`;
 }
 
+function inferredPipelineStatus(
+	row: WorkflowRow,
+	role: "subCoordinator" | "coder" | "writer",
+): ActionStatus {
+	const writerStatus = effectiveGroupStatus(row.writer);
+	const coderStatus = row.winnerCoder
+		? effectiveGroupStatus(row.winnerCoder)
+		: row.coders.some((g) => effectiveGroupStatus(g) === "done")
+			? "done"
+			: row.coders.some((g) => effectiveGroupStatus(g) === "running")
+				? "running"
+				: row.coders.length > 0
+					? effectiveGroupStatus(row.coders[0])
+					: "pending";
+
+	if (role === "writer") return writerStatus;
+
+	if (role === "coder") {
+		if (writerStatus === "done") return "done";
+		return coderStatus;
+	}
+
+	if (role === "subCoordinator") {
+		if (writerStatus === "done" || coderStatus === "done") return "done";
+		return effectiveGroupStatus(row.subCoordinator);
+	}
+
+	return "pending";
+}
+
+function pipelineNodeClassByStatus(status: ActionStatus): string {
+	switch (status) {
+		case "running":
+			return "pipeline-node-running";
+		case "done":
+			return "pipeline-node-done";
+		case "error":
+			return "pipeline-node-error";
+		case "warning":
+			return "pipeline-node-warning";
+		default:
+			return "pipeline-node-pending";
+	}
+}
+
 function pipelineNodeClass(group: AgentGroup | null): string {
 	if (!group) return "pipeline-node-pending";
 
@@ -2657,7 +2825,10 @@ function pipelineNodeClass(group: AgentGroup | null): string {
 // ---- 最近 Agent 通信记录 ----
 
 const recentCommunications = computed(() =>
-	actionItems.value.filter((a) => a.flow).slice(-8).reverse(),
+	actionItems.value
+		.filter((a) => a.flow)
+		.slice(-8)
+		.reverse(),
 );
 
 // ---- Watchers ----
@@ -2777,7 +2948,6 @@ function onOuterScroll() {
 	}, 3000);
 }
 
-
 watch(
 	() => props.messages,
 	async () => {
@@ -2853,7 +3023,7 @@ onBeforeUnmount(() => {
 					<div class="pipeline-node" :class="pipelineNodeClass(row.subCoordinator)" :title="row.subCoordinator?.name ?? '协调 Agent'">
 						<Settings2 class="h-2.5 w-2.5 shrink-0" />
 						<span>协调</span>
-						<LoaderCircle v-if="effectiveGroupStatus(row.subCoordinator) === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
+						<LoaderCircle v-if="inferredPipelineStatus(row, 'subCoordinator') === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
 						<CheckCircle2 v-else-if="effectiveGroupStatus(row.subCoordinator) === 'done'" class="h-2 w-2 shrink-0" />
 					</div>
 					<span class="pipeline-arrow">→</span>
@@ -2867,7 +3037,7 @@ onBeforeUnmount(() => {
 					<div class="pipeline-node" :class="pipelineNodeClass(row.writer)" :title="row.writer?.name ?? '撰写 Agent'">
 						<PenLine class="h-2.5 w-2.5 shrink-0" />
 						<span>撰写</span>
-						<LoaderCircle v-if="effectiveGroupStatus(row.writer) === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
+						<LoaderCircle v-if="inferredPipelineStatus(row, 'writer') === 'running'" class="h-2 w-2 shrink-0 animate-spin" />
 						<CheckCircle2 v-else-if="effectiveGroupStatus(row.writer) === 'done'" class="h-2 w-2 shrink-0" />
 					</div>
 				</div>
