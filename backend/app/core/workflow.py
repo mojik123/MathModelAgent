@@ -1661,6 +1661,8 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 repair_targets = list(dict.fromkeys(
                     missing_keys + [k for k, _ in invalid_keys]
                 ))
+                # toc 已在前面确定性修复，跳过
+                repair_targets = [k for k in repair_targets if k != "toc"]
 
                 for k in repair_targets:
                     repair_writer = self._create_writer_agent(problem, agent_index=None)
