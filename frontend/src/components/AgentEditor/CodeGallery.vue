@@ -133,14 +133,12 @@ async function loadWorkspaceFiles() {
 	loadingFiles.value = true;
 	try {
 		const res = await getFiles(currentTaskId.value);
-		workspaceFiles.value = (res.data ?? []).map(
-			(f: Record<string, unknown>) => ({
-				filename: (f.filename ?? f.name ?? "") as string,
-				file_type: (f.file_type ?? f.type ?? "") as string,
-				size: f.size as number | undefined,
-				modified_time: f.modified_time as string | number | Date | undefined,
-			}),
-		);
+			workspaceFiles.value = (res.data ?? []).map((f) => ({
+				filename: f.filename ?? f.name ?? "",
+				file_type: f.file_type ?? f.type ?? "",
+				size: f.size,
+				modified_time: f.modified_time,
+			}));
 	} finally {
 		loadingFiles.value = false;
 	}
