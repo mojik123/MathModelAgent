@@ -337,25 +337,20 @@ class BaseCodeInterpreter(abc.ABC):
             base_name = os.path.basename(normalized)
             src = os.path.join(self.work_dir, base_name)
 
-            # 目标冲突保护：若章节目录已存在同名文件，自动追加序号
-            stem, ext = os.path.splitext(base_name)
+            # 收敛策略：同名图片视为同一产物的新版本，直接覆盖旧图
             dst_name = base_name
-            counter = 2
-            while os.path.exists(os.path.join(dest_dir, dst_name)):
-                dst_name = f"{stem}_{counter}{ext}"
-                counter += 1
             dst = os.path.join(dest_dir, dst_name)
             final_base_name = dst_name
 
             if os.path.isfile(src):
                 try:
+                    if os.path.exists(dst):
+                        os.remove(dst)
                     shutil.move(src, dst)
                     rel_path = f"{sub_dir_name}/{final_base_name}"
                     result.append(rel_path)
                     logger.info(f"图片已归入目录: {rel_path}")
                 except OSError as exc:
-
-
                     logger.warning(f"移动图片失败 {base_name}: {exc}")
                     result.append(normalized)
             else:
