@@ -60,6 +60,10 @@ df['\\u5a74\\u513f\\u884c\\u4e3a\\u7279\\u5f81']  # No unicode escapes
 - `sorted(df['列'].unique())` **必须写成** `sorted(df['列'].dropna().unique())`，因为 DataFrame 列可能包含 NaN（float），与 str 混在一起 sorted 会抛 TypeError
 - 同理，`set(df['列'])` 混用 NaN 时如果后续做 in 判断可能误判，优先 dropna
 - value_counts() 默认不统计 NaN，如需统计用 `dropna=False`
+- **多表合并防错（强制）**：不同附件可能包含不同的列。不要假定某个表一定包含某列。如果当前表缺少需要分组的列（如 `作物类型`、`地块类型`），必须从其他附件按 `作物编号` 等公共键合并补齐。merge 之后检查 `isna().sum()` 确认补齐成功。
+- **列名和字符串字段必须先 strip()**：所有 DataFrame 的 columns 必须 `[str(c).strip() for c in df.columns]`。所有 object 列的值必须 `.astype(str).str.strip()`。这可以防止 `普通大棚 ` 尾随空格导致的 KeyError。
+- **绘图排序必须使用 reindex，禁止 loc 硬索引**：如果要对分类排序，用 `reindex(order_list)` 而非 `.loc[order_list]`，前者对缺失类别优雅降级，后者直接 KeyError。
+- **value_counts / groupby 前先确认列存在**：用 `if '列名' in df.columns` 守卫，或从其他表 merge 补齐。缺失时打印 warning 并跳过该分析，不要假设列一定存在。
 
 ## 数据泄露防范（关键！）
 - 时序特征：用 `shift(1)` 获取上一期，禁止 `shift(-1)`

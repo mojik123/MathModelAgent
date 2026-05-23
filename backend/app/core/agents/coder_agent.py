@@ -287,7 +287,8 @@ class CoderAgent(Agent):
                             retry_count += 1
                             logger.info(f"当前重试次数: {retry_count} / {self.max_retries}")
                             last_error_message = error_message
-                            error_type = error_message[:100]
+                            error_lines = error_message.strip().split("\n")
+                            error_type = error_lines[-1][:120] if error_lines else error_message[:120]
                             if error_type == last_error_type:
                                 consecutive_same_error_count += 1
                             else:
