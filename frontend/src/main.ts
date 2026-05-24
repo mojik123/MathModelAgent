@@ -7,6 +7,7 @@ import piniaPluginPersistedstate from "pinia-plugin-persistedstate";
 import { installArtifactEditChatDomPatch } from "@/utils/artifactEditChatDom";
 import { installCompactTimelineDomPatch } from "@/utils/compactTimelineDom";
 import { installChatArtifactLinkDomPatch } from "@/utils/chatArtifactLinkDom";
+import { installImageGalleryTitleDomPatch } from "@/utils/imageGalleryTitleDom";
 
 const pinia = createPinia();
 pinia.use(piniaPluginPersistedstate);
@@ -19,3 +20,4 @@ app.mount("#app");
 installArtifactEditChatDomPatch();
 installCompactTimelineDomPatch();
 installChatArtifactLinkDomPatch();
+installImageGalleryTitleDomPatch();
