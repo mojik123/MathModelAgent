@@ -68,6 +68,10 @@ function clickTab(label: string) {
 	target?.click();
 }
 
+function dispatchArtifactOpen(file: string, type: string) {
+	window.dispatchEvent(new CustomEvent("chat-artifact-open", { detail: { file, type } }));
+}
+
 function openArtifact(file: string) {
 	const normalized = normalizeFile(file);
 	const type = fileType(normalized);
@@ -75,11 +79,9 @@ function openArtifact(file: string) {
 	else if (type === "code") clickTab("代码");
 	else if (type === "paper") clickTab("论文预览");
 
-	window.dispatchEvent(
-		new CustomEvent("chat-artifact-open", {
-			detail: { file: normalized, type },
-		}),
-	);
+	for (const delay of [0, 150, 400, 900, 1500]) {
+		setTimeout(() => dispatchArtifactOpen(normalized, type), delay);
+	}
 }
 
 function isLikelyArtifactChip(node: HTMLElement) {
