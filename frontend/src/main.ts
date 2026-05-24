@@ -5,6 +5,7 @@ import App from "@/App.vue";
 import router from "@/router";
 import piniaPluginPersistedstate from "pinia-plugin-persistedstate";
 import { installArtifactEditChatDomPatch } from "@/utils/artifactEditChatDom";
+import { installCompactTimelineDomPatch } from "@/utils/compactTimelineDom";
 
 const pinia = createPinia();
 pinia.use(piniaPluginPersistedstate);
@@ -15,3 +16,4 @@ app.use(pinia);
 app.mount("#app");
 
 installArtifactEditChatDomPatch();
+installCompactTimelineDomPatch();
