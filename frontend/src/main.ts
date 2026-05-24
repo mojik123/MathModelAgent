@@ -6,6 +6,7 @@ import router from "@/router";
 import piniaPluginPersistedstate from "pinia-plugin-persistedstate";
 import { installArtifactEditChatDomPatch } from "@/utils/artifactEditChatDom";
 import { installCompactTimelineDomPatch } from "@/utils/compactTimelineDom";
+import { installChatArtifactLinkDomPatch } from "@/utils/chatArtifactLinkDom";
 
 const pinia = createPinia();
 pinia.use(piniaPluginPersistedstate);
@@ -17,3 +18,4 @@ app.mount("#app");
 
 installArtifactEditChatDomPatch();
 installCompactTimelineDomPatch();
+installChatArtifactLinkDomPatch();
