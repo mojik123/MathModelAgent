@@ -12,7 +12,7 @@ import {
 	PanelLeftOpen,
 	RefreshCw,
 } from "lucide-vue-next";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
 // ---- Types ----
@@ -60,6 +60,7 @@ const fileContentCache = ref<Record<string, string>>({});
 const loadingCodeFile = ref(false);
 const codeFileError = ref('');
 const expandedCodeFiles = ref<Set<string>>(new Set());
+const highlightedFilePath = ref("");
 
 const currentTaskId = computed(
 	() =>
@@ -301,6 +302,32 @@ function toggleSelectedFileExpanded() {
 	expandedCodeFiles.value = next;
 }
 
+function locateCodeFile(filePath: string) {
+	const normalized = normalizePath(filePath);
+	const base = fileBaseName(normalized);
+	const target = codeFileSections.value
+		.flatMap((section) => section.files)
+		.find((file) => normalizePath(file.path) === normalized || fileBaseName(file.path) === base);
+	if (!target) return;
+	showToc.value = true;
+	selectFile(target);
+	highlightedFilePath.value = target.path;
+	nextTick(() => {
+		document
+			.querySelector(`[data-code-file-path="${CSS.escape(target.path)}"]`)
+			?.scrollIntoView({ behavior: "smooth", block: "center" });
+	});
+	setTimeout(() => {
+		if (highlightedFilePath.value === target.path) highlightedFilePath.value = "";
+	}, 2600);
+}
+
+function handleChatArtifactOpen(event: Event) {
+	const detail = (event as CustomEvent).detail as { file?: string; type?: string };
+	if (detail?.type !== "code" || !detail.file) return;
+	locateCodeFile(detail.file);
+}
+
 watch(() => selectedFile.value?.path, (path) => {
 	if (path) void loadSelectedFileContent(path);
 }, { immediate: true });
@@ -331,6 +358,11 @@ watch(
 
 onMounted(() => {
 	void loadWorkspaceFiles();
+	window.addEventListener("chat-artifact-open", handleChatArtifactOpen);
+});
+
+onBeforeUnmount(() => {
+	window.removeEventListener("chat-artifact-open", handleChatArtifactOpen);
 });
 </script>
 
@@ -380,8 +412,12 @@ onMounted(() => {
 							v-for="file in section.files"
 							:key="file.path"
 							type="button"
+							:data-code-file-path="file.path"
 							class="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs hover:bg-blue-50"
-							:class="selectedFilePath === file.path ? 'bg-blue-50 ring-1 ring-blue-200' : ''"
+							:class="[
+								selectedFilePath === file.path ? 'bg-blue-50 ring-1 ring-blue-200' : '',
+								highlightedFilePath === file.path ? 'ring-2 ring-blue-400 bg-blue-100 shadow-[0_0_0_6px_rgba(59,130,246,0.12)]' : '',
+							]"
 							@click="selectFile(file)"
 						>
 							<Code2 class="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500" />
