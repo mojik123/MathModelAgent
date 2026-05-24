@@ -164,3 +164,35 @@ export function reviseTextChat(
 		{ timeout: 120000 },
 	);
 }
+
+export interface ArtifactEditPayload {
+	task_id: string;
+	target_type: "image" | "text";
+	target_path: string;
+	target_label: string;
+	instruction: string;
+	description?: string;
+	selected_text?: string;
+	context?: string;
+	conversation_history?: { role: "user" | "assistant"; content: string }[];
+}
+
+export async function sendArtifactEditMessage(payload: ArtifactEditPayload) {
+	if (payload.target_type === "image") {
+		return reviseImageChat(
+			payload.task_id,
+			payload.target_path,
+			payload.instruction,
+			payload.target_label,
+			payload.description,
+			payload.conversation_history,
+		);
+	}
+	return reviseTextChat(
+		payload.task_id,
+		payload.instruction,
+		payload.selected_text || payload.target_label,
+		payload.context || payload.description,
+		payload.conversation_history,
+	);
+}
