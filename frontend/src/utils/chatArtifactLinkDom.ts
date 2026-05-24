@@ -37,6 +37,11 @@ function addStyle() {
 	animation: chatArtifactLinkPulse 1.4s ease-out 1;
 }
 
+[data-chat-artifact-target-highlight="true"] {
+	box-shadow: 0 0 0 4px rgba(37, 99, 235, .28), 0 14px 34px rgba(37, 99, 235, .18) !important;
+	border-color: rgba(37, 99, 235, .55) !important;
+}
+
 @keyframes chatArtifactLinkPulse {
 	0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.42); }
 	100% { box-shadow: 0 0 0 16px rgba(37, 99, 235, 0); }
@@ -47,6 +52,14 @@ function addStyle() {
 
 function normalizeFile(text: string) {
 	return (text || "").replace(/\\/g, "/").trim();
+}
+
+function baseName(file: string) {
+	return normalizeFile(file).split("/").filter(Boolean).pop() || normalizeFile(file);
+}
+
+function imageDomId(file: string) {
+	return normalizeFile(file).replace(/\//g, "-");
 }
 
 function extractFileName(text: string) {
@@ -68,8 +81,27 @@ function clickTab(label: string) {
 	target?.click();
 }
 
+function locateImageCard(file: string) {
+	const normalized = normalizeFile(file);
+	const base = baseName(normalized);
+	const direct = document.getElementById(imageDomId(normalized));
+	const sections = Array.from(document.querySelectorAll<HTMLElement>("section[id]"));
+	const target = direct || sections.find((section) => {
+		const text = section.textContent || "";
+		return section.id === imageDomId(normalized) || text.includes(normalized) || text.includes(base);
+	});
+	if (!target) return false;
+	target.scrollIntoView({ behavior: "smooth", block: "center" });
+	target.setAttribute("data-chat-artifact-target-highlight", "true");
+	setTimeout(() => target.removeAttribute("data-chat-artifact-target-highlight"), 2600);
+	const tocButton = document.querySelector<HTMLElement>(`[data-image-id="${CSS.escape(target.id)}"]`);
+	tocButton?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+	return true;
+}
+
 function dispatchArtifactOpen(file: string, type: string) {
 	window.dispatchEvent(new CustomEvent("chat-artifact-open", { detail: { file, type } }));
+	if (type === "image") locateImageCard(file);
 }
 
 function openArtifact(file: string) {
