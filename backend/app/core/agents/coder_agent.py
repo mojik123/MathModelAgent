@@ -1,6 +1,7 @@
 """代码手 Agent 模块，负责生成和执行 Python 代码完成建模任务。"""
 
 import asyncio
+import json
 from app.core.agents.agent import Agent
 from app.config.setting import settings
 from app.utils.log_util import logger
@@ -11,7 +12,6 @@ from app.core.llm.llm import LLM
 from app.schemas.A2A import CoderToWriter
 from app.core.prompts import CODER_PROMPT
 from app.utils.common_utils import get_current_files
-import json
 from app.core.prompts import get_reflection_prompt
 from app.core.functions import coder_tools
 from app.utils.repeat_error_judge import judge_repeated_error, error_signature
@@ -19,6 +19,7 @@ from app.utils.repeat_error_judge import judge_repeated_error, error_signature
 
 class CoderAgent(Agent):
     """代码手 Agent，通过 LLM 生成代码并在解释器中执行，支持错误反思。"""
+
     def __init__(
         self,
         task_id: str,
@@ -85,11 +86,101 @@ class CoderAgent(Agent):
         total_execute_count = 0
         max_total_steps = int(getattr(settings, "CODER_MAX_TOTAL_STEPS", 0) or 0)
         last_error_type = ""
-        max_same_error = int(getattr(settings, "CODER_MAX_SAME_ERROR", 3))
         has_executed_code = False
+
+        # 协调者错误判别：旁路异步，不阻塞当前 Coder。
+        judge_min_errors = int(getattr(settings, "CODER_REPEAT_ERROR_JUDGE_MIN_ERRORS", 3) or 3)
+        judge_interval = max(1, int(getattr(settings, "CODER_REPEAT_ERROR_JUDGE_INTERVAL", 2) or 2))
+        pending_judge_task: asyncio.Task | None = None
+        restart_requested = False
+        restart_reason = ""
+
+        async def _consume_judge_if_ready() -> None:
+            nonlocal pending_judge_task, restart_requested, restart_reason
+            if pending_judge_task is None or not pending_judge_task.done():
+                return
+            try:
+                judge = pending_judge_task.result()
+            except asyncio.CancelledError:
+                pending_judge_task = None
+                return
+            except Exception as exc:
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(content=f"协调者重复错误判别失败，当前 Coder 继续试错：{exc}", type="warning"),
+                )
+                pending_judge_task = None
+                return
+
+            pending_judge_task = None
+            same_error = bool(judge.get("same_error"))
+            should_restart = bool(judge.get("should_restart"))
+            root_cause = str(judge.get("root_cause") or last_error_type or "unknown")[:160]
+            advice = str(judge.get("advice") or "")
+            reason = str(judge.get("reason") or "")
+
+            await redis_manager.publish_message(
+                self.task_id,
+                SystemMessage(
+                    content=(
+                        f"协调者后台错误判别完成：same_error={same_error}, should_restart={should_restart}\n"
+                        f"根因：{root_cause}\n"
+                        f"建议：{advice}\n"
+                        f"依据：{reason}"
+                    ),
+                    type="warning" if should_restart or same_error else "info",
+                ),
+            )
+
+            if should_restart:
+                restart_requested = True
+                restart_reason = (
+                    f"协调者建议切换新 Coder；根因：{root_cause}；依据：{reason}；建议：{advice}"
+                )
+                return
+
+            if same_error and advice:
+                await self.append_chat_history(
+                    {
+                        "role": "user",
+                        "content": (
+                            "【协调者后台建议】你可能正在重复处理同类错误。"
+                            "当前任务继续由你处理，但下一步必须改变修复策略。\n"
+                            f"错误根因：{root_cause}\n"
+                            f"建议：{advice}\n"
+                        ),
+                    }
+                )
+
+        def _should_start_judge() -> bool:
+            if not getattr(settings, "CODER_REPEAT_ERROR_JUDGE_ENABLED", True):
+                return False
+            if pending_judge_task is not None and not pending_judge_task.done():
+                return False
+            if retry_count < judge_min_errors:
+                return False
+            return (retry_count - judge_min_errors) % judge_interval == 0
 
         while True:
             total_execute_count += 1
+            await _consume_judge_if_ready()
+
+            if restart_requested:
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=(
+                            f"代码手已停止：协调者后台判定需要切换新 Coder\n"
+                            f"子任务：{subtask_title}\n"
+                            f"停止详情：{restart_reason}\n"
+                            f"最后错误：{last_error_message[:1000]}"
+                        ),
+                        type="error",
+                    ),
+                )
+                raise RuntimeError(
+                    f"代码手求解失败：协调者后台判定需要切换新 Coder，子任务：{subtask_title}，{restart_reason}"
+                )
 
             if max_total_steps > 0 and total_execute_count > max_total_steps:
                 await redis_manager.publish_message(
@@ -107,26 +198,6 @@ class CoderAgent(Agent):
                 raise RuntimeError(
                     f"代码手求解失败：总执行步数超过上限 {max_total_steps}，"
                     f"子任务：{subtask_title}，最后错误：{last_error_message}"
-                )
-
-            if consecutive_same_error_count >= max_same_error:
-                logger.error(f"连续同类错误达到上限: {max_same_error}")
-                await redis_manager.publish_message(
-                    self.task_id,
-                    SystemMessage(
-                        content=(
-                            f"代码手已停止：协调者判定连续 {max_same_error} 次同类错误\n"
-                            f"子任务：{subtask_title}\n"
-                            f"错误类型：{last_error_type}\n"
-                            f"停止原因：需要换新 Coder 重新组织方案。\n"
-                            f"最后错误：{last_error_message[:1000]}"
-                        ),
-                        type="error",
-                    ),
-                )
-                raise RuntimeError(
-                    f"代码手求解失败：协调者判定连续 {max_same_error} 次同类错误，子任务：{subtask_title}，"
-                    f"（{last_error_type}），最后错误：{last_error_message}"
                 )
 
             if self.max_retries is not None and retry_count >= self.max_retries:
@@ -194,6 +265,8 @@ class CoderAgent(Agent):
                             )
                             continue
 
+                        if pending_judge_task is not None and not pending_judge_task.done():
+                            pending_judge_task.cancel()
                         logger.info("任务完成信号")
                         await redis_manager.publish_message(
                             self.task_id,
@@ -251,56 +324,48 @@ class CoderAgent(Agent):
                             previous_error_message = last_error_message
                             last_error_message = error_message
 
-                            judge = await judge_repeated_error(
-                                task_id=self.task_id,
-                                subtask_title=subtask_title,
-                                previous_error=previous_error_message,
-                                current_error=error_message,
-                                current_code=code,
-                                same_count=consecutive_same_error_count,
-                                retry_count=retry_count,
-                            )
-                            same_error = bool(judge.get("same_error"))
-                            should_restart = bool(judge.get("should_restart"))
-                            root_cause = str(judge.get("root_cause") or error_signature(error_message))[:160]
-                            advice = str(judge.get("advice") or "")
-                            reason = str(judge.get("reason") or "")
-
-                            if same_error:
+                            current_signature = error_signature(error_message)
+                            previous_signature = error_signature(previous_error_message) if previous_error_message else ""
+                            if previous_signature and current_signature == previous_signature:
                                 consecutive_same_error_count += 1
                             else:
                                 consecutive_same_error_count = 1
-                            last_error_type = root_cause
+                            last_error_type = current_signature
 
-                            await redis_manager.publish_message(
-                                self.task_id,
-                                SystemMessage(
-                                    content=(
-                                        f"协调者重复错误判别：same_error={same_error}, should_restart={should_restart}\n"
-                                        f"根因：{root_cause}\n"
-                                        f"建议：{advice}\n"
-                                        f"依据：{reason}"
+                            if _should_start_judge():
+                                await redis_manager.publish_message(
+                                    self.task_id,
+                                    SystemMessage(
+                                        content=(
+                                            f"协调者后台错误判别已启动：累计错误 {retry_count} 次，"
+                                            f"当前 Coder 不等待判别结果，继续自行反思修复。"
+                                        ),
+                                        type="info",
                                     ),
-                                    type="warning" if same_error else "info",
-                                ),
-                            )
-
-                            if should_restart:
-                                consecutive_same_error_count = max_same_error
-                                continue
+                                )
+                                pending_judge_task = asyncio.create_task(
+                                    judge_repeated_error(
+                                        task_id=self.task_id,
+                                        subtask_title=subtask_title,
+                                        previous_error=previous_error_message,
+                                        current_error=error_message,
+                                        current_code=code,
+                                        same_count=consecutive_same_error_count,
+                                        retry_count=retry_count,
+                                    )
+                                )
 
                             reflection_prompt = get_reflection_prompt(error_message, code)
-                            if same_error and advice:
+                            if pending_judge_task is not None and not pending_judge_task.done():
                                 reflection_prompt = (
-                                    "【协调者判断】你正在重复遇到同类错误。下一步必须改变修复策略，不要重复上一版代码。\n"
-                                    f"错误根因：{root_cause}\n"
-                                    f"协调者建议：{advice}\n\n"
+                                    "【系统提示】协调者正在后台判断错误是否重复；你不要等待协调者结果，"
+                                    "继续基于当前报错自行修复。\n\n"
                                     + reflection_prompt
                                 )
 
                             await redis_manager.publish_message(
                                 self.task_id,
-                                SystemMessage(content="代码手根据协调者建议反思纠错", type="info"),
+                                SystemMessage(content="代码手自行反思纠错，协调者后台判别不阻塞当前尝试", type="info"),
                             )
                             await self.append_chat_history({"role": "user", "content": reflection_prompt})
                             continue
@@ -313,6 +378,9 @@ class CoderAgent(Agent):
                                 "content": text_to_gpt,
                             }
                         )
+                        if pending_judge_task is not None and not pending_judge_task.done():
+                            pending_judge_task.cancel()
+                            pending_judge_task = None
                         retry_count = 0
                         consecutive_same_error_count = 0
                         last_error_type = ""
@@ -354,6 +422,8 @@ class CoderAgent(Agent):
                     )
                     continue
 
+                if pending_judge_task is not None and not pending_judge_task.done():
+                    pending_judge_task.cancel()
                 logger.info("没有工具调用，任务完成")
                 return CoderToWriter(
                     code_response=response.content,
@@ -361,6 +431,8 @@ class CoderAgent(Agent):
                 )
 
             except asyncio.CancelledError:
+                if pending_judge_task is not None and not pending_judge_task.done():
+                    pending_judge_task.cancel()
                 raise
             except Exception as e:
                 logger.error(f"执行过程中发生异常: {str(e)}")
