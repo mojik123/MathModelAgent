@@ -8,21 +8,36 @@ const STYLE_ID = "artifact-edit-chat-style";
 let installed = false;
 let inputValue = "";
 let sending = false;
+let lastRenderKey = "";
 
 function short(text: string, max = 160) {
 	const s = (text || "").replace(/\s+/g, " ").trim();
 	return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
+function escapeHtml(text = "") {
+	return text
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
+}
+
 function currentTaskId() {
-	return window.location.pathname.match(/\/task\/([^/]+)/)?.[1] || window.localStorage.getItem("currentTaskId") || "";
+	return (
+		window.location.pathname.match(/\/task\/([^/]+)/)?.[1] ||
+		window.localStorage.getItem("currentTaskId") ||
+		""
+	);
 }
 
 function filenameFromSrc(src: string) {
 	try {
 		const url = new URL(src, window.location.origin);
 		const parts = decodeURIComponent(url.pathname).split("/static/");
-		const afterStatic = parts[1] || decodeURIComponent(url.pathname).replace(/^\/+/, "");
+		const afterStatic =
+			parts[1] || decodeURIComponent(url.pathname).replace(/^\/+/, "");
 		const segments = afterStatic.split("/").filter(Boolean);
 		const taskId = currentTaskId();
 		if (segments[0] === taskId) return segments.slice(1).join("/");
@@ -55,38 +70,73 @@ function addStyle() {
 }
 
 function getLeftPanel() {
-	return document.querySelector<HTMLElement>(".glass-left-panel");
+	return (
+		document.querySelector<HTMLElement>(".glass-left-panel") ||
+		document.querySelector<HTMLElement>("[data-agent-chat-panel]")
+	);
 }
 
-function renderInput() {
-	const store = useArtifactEditStore();
-	let root = document.getElementById(ROOT_ID);
+function ensureRoot() {
 	const panel = getLeftPanel();
-	if (!panel) return;
+	if (!panel) return null;
+	let root = document.getElementById(ROOT_ID);
 	if (!root) {
 		root = document.createElement("div");
 		root.id = ROOT_ID;
 		panel.appendChild(root);
 	}
+	return root;
+}
+
+function syncExistingInput(root: HTMLElement) {
+	const textarea = root.querySelector<HTMLTextAreaElement>("textarea");
+	const sendBtn = root.querySelector<HTMLButtonElement>(".artifact-edit-chat-send");
+	if (textarea && document.activeElement !== textarea) textarea.value = inputValue;
+	if (textarea) textarea.disabled = sending;
+	if (sendBtn) {
+		sendBtn.disabled = sending || !inputValue.trim();
+		sendBtn.textContent = sending ? "修改中" : "发送";
+	}
+}
+
+function renderInput(force = false) {
+	const store = useArtifactEditStore();
+	const root = ensureRoot();
+	if (!root) return;
 	const ctx = store.activeContext;
 	if (!ctx) {
 		root.innerHTML = "";
 		root.style.display = "none";
+		lastRenderKey = "";
 		return;
 	}
+
 	root.style.display = "block";
+	const renderKey = `${ctx.sessionId}:${ctx.status}:${sending}`;
+	if (!force && root.dataset.renderKey === renderKey) {
+		syncExistingInput(root);
+		return;
+	}
+	root.dataset.renderKey = renderKey;
+	lastRenderKey = renderKey;
+
 	const typeLabel = ctx.targetType === "image" ? "图片" : "文字";
+	const placeholder =
+		ctx.targetType === "image"
+			? "输入修图要求，例如：改配色、调标题、放大坐标轴字体..."
+			: "输入文字修改要求，例如：改得更学术、压缩两句话、删掉口语化...";
+
 	root.innerHTML = `
 		<div class="artifact-edit-chat-ref artifact-edit-reference-flash">
 			<div style="min-width:0;flex:1;">
-				<div class="artifact-edit-chat-ref-title">当前修改对象：${ctx.targetLabel}</div>
-				<div class="artifact-edit-chat-ref-meta">${typeLabel} · ${ctx.targetPath}</div>
-				${ctx.excerpt ? `<div class="artifact-edit-chat-ref-excerpt">${ctx.excerpt}</div>` : ""}
+				<div class="artifact-edit-chat-ref-title">当前修改对象：${escapeHtml(ctx.targetLabel)}</div>
+				<div class="artifact-edit-chat-ref-meta">${typeLabel} · ${escapeHtml(ctx.targetPath)}</div>
+				${ctx.excerpt ? `<div class="artifact-edit-chat-ref-excerpt">${escapeHtml(ctx.excerpt)}</div>` : ""}
 			</div>
 			<button class="artifact-edit-chat-clear" type="button">清除</button>
 		</div>
 		<div class="artifact-edit-chat-row">
-			<textarea class="artifact-edit-chat-input" placeholder="${ctx.targetType === "image" ? "输入修图要求，例如：改配色、调标题、放大坐标轴字体..." : "输入文字修改要求，例如：改得更学术、压缩两句话、删掉口语化..."}"></textarea>
+			<textarea class="artifact-edit-chat-input" placeholder="${escapeHtml(placeholder)}"></textarea>
 			<button class="artifact-edit-chat-send" type="button">${sending ? "修改中" : "发送"}</button>
 		</div>
 	`;
@@ -98,6 +148,7 @@ function renderInput() {
 		textarea.disabled = sending;
 		textarea.addEventListener("input", () => {
 			inputValue = textarea.value;
+			syncExistingInput(root);
 		});
 		textarea.addEventListener("keydown", (event) => {
 			if (event.key === "Enter" && !event.shiftKey) {
@@ -107,24 +158,24 @@ function renderInput() {
 		});
 	}
 	if (sendBtn) {
-		sendBtn.disabled = sending || !ctx;
+		sendBtn.disabled = sending || !inputValue.trim();
 		sendBtn.addEventListener("click", () => void sendCurrentInstruction());
 	}
 	clearBtn?.addEventListener("click", () => {
 		store.clearActive();
 		inputValue = "";
-		renderInput();
+		renderInput(true);
 	});
 }
 
-function addReferenceMessage(ctx: ReturnType<typeof useArtifactEditStore>["activeContext"]) {
+function addReferenceMessage(ctx: any, reused = false) {
 	if (!ctx) return;
 	const taskStore = useTaskStore();
 	const typeLabel = ctx.targetType === "image" ? "图片" : "文字";
 	taskStore.addSystemAction(
-		"引用",
+		reused ? "继续修改" : "引用",
 		`${typeLabel}修改对象`,
-		`已引用${typeLabel}：${ctx.targetLabel}\n路径：${ctx.targetPath}${ctx.excerpt ? `\n片段：${short(ctx.excerpt, 220)}` : ""}`,
+		`${reused ? "继续修改" : "已引用"}${typeLabel}：${ctx.targetLabel}\n路径：${ctx.targetPath}${ctx.excerpt ? `\n片段：${short(ctx.excerpt, 220)}` : ""}`,
 		{
 			from: "User",
 			to: ctx.targetType === "image" ? "CoderAgent" : "WriterAgent",
@@ -134,12 +185,57 @@ function addReferenceMessage(ctx: ReturnType<typeof useArtifactEditStore>["activ
 	);
 }
 
-function activateImageFromData(data: { filename: string; title?: string; url?: string; description?: string }) {
+function activateExistingOrCreate(data: {
+	taskId: string;
+	targetType: "image" | "text";
+	targetPath: string;
+	targetLabel: string;
+	previewUrl?: string;
+	description?: string;
+	excerpt?: string;
+}) {
+	const store = useArtifactEditStore();
+	store.restore(data.taskId);
+	const existing = store.sessions.find(
+		(session) =>
+			session.taskId === data.taskId &&
+			session.targetType === data.targetType &&
+			session.targetPath === data.targetPath,
+	);
+	if (existing) {
+		store.updateSession(existing.sessionId, {
+			targetLabel: data.targetLabel || existing.targetLabel,
+			previewUrl: data.previewUrl || existing.previewUrl,
+			description: data.description || existing.description,
+			excerpt: data.excerpt || existing.excerpt,
+			status: existing.status === "failed" ? "active" : existing.status,
+		});
+		store.reactivate(existing.sessionId);
+		addReferenceMessage(store.activeContext, true);
+		return store.activeContext;
+	}
+	const ctx = store.setActive({
+		taskId: data.taskId,
+		targetType: data.targetType,
+		targetPath: data.targetPath,
+		targetLabel: data.targetLabel,
+		previewUrl: data.previewUrl,
+		description: data.description,
+		excerpt: data.excerpt,
+	});
+	addReferenceMessage(ctx, false);
+	return ctx;
+}
+
+function activateImageFromData(data: {
+	filename: string;
+	title?: string;
+	url?: string;
+	description?: string;
+}) {
 	const taskId = currentTaskId();
 	if (!taskId || !data.filename) return;
-	const store = useArtifactEditStore();
-	store.restore(taskId);
-	const ctx = store.setActive({
+	activateExistingOrCreate({
 		taskId,
 		targetType: "image",
 		targetPath: data.filename,
@@ -147,29 +243,42 @@ function activateImageFromData(data: { filename: string; title?: string; url?: s
 		previewUrl: data.url,
 		description: data.description,
 	});
-	addReferenceMessage(ctx);
 	inputValue = "";
-	renderInput();
+	renderInput(true);
 	getLeftPanel()?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
-function activateTextFromData(data: { selectedText: string; context?: string; label?: string }) {
+function activateTextFromData(data: {
+	selectedText: string;
+	context?: string;
+	label?: string;
+}) {
 	const taskId = currentTaskId();
 	if (!taskId || !data.selectedText.trim()) return;
-	const store = useArtifactEditStore();
-	store.restore(taskId);
 	const excerpt = short(data.selectedText, 400);
-	const ctx = store.setActive({
+	activateExistingOrCreate({
 		taskId,
 		targetType: "text",
-		targetPath: "paper.md",
+		targetPath: `paper.md#${excerpt.slice(0, 40)}`,
 		targetLabel: data.label || "论文选中文本",
 		excerpt,
 		description: data.context,
 	});
-	addReferenceMessage(ctx);
 	inputValue = "";
-	renderInput();
+	renderInput(true);
+}
+
+function refreshRightPanelAfterEdit(type: "image" | "text") {
+	window.dispatchEvent(new CustomEvent("artifact-edit-updated", { detail: { type } }));
+	setTimeout(() => {
+		const refreshButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+			.filter((button) => (button.textContent || "").includes("刷新"));
+		if (type === "image") {
+			refreshButtons.at(-1)?.click();
+		} else {
+			refreshButtons[0]?.click();
+		}
+	}, 600);
 }
 
 async function sendCurrentInstruction() {
@@ -203,9 +312,10 @@ async function sendCurrentInstruction() {
 		},
 		"info",
 	);
-	renderInput();
+	renderInput(true);
 	try {
-		const currentSession = store.sessions.find((s) => s.sessionId === ctx.sessionId) || ctx;
+		const currentSession =
+			store.sessions.find((s) => s.sessionId === ctx.sessionId) || ctx;
 		const response = await sendArtifactEditMessage({
 			task_id: ctx.taskId,
 			target_type: ctx.targetType,
@@ -219,35 +329,73 @@ async function sendCurrentInstruction() {
 		});
 		const data = response.data as any;
 		const ok = Boolean(data?.success) && data?.status !== "failed";
-		const resultText = ctx.targetType === "image"
-			? [data?.analysis_text, data?.message, data?.updated_alt_text ? `新标题：${data.updated_alt_text}` : "", data?.updated_caption ? `新说明：${data.updated_caption}` : ""].filter(Boolean).join("\n")
-			: [data?.message, data?.revised_text ? `修改后：${data.revised_text}` : ""].filter(Boolean).join("\n");
-		store.appendSessionMessage(ctx.sessionId, "assistant", resultText || (ok ? "修改完成" : "修改失败"));
+		const resultText =
+			ctx.targetType === "image"
+				? [
+						data?.analysis_text,
+						data?.message,
+						data?.updated_alt_text ? `新标题：${data.updated_alt_text}` : "",
+						data?.updated_caption ? `新说明：${data.updated_caption}` : "",
+					]
+						.filter(Boolean)
+						.join("\n")
+				: [data?.message, data?.revised_text ? `修改后：${data.revised_text}` : ""]
+						.filter(Boolean)
+						.join("\n");
+		store.appendSessionMessage(
+			ctx.sessionId,
+			"assistant",
+			resultText || (ok ? "修改完成" : "修改失败"),
+		);
 		store.updateSession(ctx.sessionId, { status: ok ? "done" : "failed" });
 		if (ok) {
 			taskStore.addAgentAction(
 				ctx.targetType === "image" ? AgentType.CODER : AgentType.WRITER,
 				"返回",
 				`${ctx.targetType === "image" ? "图片" : "文字"}修改结果`,
-				resultText || `${ctx.targetType === "image" ? "图片" : "文字"}修改完成：${ctx.targetLabel}`,
+				resultText ||
+					`${ctx.targetType === "image" ? "图片" : "文字"}修改完成：${ctx.targetLabel}`,
 				{
 					from: ctx.targetType === "image" ? "CoderAgent" : "WriterAgent",
 					to: "User",
-					label: ctx.targetType === "image" ? "返回图片修改结果" : "返回文字修改结果",
+					label:
+						ctx.targetType === "image"
+							? "返回图片修改结果"
+							: "返回文字修改结果",
 				},
 			);
-			window.dispatchEvent(new CustomEvent("artifact-edit-updated", { detail: { type: ctx.targetType } }));
+			refreshRightPanelAfterEdit(ctx.targetType);
 		} else {
-			taskStore.addSystemAction("失败", "AI 修改", resultText || "修改失败", { from: ctx.targetType === "image" ? "CoderAgent" : "WriterAgent", to: "User", label: "返回失败原因" }, "error");
+			taskStore.addSystemAction(
+				"失败",
+				"AI 修改",
+				resultText || "修改失败",
+				{
+					from: ctx.targetType === "image" ? "CoderAgent" : "WriterAgent",
+					to: "User",
+					label: "返回失败原因",
+				},
+				"error",
+			);
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "网络错误";
 		store.appendSessionMessage(ctx.sessionId, "assistant", `修改失败：${message}`);
 		store.updateSession(ctx.sessionId, { status: "failed" });
-		taskStore.addSystemAction("失败", "AI 修改", `修改失败：${message}`, { from: ctx.targetType === "image" ? "CoderAgent" : "WriterAgent", to: "User", label: "返回失败原因" }, "error");
+		taskStore.addSystemAction(
+			"失败",
+			"AI 修改",
+			`修改失败：${message}`,
+			{
+				from: ctx.targetType === "image" ? "CoderAgent" : "WriterAgent",
+				to: "User",
+				label: "返回失败原因",
+			},
+			"error",
+		);
 	} finally {
 		sending = false;
-		renderInput();
+		renderInput(true);
 	}
 }
 
@@ -264,7 +412,10 @@ function interceptImageGalleryButton(event: MouseEvent) {
 		.map((el) => el.textContent?.trim() || "")
 		.find((t) => /\.(png|jpg|jpeg|svg|webp)$/i.test(t));
 	const filename = filenameText || (img?.src ? filenameFromSrc(img.src) : "");
-	const title = section.querySelector<HTMLElement>(".font-semibold")?.textContent?.trim() || filename.split("/").pop() || filename;
+	const title =
+		section.querySelector<HTMLElement>(".font-semibold")?.textContent?.trim() ||
+		filename.split("/").pop() ||
+		filename;
 	const desc = section.querySelector<HTMLElement>("p")?.textContent?.trim() || "";
 	if (!filename) return false;
 	event.preventDefault();
@@ -284,7 +435,9 @@ function interceptWriterActionButton(event: MouseEvent) {
 	event.stopPropagation();
 	event.stopImmediatePropagation();
 	if (text.includes("AI 修图")) {
-		const selected = document.querySelector<HTMLImageElement>(".paper-preview img.image-selected") || document.querySelector<HTMLImageElement>(".paper-preview img.image-hovered");
+		const selected =
+			document.querySelector<HTMLImageElement>(".paper-preview img.image-selected") ||
+			document.querySelector<HTMLImageElement>(".paper-preview img.image-hovered");
 		if (!selected) return true;
 		activateImageFromData({
 			filename: filenameFromSrc(selected.src || selected.getAttribute("src") || ""),
@@ -294,12 +447,18 @@ function interceptWriterActionButton(event: MouseEvent) {
 		});
 		return true;
 	}
-	const selectedTexts = Array.from(document.querySelectorAll<HTMLElement>(".paper-preview .sentence-selected"))
+	const selectedTexts = Array.from(
+		document.querySelectorAll<HTMLElement>(".paper-preview .sentence-selected"),
+	)
 		.map((el) => el.textContent?.trim() || "")
 		.filter(Boolean);
 	const selected = selectedTexts.join("");
 	if (selected) {
-		activateTextFromData({ selectedText: selected, context: selectedTexts.join("\n"), label: "论文选中文本" });
+		activateTextFromData({
+			selectedText: selected,
+			context: selectedTexts.join("\n"),
+			label: "论文选中文本",
+		});
 	}
 	return true;
 }
@@ -320,6 +479,6 @@ export function installArtifactEditChatDomPatch() {
 	installed = true;
 	addStyle();
 	installClickCapture();
-	setInterval(renderInput, 700);
-	window.addEventListener("popstate", () => renderInput());
+	setInterval(() => renderInput(false), 700);
+	window.addEventListener("popstate", () => renderInput(true));
 }
