@@ -75,6 +75,24 @@ function sectionPrefix(filename: string) {
 	return match?.[1] || "";
 }
 
+function looksLikeDescription(text: string) {
+	const value = (text || "").trim();
+	if (!value) return false;
+	return (
+		value.length > 26 ||
+		/[；，。,.]/.test(value) ||
+		value.includes("该图") ||
+		value.includes("展示") ||
+		value.includes("用于支撑") ||
+		value.includes("用于说明") ||
+		value.includes("数据分析") ||
+		value.includes("趋势判断") ||
+		value.includes("模型结果解释") ||
+		value.includes("作物间") ||
+		value.includes("销量") && value.includes("价格")
+	);
+}
+
 function titleFromFilename(filename: string) {
 	const key = baseKey(filename);
 	const cleanedKey = key.replace(/^(b\d+_|r\d+_|main_)/i, "");
@@ -90,44 +108,76 @@ function titleFromFilename(filename: string) {
 	return prefix ? `${prefix} ${readable}` : readable;
 }
 
-function extractFilenameFromSection(section: HTMLElement) {
+function extractFilenameFromCard(section: HTMLElement) {
+	const img = section.querySelector<HTMLImageElement>("img[src]");
+	const src = img?.getAttribute("src") || img?.src || "";
+	const staticMatch = src.match(/\/static\/[^/]+\/(.+?\.(?:png|jpg|jpeg|webp|svg))(?:[?#].*)?$/i);
+	if (staticMatch?.[1]) return normalizePath(decodeURIComponent(staticMatch[1]));
+
+	const filenameChip = Array.from(section.querySelectorAll<HTMLElement>("span, p, div"))
+		.map((el) => (el.textContent || "").trim())
+		.find((text) => IMG_RE.test(text));
+	if (filenameChip) return normalizePath(filenameChip.match(IMG_RE)?.[1] || "");
+
 	const id = section.id || "";
-	const text = section.textContent || "";
-	const fromText = text.match(IMG_RE)?.[1];
-	if (fromText) return normalizePath(fromText);
-	if (id) return normalizePath(id.replace(/^(\d+(?:\.\d+)?)-/, "$1_").replace(/-/g, "/"));
+	if (id) {
+		// ImageGallery 的 id 是 filename 中 / 替换为 - 后的结果，保底只用于生成可读标题。
+		const maybe = id.replace(/-(?=[^/-]+\.(?:png|jpg|jpeg|webp|svg)$)/i, "/");
+		return normalizePath(maybe);
+	}
 	return "";
+}
+
+function findCardTitleEl(section: HTMLElement) {
+	const candidates = Array.from(section.querySelectorAll<HTMLElement>("div"))
+		.filter((el) => {
+			const cls = el.getAttribute("class") || "";
+			const text = (el.textContent || "").trim();
+			return cls.includes("font-semibold") && Boolean(text) && !text.includes("图片结果");
+		});
+	return candidates.find((el) => looksLikeDescription(el.textContent || "")) || candidates[0] || null;
 }
 
 function fixSectionHeaders(root: HTMLElement) {
 	const headers = Array.from(root.querySelectorAll<HTMLElement>(".section-header"));
 	for (const header of headers) {
 		const raw = (header.textContent || "").trim();
-		const prefix = raw.match(/^(\d+(?:\.\d+)*)_/)?.[1];
+		const prefix = raw.match(/^(\d+(?:\.\d+)*)_?/)?.[1];
 		if (!prefix) continue;
-		const label = SECTION_MAP[prefix] || raw.replace(/^[\d.]+_/, "");
+		const label = SECTION_MAP[prefix] || raw.replace(/^[\d.]+_?/, "");
 		header.textContent = `${prefix} ${label}`;
+	}
+}
+
+function fixTocButtons(root: HTMLElement) {
+	const buttons = Array.from(root.querySelectorAll<HTMLElement>("[data-image-id]"));
+	for (const button of buttons) {
+		const current = (button.textContent || "").trim();
+		const dataId = button.getAttribute("data-image-id") || "";
+		if (!dataId) continue;
+		const target = root.querySelector<HTMLElement>(`section[id="${CSS.escape(dataId)}"]`);
+		const filename = target ? extractFilenameFromCard(target) : dataId;
+		const title = titleFromFilename(filename);
+		if ((looksLikeDescription(current) || current !== title) && title) {
+			button.textContent = title;
+			button.dataset.imageTocFixed = "true";
+		}
 	}
 }
 
 function fixImageCards(root: HTMLElement) {
 	const sections = Array.from(root.querySelectorAll<HTMLElement>("section[id]"));
 	for (const section of sections) {
-		const filename = extractFilenameFromSection(section);
+		const filename = extractFilenameFromCard(section);
 		if (!filename) continue;
 		const title = titleFromFilename(filename);
-		const titleEl = Array.from(section.querySelectorAll<HTMLElement>("div"))
-			.find((el) => (el.getAttribute("class") || "").includes("font-semibold") && !el.textContent?.includes("图片结果"));
-		if (titleEl && titleEl.textContent !== title) {
+		const titleEl = findCardTitleEl(section);
+		if (titleEl && title && (looksLikeDescription(titleEl.textContent || "") || titleEl.textContent !== title)) {
 			titleEl.textContent = title;
 			titleEl.dataset.imageTitleFixed = "true";
 		}
-		const toc = root.querySelector<HTMLElement>(`[data-image-id="${CSS.escape(imageDomId(filename))}"]`);
-		if (toc && toc.textContent !== title) {
-			toc.textContent = title;
-			toc.dataset.imageTocFixed = "true";
-		}
 	}
+	fixTocButtons(root);
 }
 
 function fixImageGalleryTitles() {
@@ -141,5 +191,5 @@ export function installImageGalleryTitleDomPatch() {
 	if (installed || typeof window === "undefined" || typeof document === "undefined") return;
 	installed = true;
 	addStyle();
-	setInterval(fixImageGalleryTitles, 700);
+	setInterval(fixImageGalleryTitles, 500);
 }
