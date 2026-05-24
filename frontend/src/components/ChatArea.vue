@@ -566,24 +566,60 @@ watch(() => props.messages.length, () => scrollToBottom(), { flush: "post" });
 						<p v-if="ev.detail" class="mt-2 whitespace-pre-wrap text-xs leading-relaxed opacity-80">{{ ev.detail }}</p>
 						<p v-if="ev.progressText" class="mt-2 rounded-xl border border-current/10 bg-white/45 px-2.5 py-1.5 text-xs opacity-90">{{ ev.progressText }}</p>
 
-						<div v-if="ev.type === 'choice'" class="agent-conversation-inline-panel mt-3 rounded-xl border border-current/10 bg-white/65 p-2 text-xs text-slate-800">
-							<QuestionDiscussion
-								v-if="ev.choiceKind === 'question' && props.taskId"
-								:task_id="props.taskId"
-								:expanded="inlineQuestionPanelOpen && !questionConfirmed"
-								:locked="questionConfirmed"
-								:disabled="questionConfirmed"
-								@toggle="inlineQuestionPanelOpen = !inlineQuestionPanelOpen"
-								@confirm="handleInlineQuestionConfirm"
-							/>
-							<ModelingDiscussion
-								v-else-if="ev.choiceKind === 'modeling'"
-								:expanded="inlineModelingPanelOpen && !modelingConfirmed"
-								:locked="modelingConfirmed"
-								:disabled="modelingConfirmed"
-								@toggle="inlineModelingPanelOpen = !inlineModelingPanelOpen"
-								@confirm="handleInlineModelingConfirm"
-							/>
+						<div v-if="ev.type === 'choice'" class="choice-attachment mt-3 overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-800 shadow-sm">
+							<div class="flex items-start justify-between gap-3 border-b border-slate-100 bg-slate-50 px-3 py-2">
+								<div class="min-w-0">
+									<div class="flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
+										<MessageSquareText class="h-3.5 w-3.5 text-blue-600" />
+										<span>{{ ev.choiceKind === 'question' ? '问题划分附件' : '建模方案附件' }}</span>
+									</div>
+									<p class="mt-0.5 truncate text-[10px] text-slate-500">
+										{{ ev.choiceKind === 'question'
+											? (questionConfirmed ? '问题划分已确认，流程会继续进入建模方案。' : '请确认题目拆成哪些子问题，可先修改再确认。')
+											: (modelingConfirmed ? '建模方案已确认，流程会继续进入代码求解。' : '请为每一问选择建模方案，可重新生成或自定义。') }}
+									</p>
+								</div>
+								<div class="flex shrink-0 items-center gap-1.5">
+									<span class="rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="(ev.choiceKind === 'question' ? questionConfirmed : modelingConfirmed) ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'">
+										{{ (ev.choiceKind === 'question' ? questionConfirmed : modelingConfirmed) ? '已确认' : '待确认' }}
+									</span>
+									<button
+										v-if="!(ev.choiceKind === 'question' ? questionConfirmed : modelingConfirmed)"
+										class="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600 hover:bg-slate-100"
+										@click="ev.choiceKind === 'question' ? (inlineQuestionPanelOpen = !inlineQuestionPanelOpen) : (inlineModelingPanelOpen = !inlineModelingPanelOpen)"
+									>
+										{{ ev.choiceKind === 'question' ? (inlineQuestionPanelOpen ? '收起' : '展开') : (inlineModelingPanelOpen ? '收起' : '展开') }}
+									</button>
+								</div>
+							</div>
+
+							<div v-if="ev.choiceKind === 'question' && questionConfirmed" class="flex items-center gap-2 px-3 py-3 text-xs text-blue-700">
+								<CheckCircle2 class="h-4 w-4 shrink-0" />
+								<span>问题划分已确认，后续 Agent 将基于该问题结构生成建模方案。</span>
+							</div>
+							<div v-else-if="ev.choiceKind === 'modeling' && modelingConfirmed" class="flex items-center gap-2 px-3 py-3 text-xs text-blue-700">
+								<CheckCircle2 class="h-4 w-4 shrink-0" />
+								<span>建模方案已确认，Coder 将按选定方案进入代码求解。</span>
+							</div>
+							<div v-else class="agent-conversation-inline-panel p-2 text-xs text-slate-800">
+								<QuestionDiscussion
+									v-if="ev.choiceKind === 'question' && props.taskId"
+									:task_id="props.taskId"
+									:expanded="inlineQuestionPanelOpen"
+									:locked="false"
+									:disabled="false"
+									@toggle="inlineQuestionPanelOpen = !inlineQuestionPanelOpen"
+									@confirm="handleInlineQuestionConfirm"
+								/>
+								<ModelingDiscussion
+									v-else-if="ev.choiceKind === 'modeling'"
+									:expanded="inlineModelingPanelOpen"
+									:locked="false"
+									:disabled="false"
+									@toggle="inlineModelingPanelOpen = !inlineModelingPanelOpen"
+									@confirm="handleInlineModelingConfirm"
+								/>
+							</div>
 						</div>
 
 						<div v-if="ev.artifacts?.length" class="mt-3 grid gap-1.5">
@@ -603,5 +639,16 @@ watch(() => props.messages.length, () => scrollToBottom(), { flush: "post" });
 	max-height: none !important;
 	border-radius: 0.75rem;
 	border: 1px solid rgba(226, 232, 240, 0.8);
+	box-shadow: none !important;
+}
+
+.agent-conversation-inline-panel .question-discussion > button,
+.agent-conversation-inline-panel .modeling-discussion > button {
+	display: none !important;
+}
+
+.choice-attachment .question-discussion,
+.choice-attachment .modeling-discussion {
+	background: transparent !important;
 }
 </style>
