@@ -10,6 +10,10 @@ function addStyle() {
 	display: none !important;
 }
 
+[data-chat-duplicate-flow-overview="true"] {
+	display: none !important;
+}
+
 [data-running-card="true"] {
 	position: relative !important;
 	overflow: hidden !important;
@@ -182,9 +186,23 @@ function resetRuntimeDecorations(panel: HTMLElement) {
 	}
 }
 
+function hideDuplicateChatFlowOverview(panel: HTMLElement) {
+	const candidates = Array.from(panel.querySelectorAll<HTMLElement>("div"));
+	for (const node of candidates) {
+		const text = (node.textContent || "").replace(/\s+/g, " ").trim();
+		if (
+			text.includes("当前流程") &&
+			text.includes("确认、求解、写作与终稿状态集中显示")
+		) {
+			node.setAttribute("data-chat-duplicate-flow-overview", "true");
+		}
+	}
+}
+
 function compactLiveProgressCards() {
 	const panel = document.querySelector<HTMLElement>(".glass-left-panel");
 	if (!panel) return;
+	hideDuplicateChatFlowOverview(panel);
 	resetRuntimeDecorations(panel);
 
 	const rows = getTimelineRows(panel);
