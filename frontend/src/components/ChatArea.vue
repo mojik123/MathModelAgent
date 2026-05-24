@@ -53,6 +53,20 @@ interface TimelineEvent {
 	progressText?: string;
 }
 
+interface FlowStep {
+	key: string;
+	label: string;
+	status: "pending" | "active" | "done" | "warning";
+	detail: string;
+}
+
+interface QuestionStatus {
+	index: number;
+	label: string;
+	status: "pending" | "solving" | "writing" | "done" | "warning";
+	detail: string;
+}
+
 const scrollRef = ref<HTMLDivElement | null>(null);
 const userScrolledUp = ref(false);
 const inlineQuestionPanelOpen = ref(true);
@@ -71,6 +85,8 @@ const roleMap: Record<string, string> = {
 function messageText(m: Message) {
 	return m.content ?? "";
 }
+
+const allMessageText = computed(() => props.messages.map(messageText).join("\n"));
 
 const questionConfirmed = computed(() =>
 	props.messages.some((m) => {
@@ -299,7 +315,91 @@ const timelineEvents = computed(() => {
 	return out;
 });
 
-const currentStage = computed(() => [...timelineEvents.value].reverse().find((e) => e.status === "running" || e.status === "warning")?.title ?? (props.taskStatus === "completed" ? "任务已完成" : "等待开始"));
+const hasQuestionWait = computed(() => allMessageText.value.includes("等待用户确认问题划分"));
+const hasModelingWait = computed(() => allMessageText.value.includes("等待用户确认各问建模方案"));
+const hasSolvingStarted = computed(() => /代码手开始求解|子问题组#\d+.*启动|开始求解/.test(allMessageText.value));
+const hasSolvingDone = computed(() => /代码手求解成功|子问题组#\d+.*完成/.test(allMessageText.value));
+const hasWritingStarted = computed(() => /论文手开始写|并行写作启动|开始终稿整体检查/.test(allMessageText.value));
+const hasWritingDone = computed(() => /论文手完成|论文生成完成|完成终稿整体检查/.test(allMessageText.value));
+const hasFinalDone = computed(() => /论文生成完成|任务处理完成|完成终稿整体检查/.test(allMessageText.value) || props.taskStatus === "completed");
+const hasFlowWarning = computed(() => /任务执行失败|已停止|should_restart=true|切换新 Coder|后台判别/.test(allMessageText.value));
+
+const flowSteps = computed<FlowStep[]>(() => {
+	const planningDone = hasQuestionWait.value || questionConfirmed.value || modelingConfirmed.value || hasSolvingStarted.value;
+	return [
+		{
+			key: "planning",
+			label: "规划",
+			status: planningDone ? "done" : props.messages.length ? "active" : "pending",
+			detail: planningDone ? "题目拆解完成" : "等待题目拆解",
+		},
+		{
+			key: "question",
+			label: "问题确认",
+			status: questionConfirmed.value ? "done" : hasQuestionWait.value ? "active" : "pending",
+			detail: questionConfirmed.value ? "已确认" : hasQuestionWait.value ? "等待用户确认" : "未开始",
+		},
+		{
+			key: "modeling",
+			label: "建模确认",
+			status: modelingConfirmed.value ? "done" : hasModelingWait.value ? "active" : questionConfirmed.value ? "active" : "pending",
+			detail: modelingConfirmed.value ? "已确认" : hasModelingWait.value ? "等待方案选择" : questionConfirmed.value ? "生成方案中" : "未开始",
+		},
+		{
+			key: "solving",
+			label: "代码求解",
+			status: hasWritingStarted.value || hasWritingDone.value ? "done" : hasSolvingStarted.value ? (hasFlowWarning.value ? "warning" : "active") : "pending",
+			detail: hasWritingStarted.value || hasWritingDone.value ? "已移交写作" : hasSolvingStarted.value ? "子问题求解中" : "未开始",
+		},
+		{
+			key: "writing",
+			label: "论文写作",
+			status: hasWritingDone.value ? "done" : hasWritingStarted.value || hasSolvingDone.value ? "active" : "pending",
+			detail: hasWritingDone.value ? "章节写作完成" : hasWritingStarted.value || hasSolvingDone.value ? "写作中" : "未开始",
+		},
+		{
+			key: "final",
+			label: "终稿",
+			status: hasFinalDone.value ? "done" : hasWritingDone.value ? "active" : "pending",
+			detail: hasFinalDone.value ? "终稿完成" : hasWritingDone.value ? "终稿整合中" : "未开始",
+		},
+	];
+});
+
+const questionStatuses = computed<QuestionStatus[]>(() => {
+	const map = new Map<number, QuestionStatus>();
+	function ensure(index: number) {
+		if (!map.has(index)) {
+			map.set(index, { index, label: `Q${index}`, status: "pending", detail: "等待" });
+		}
+		return map.get(index)!;
+	}
+	for (const msg of props.messages) {
+		const text = messageText(msg);
+		const q = detectQuestionIndex(text, msg as any);
+		if (!q) continue;
+		const item = ensure(q);
+		if (/已停止|失败|错误|后台判别|should_restart=true|切换新 Coder/.test(text) && item.status !== "done") {
+			item.status = "warning";
+			item.detail = "需关注";
+		}
+		if (/代码手开始求解|子问题组#\d+.*启动/.test(text) && item.status !== "done") {
+			item.status = item.status === "warning" ? "warning" : "solving";
+			item.detail = item.status === "warning" ? "改错中" : "求解中";
+		}
+		if (/代码手求解成功|论文手开始写/.test(text) && item.status !== "done") {
+			item.status = "writing";
+			item.detail = "写作中";
+		}
+		if (/论文手完成|子问题组#\d+.*完成/.test(text)) {
+			item.status = "done";
+			item.detail = "完成";
+		}
+	}
+	return Array.from(map.values()).sort((a, b) => a.index - b.index).slice(0, 8);
+});
+
+const currentStage = computed(() => [...timelineEvents.value].reverse().find((e) => e.status === "running" || e.status === "warning" || e.status === "waiting")?.title ?? (props.taskStatus === "completed" ? "任务已完成" : "等待开始"));
 const progressSummary = computed(() => {
 	const total = timelineEvents.value.length;
 	const done = timelineEvents.value.filter((e) => e.status === "done").length;
@@ -323,6 +423,21 @@ function statusIcon(ev: TimelineEvent) {
 	if (ev.status === "error") return AlertTriangle;
 	if (ev.type === "choice") return MessageSquareText;
 	return LoaderCircle;
+}
+
+function flowStepClass(status: FlowStep["status"]) {
+	if (status === "done") return "border-blue-200 bg-blue-50 text-blue-700";
+	if (status === "active") return "border-emerald-200 bg-emerald-50 text-emerald-700 shadow-[0_0_0_2px_rgba(16,185,129,0.08)]";
+	if (status === "warning") return "border-amber-200 bg-amber-50 text-amber-700 shadow-[0_0_0_2px_rgba(245,158,11,0.08)]";
+	return "border-slate-200 bg-slate-50 text-slate-400";
+}
+
+function questionStatusClass(status: QuestionStatus["status"]) {
+	if (status === "done") return "border-blue-200 bg-blue-50 text-blue-700";
+	if (status === "solving") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+	if (status === "writing") return "border-violet-200 bg-violet-50 text-violet-700";
+	if (status === "warning") return "border-amber-200 bg-amber-50 text-amber-700";
+	return "border-slate-200 bg-slate-50 text-slate-400";
 }
 
 function scrollToBottom(force = false) {
@@ -350,6 +465,27 @@ watch(() => props.messages.length, () => scrollToBottom(), { flush: "post" });
 					<p class="mt-1 truncate text-xs text-slate-500">当前：{{ currentStage }}</p>
 				</div>
 				<div class="shrink-0 rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] text-slate-600">{{ progressSummary.done }}/{{ progressSummary.total }} 已完成<span v-if="progressSummary.warnings" class="ml-1 text-amber-600">· {{ progressSummary.warnings }} 个需关注</span></div>
+			</div>
+
+			<div class="mt-3 rounded-2xl border border-slate-200 bg-white/80 p-2.5 shadow-sm">
+				<div class="mb-2 flex items-center justify-between gap-2">
+					<span class="text-[11px] font-semibold text-slate-600">当前流程</span>
+					<span class="truncate text-[10px] text-slate-400">确认、求解、写作与终稿状态集中显示</span>
+				</div>
+				<div class="grid grid-cols-3 gap-1.5 xl:grid-cols-6">
+					<div v-for="step in flowSteps" :key="step.key" class="rounded-xl border px-2 py-1.5" :class="flowStepClass(step.status)">
+						<div class="flex items-center justify-between gap-1">
+							<span class="text-[11px] font-bold">{{ step.label }}</span>
+							<span class="text-[9px] opacity-70">{{ step.status === 'done' ? '完成' : step.status === 'active' ? '进行中' : step.status === 'warning' ? '需关注' : '等待' }}</span>
+						</div>
+						<div class="mt-0.5 truncate text-[10px] opacity-75">{{ step.detail }}</div>
+					</div>
+				</div>
+				<div v-if="questionStatuses.length" class="mt-2 flex flex-wrap gap-1.5">
+					<div v-for="q in questionStatuses" :key="q.index" class="rounded-full border px-2 py-1 text-[10px] font-semibold" :class="questionStatusClass(q.status)">
+						{{ q.label }} · {{ q.detail }}
+					</div>
+				</div>
 			</div>
 		</div>
 
@@ -405,12 +541,6 @@ watch(() => props.messages.length, () => scrollToBottom(), { flush: "post" });
 </template>
 
 <style>
-/* 旧版底部固定确认面板在对话流重构后不再显示；嵌入气泡内的面板不受影响。 */
-.glass-left-panel > .question-discussion,
-.glass-left-panel > .modeling-discussion {
-	display: none !important;
-}
-
 .agent-conversation-inline-panel .question-discussion,
 .agent-conversation-inline-panel .modeling-discussion {
 	display: flex !important;
