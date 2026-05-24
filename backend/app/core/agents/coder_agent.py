@@ -15,34 +15,32 @@ import json
 from app.core.prompts import get_reflection_prompt
 from app.core.functions import coder_tools
 
-# TODO: 时间等待过久，stop 进程
-# TODO: 支持 cuda
-# TODO: 引入创新方案：
-
 
 class CoderAgent(Agent):
-    """代码手 Agent，通过 LLM 生成代码并在解释器中执行，支持错误反思和重试。"""
+    """代码手 Agent，通过 LLM 生成代码并在解释器中执行，支持错误反思。"""
     def __init__(
         self,
         task_id: str,
         model: LLM,
-        work_dir: str,  # 工作目录
-        max_retries: int | None = None,  # None 时自动从 settings 读取
+        work_dir: str,
+        max_retries: int | None = None,
         code_interpreter: BaseCodeInterpreter | None = None,
         context_window: int = 128000,
         cancel_event: asyncio.Event | None = None,
     ) -> None:
         super().__init__(task_id, model, context_window, cancel_event=cancel_event)
         self.work_dir = work_dir
-        self.max_retries = (
+        # None/0 表示不使用总重试次数停止；只保留连续相同错误的死循环检测。
+        configured_retries = (
             max_retries
             if max_retries is not None
-            else int(
+            else (
                 settings.MAX_RETRIES
-                if getattr(settings, "MAX_RETRIES", None) is not None
+                if getattr(settings, "MAX_RETRIES", None) not in (None, 0)
                 else settings.CODER_MAX_RETRIES
             )
         )
+        self.max_retries = int(configured_retries) if configured_retries not in (None, 0) else None
         self.is_first_run = True
         self.system_prompt = CODER_PROMPT
         self.code_interpreter = code_interpreter
@@ -50,18 +48,15 @@ class CoderAgent(Agent):
     async def run(self, prompt: str, subtask_title: str) -> CoderToWriter:  # type: ignore[reportIncompatibleMethodOverride]
         """执行代码手子任务，生成并运行代码。
 
-        Args:
-            prompt: 子任务描述。
-            subtask_title: 子任务标题，用于分段输出。
-
-        Returns:
-            CoderToWriter 对象，包含代码执行结果和生成的图片列表。
+        推进原则：
+        - 不按总步数停止。
+        - 不按累计错误次数停止。
+        - 只在连续多次遇到同一错误时判定为死循环并停止。
         """
         logger.info(f"{self.__class__.__name__}:开始:执行子任务: {subtask_title}")
         assert self.code_interpreter is not None, "code_interpreter 未初始化"
         self.code_interpreter.add_section(subtask_title)
 
-        # 注入当前章节的命名前缀，确保 LLM 生成代码时使用正确的图片/代码文件命名
         from app.utils.image_constants import get_section_num
 
         section_num = get_section_num(subtask_title)
@@ -75,20 +70,12 @@ class CoderAgent(Agent):
             )
             prompt = f"{naming_reminder}\n\n{prompt}"
 
-        # 统一使用 OpenAI 格式，由各 Provider 的 _convert_tools 负责转换
-        # 注意：不应传入 coder_tools_anthropic，因为 AnthropicProvider._convert_tools
-        # 只识别 OpenAI 格式（type=="function"），传入已转换格式会导致 tools 被过滤为空列表，
-        # 模型收不到工具定义，从而完全跳过代码执行直接返回文本。
         tools = coder_tools
 
-        # 如果是第一次运行，则添加系统提示
         if self.is_first_run:
             logger.info("首次运行，添加系统提示和数据集文件信息")
             self.is_first_run = False
-            await self.append_chat_history(
-                {"role": "system", "content": self.system_prompt}
-            )
-            # 当前数据集文件
+            await self.append_chat_history({"role": "system", "content": self.system_prompt})
             await self.append_chat_history(
                 {
                     "role": "user",
@@ -96,7 +83,6 @@ class CoderAgent(Agent):
                 }
             )
 
-        # 添加 sub_task
         logger.info(f"添加子任务提示: {prompt}")
         await self.append_chat_history({"role": "user", "content": prompt})
 
@@ -104,22 +90,23 @@ class CoderAgent(Agent):
         last_error_message = ""
         consecutive_same_error_count = 0
         total_execute_count = 0
-        max_total_steps = int(getattr(settings, "CODER_MAX_TOTAL_STEPS", 35))
+        max_total_steps = int(getattr(settings, "CODER_MAX_TOTAL_STEPS", 0) or 0)
         last_error_type = ""
-        max_same_error = int(getattr(settings, "CODER_MAX_SAME_ERROR", 4))
+        max_same_error = int(getattr(settings, "CODER_MAX_SAME_ERROR", 3))
         has_executed_code = False
 
         while True:
             total_execute_count += 1
 
-            if total_execute_count > max_total_steps:
+            # 旧的总步数上限只作为显式启用的保护；默认 0 表示关闭。
+            if max_total_steps > 0 and total_execute_count > max_total_steps:
                 await redis_manager.publish_message(
                     self.task_id,
                     SystemMessage(
                         content=(
                             f"代码手已停止：总执行步数超过上限({max_total_steps})\n"
                             f"子任务：{subtask_title}\n"
-                            f"停止原因：多次执行代码仍未完成 task_complete\n"
+                            f"停止原因：显式启用的总步数保护触发\n"
                             f"最后错误：{last_error_message[:1000]}"
                         ),
                         type="error",
@@ -139,18 +126,19 @@ class CoderAgent(Agent):
                             f"代码手已停止：连续 {max_same_error} 次遇到相同错误\n"
                             f"子任务：{subtask_title}\n"
                             f"错误类型：{last_error_type}\n"
-                            f"最后错误：{last_error_message[:1000]}\n"
-                            f"建议：检查数据字段、文件路径、模型约束或降低该问建模复杂度。"
+                            f"停止原因：判定进入同一错误死循环，需要换新 Coder 重新求解。\n"
+                            f"最后错误：{last_error_message[:1000]}"
                         ),
                         type="error",
                     ),
                 )
                 raise RuntimeError(
                     f"代码手求解失败：连续 {max_same_error} 次相同错误，子任务：{subtask_title}，"
-                    f"（{last_error_type}），"
-                    f"最后错误：{last_error_message}"
+                    f"（{last_error_type}），最后错误：{last_error_message}"
                 )
-            if retry_count >= self.max_retries:
+
+            # 总重试次数默认关闭。只有显式配置了正数时才会生效。
+            if self.max_retries is not None and retry_count >= self.max_retries:
                 logger.error(f"超过最大重试次数: {self.max_retries}")
                 await redis_manager.publish_message(
                     self.task_id,
@@ -158,7 +146,7 @@ class CoderAgent(Agent):
                         content=(
                             f"代码手已停止：超过最大重试次数({self.max_retries})\n"
                             f"子任务：{subtask_title}\n"
-                            f"停止原因：连续修复代码仍未通过执行\n"
+                            f"停止原因：显式启用的总重试保护触发\n"
                             f"最后错误：{last_error_message[:1000]}"
                         ),
                         type="error",
@@ -178,7 +166,6 @@ class CoderAgent(Agent):
                     agent_name=self.__class__.__name__,
                 )
 
-                # 如果有工具调用
                 if response.tool_calls:
                     logger.info("检测到工具调用")
                     tool_call = response.tool_calls[0]
@@ -230,25 +217,17 @@ class CoderAgent(Agent):
                         logger.info(f"调用工具: {tool_call.name}")
                         await redis_manager.publish_message(
                             self.task_id,
-                            SystemMessage(
-                                content=f"代码手调用{tool_call.name}工具"
-                            ),
+                            SystemMessage(content=f"代码手调用{tool_call.name}工具"),
                         )
 
                         code = json.loads(tool_call.arguments)["code"]
-
-                        # 提取 LLM 在工具调用前生成的代码介绍文本
                         code_description = response.content.strip() if response.content else None
 
                         await redis_manager.publish_message(
                             self.task_id,
-                            InterpreterMessage(
-                                input={"code": code},
-                                description=code_description,
-                            ),
+                            InterpreterMessage(input={"code": code}, description=code_description),
                         )
 
-                        # 更新对话历史 - 添加助手的响应
                         assistant_msg: dict = {"role": "assistant", "content": response.content}
                         if response.reasoning_content:
                             assistant_msg["reasoning_content"] = response.reasoning_content
@@ -263,17 +242,10 @@ class CoderAgent(Agent):
                             ]
                         await self.append_chat_history(assistant_msg)
 
-                        # 执行工具调用
                         logger.info("执行工具调用")
-                        (
-                            text_to_gpt,
-                            error_occurred,
-                            error_message,
-                        ) = await self.code_interpreter.execute_code(code)
+                        text_to_gpt, error_occurred, error_message = await self.code_interpreter.execute_code(code)
 
-                        # 添加工具执行结果
                         if error_occurred:
-                            # 即使发生错误也要添加tool响应
                             await self.append_chat_history(
                                 {
                                     "role": "tool",
@@ -285,7 +257,6 @@ class CoderAgent(Agent):
 
                             logger.warning(f"代码执行错误: {error_message}")
                             retry_count += 1
-                            logger.info(f"当前重试次数: {retry_count} / {self.max_retries}")
                             last_error_message = error_message
                             error_lines = error_message.strip().split("\n")
                             error_type = error_lines[-1][:120] if error_lines else error_message[:120]
@@ -300,71 +271,63 @@ class CoderAgent(Agent):
                                 self.task_id,
                                 SystemMessage(content="代码手反思纠正错误", type="info"),
                             )
+                            await self.append_chat_history({"role": "user", "content": reflection_prompt})
+                            continue
 
-                            await self.append_chat_history(
-                                {"role": "user", "content": reflection_prompt}
-                            )
-                            continue
-                        else:
-                            # 成功执行的tool响应
-                            await self.append_chat_history(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_id,
-                                    "name": "execute_code",
-                                    "content": text_to_gpt,
-                                }
-                            )
-                            retry_count = 0  # 成功后重置重试计数
-                            has_executed_code = True
-                            # 成功执行后继续循环，等待下一步指令或 task_complete
-                            continue
-                    else:
-                        # 未知工具调用，添加占位响应后继续
-                        logger.warning(f"未知工具调用: {tool_call.name}")
                         await self.append_chat_history(
                             {
                                 "role": "tool",
                                 "tool_call_id": tool_id,
-                                "name": tool_call.name,
-                                "content": f"未知工具: {tool_call.name}",
+                                "name": "execute_code",
+                                "content": text_to_gpt,
                             }
                         )
-                        continue
-                else:
-                    # 没有工具调用 —— 必须先执行过代码才允许完成
-                    if not has_executed_code:
-                        logger.info("代码手未调用 execute_code，强制要求至少执行一次")
-                        retry_count += 1
-                        last_error_message = "代码手未调用 execute_code 工具"
-                        error_type = "no_tool_call"
-                        if error_type == last_error_type:
-                            consecutive_same_error_count += 1
-                        else:
-                            consecutive_same_error_count = 1
-                            last_error_type = error_type
-                        await self.append_chat_history(
-                            {"role": "assistant", "content": response.content or ""}
-                        )
-                        await self.append_chat_history(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "你还没有调用 execute_code 工具。"
-                                    "本任务必须至少执行一次 Python 代码，读取数据、建模或生成结果后，"
-                                    "再调用 task_complete。请继续。"
-                                ),
-                            }
-                        )
+                        retry_count = 0
+                        consecutive_same_error_count = 0
+                        last_error_type = ""
+                        last_error_message = ""
+                        has_executed_code = True
                         continue
 
-                    logger.info("没有工具调用，任务完成")
-                    return CoderToWriter(
-                        code_response=response.content,
-                        created_images=await self.code_interpreter.get_created_images(
-                            subtask_title
-                        ),
+                    logger.warning(f"未知工具调用: {tool_call.name}")
+                    await self.append_chat_history(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_id,
+                            "name": tool_call.name,
+                            "content": f"未知工具: {tool_call.name}",
+                        }
                     )
+                    continue
+
+                if not has_executed_code:
+                    logger.info("代码手未调用 execute_code，强制要求至少执行一次")
+                    retry_count += 1
+                    last_error_message = "代码手未调用 execute_code 工具"
+                    error_type = "no_tool_call"
+                    if error_type == last_error_type:
+                        consecutive_same_error_count += 1
+                    else:
+                        consecutive_same_error_count = 1
+                        last_error_type = error_type
+                    await self.append_chat_history({"role": "assistant", "content": response.content or ""})
+                    await self.append_chat_history(
+                        {
+                            "role": "user",
+                            "content": (
+                                "你还没有调用 execute_code 工具。"
+                                "本任务必须至少执行一次 Python 代码，读取数据、建模或生成结果后，"
+                                "再调用 task_complete。请继续。"
+                            ),
+                        }
+                    )
+                    continue
+
+                logger.info("没有工具调用，任务完成")
+                return CoderToWriter(
+                    code_response=response.content,
+                    created_images=await self.code_interpreter.get_created_images(subtask_title),
+                )
 
             except asyncio.CancelledError:
                 raise
