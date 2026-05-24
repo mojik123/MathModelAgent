@@ -58,26 +58,27 @@ class Settings(BaseSettings):
     WRITER_PARALLELISM: int = 3
     QUESTION_PARALLELISM: int = 4
 
-    # ── Coder 执行配置 ──
-    CODE_EXECUTION_TIMEOUT: int = 300  # 单次代码执行最长秒数；只限制单段代码挂死，不限制 Agent 推进轮数
-    CODER_MAX_RETRIES: int | None = None  # None/0 表示不按总重试次数停止
-    CODER_MAX_SAME_ERROR: int = 3    # 连续相同错误上限；唯一保留的死循环停止条件
-    CODER_ATTEMPT_TIMEOUT: int = 0   # 0 表示不按 Coder attempt 总时长停止
+    # Coder 执行配置
+    CODE_EXECUTION_TIMEOUT: int = 300
+    CODER_MAX_RETRIES: int | None = None
+    CODER_MAX_SAME_ERROR: int = 3
+    CODER_ATTEMPT_TIMEOUT: int = 0
+    CODER_MAX_TOTAL_STEPS: int = 0
+    CODER_REPEAT_ERROR_JUDGE_ENABLED: bool = True
 
-    # ── 速度与阻塞控制 ──
+    # 速度与阻塞控制
     IMAGE_DESCRIPTION_ENABLED: bool = False
     IMAGE_DESCRIPTION_BACKGROUND: bool = True
     WRITER_IMAGE_REPAIR_ENABLED: bool = False
 
-    # ── 超时保护 ──
-    QUESTION_GROUP_TIMEOUT: int = 0      # 0 表示子问题组不按总时长停止，必须完整完成才进入后续阶段
+    # 流程阶段控制
+    QUESTION_GROUP_TIMEOUT: int = 0
     WRITER_ATTEMPT_TIMEOUT: int = 900
-    CODER_MAX_TOTAL_STEPS: int = 0       # 0 表示不按总执行步数停止
 
-    # ── 产物检查分级 ──
+    # 产物检查分级
     ARTIFACT_STRICT_FATAL: bool = False
 
-    # 兼容旧 .env 里的 MAX_RETRIES；None/0 表示禁用总重试上限
+    # 兼容旧 .env 里的 MAX_RETRIES
     MAX_RETRIES: int | None = None
     E2B_API_KEY: Optional[str] = None
     LOG_LEVEL: str = "DEBUG"
@@ -110,6 +111,24 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="allow",
     )
+
+    def model_post_init(self, __context) -> None:
+        """归一化 Coder 流程控制配置。
+
+        目标：本地 .env.dev 里如果还保留旧值，也不会覆盖当前流程策略。
+        具体策略：
+        - Coder 不按累计步数停止；
+        - Coder 不按累计重试次数停止；
+        - Coder attempt 不按总时长停止；
+        - 子问题组不按总时长停止；
+        - 只保留单段代码执行超时和重复错误判别。
+        """
+        self.CODER_MAX_TOTAL_STEPS = 0
+        self.CODER_MAX_RETRIES = None
+        self.MAX_RETRIES = None
+        self.CODER_ATTEMPT_TIMEOUT = 0
+        self.QUESTION_GROUP_TIMEOUT = 0
+        self.CODER_REPEAT_ERROR_JUDGE_ENABLED = True
 
     @classmethod
     def from_env(cls, env: str | None = None):
