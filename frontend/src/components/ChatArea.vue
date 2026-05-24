@@ -51,6 +51,7 @@ interface TimelineEvent {
 	artifacts?: string[];
 	choiceKind?: "question" | "modeling";
 	progressText?: string;
+	debugCount?: number;
 }
 
 interface FlowStep {
@@ -60,11 +61,24 @@ interface FlowStep {
 	detail: string;
 }
 
+type QuestionStatusType =
+	| "pending"
+	| "solving"
+	| "debugging"
+	| "judging"
+	| "restarting"
+	| "recoding"
+	| "plotting"
+	| "writing"
+	| "done"
+	| "failed";
+
 interface QuestionStatus {
 	index: number;
 	label: string;
-	status: "pending" | "solving" | "writing" | "done" | "warning";
+	status: QuestionStatusType;
 	detail: string;
+	debugCount?: number;
 }
 
 const scrollRef = ref<HTMLDivElement | null>(null);
@@ -138,6 +152,8 @@ function brief(content?: string | null, max = 180) {
 
 function detectQuestionIndex(text: string, msg?: any): number | null {
 	if (typeof msg?.question_index === "number") return msg.question_index;
+	const fromGroup = String(msg?.group_id ?? msg?.agent_instance_id ?? "").match(/q(?:ues)?(\d+)|组#(\d+)/i);
+	if (fromGroup) return Number(fromGroup[1] || fromGroup[2]);
 	const m = text.match(/(?:\[组#|子问题组#|第\s*)(\d+)/);
 	if (m) return Number(m[1]);
 	const q = text.match(/q(?:ues)?(\d+)/i);
@@ -191,6 +207,9 @@ function isLowValueSystem(text: string) {
 		"消息已发布",
 		"保存",
 		"传递：工作指令",
+		"代码手自行反思纠错",
+		"代码手根据协调者建议反思纠错",
+		"协调者后台判别不阻塞当前尝试",
 	];
 	return drop.some((key) => text.includes(key));
 }
@@ -261,6 +280,7 @@ function systemEvent(msg: Message): TimelineEvent | null {
 		const restart = content.includes("should_restart=true") || content.includes("切换新 Coder");
 		return { ...base, actor: "CoderAgent", role: roleMap.CoderAgent, type: restart ? "warning" : "progress", status: restart ? "warning" : "running", title: restart ? "反复出错，准备换新 Coder" : "协调者给出改错建议", detail: brief(content, 260), badges: q ? [`Q${q}`, "改错"] : ["改错"] };
 	}
+	if (/备用\s*Coder|备用\d+|重写中|重新组织方案/.test(line)) return { ...base, actor: "CoderAgent", role: roleMap.CoderAgent, type: "warning", status: "warning", title: "备用 Coder 接手重写", detail: brief(content, 220), badges: q ? [`Q${q}`, "重写"] : ["重写"] };
 	if (/已停止|任务执行失败|失败|错误/.test(line)) return { ...base, type: "error", status: "error", title: line.slice(0, 80), detail: brief(content, 240), badges: q ? [`Q${q}`] : [] };
 	if (/完成终稿整体检查|论文生成完成/.test(line)) return { ...base, actor: "WriterAgent", role: roleMap.WriterAgent, type: "artifact", status: "done", title: "论文终稿完成", detail: "可以在右侧论文预览或导出菜单查看结果。", artifacts: artifactNames(content) };
 	if (/开始终稿整体检查|集成协调者|并行写作启动|开始灵敏度分析|启动 EDA/.test(line)) return { ...base, type: "stage", status: "running", title: line.slice(0, 80), detail: brief(content, 220) };
@@ -284,7 +304,22 @@ function toolEvent(msg: ToolMessage): TimelineEvent | null {
 	const hasError = output.some((o: any) => o?.res_type === "error");
 	const desc = msg.description || "执行 Python 代码";
 	if (!hasError) return null;
-	return { id: msg.id, side: "left", actor: "CoderAgent", role: roleMap.CoderAgent, type: "progress", status: "warning", title: "代码执行出错，正在改错", detail: brief(desc || code, 180), timeLabel: timeLabel(msg.created_at), badges: ["改错"] };
+	const text = `${(msg as any).content ?? ""}\n${desc}\n${code}`;
+	const q = detectQuestionIndex(text, msg as any);
+	return {
+		id: msg.id,
+		side: "left",
+		actor: "CoderAgent",
+		role: roleMap.CoderAgent,
+		type: "progress",
+		status: "warning",
+		title: "代码执行出错，正在改错",
+		detail: brief(desc || code, 180),
+		timeLabel: timeLabel(msg.created_at),
+		questionIndex: q,
+		badges: q ? [`Q${q}`, "改错"] : ["改错"],
+		debugCount: 1,
+	};
 }
 
 function progressEvent(msg: ProgressMessage): TimelineEvent | null {
@@ -301,11 +336,32 @@ function toEvent(msg: Message): TimelineEvent | null {
 	return null;
 }
 
+function isDebugEvent(ev: TimelineEvent) {
+	return ev.actor === "CoderAgent" && ev.type === "progress" && (ev.title === "代码执行出错，正在改错" || /^第\s*\d+\s*次改错/.test(ev.title));
+}
+
 const rawEvents = computed(() => props.messages.map(toEvent).filter(Boolean) as TimelineEvent[]);
 const timelineEvents = computed(() => {
 	const out: TimelineEvent[] = [];
 	for (const ev of rawEvents.value) {
 		const prev = out[out.length - 1];
+		if (prev && isDebugEvent(prev) && isDebugEvent(ev) && prev.questionIndex === ev.questionIndex) {
+			const count = (prev.debugCount ?? 1) + 1;
+			out[out.length - 1] = {
+				...ev,
+				id: prev.id,
+				title: `第 ${count} 次改错`,
+				detail: "连续代码执行出错，Coder 正在自行修复；必要时协调者会后台判别是否需要换新 Coder。",
+				progressText: `累计 ${count} 次改错`,
+				debugCount: count,
+				badges: Array.from(new Set([...(prev.badges ?? []), ...(ev.badges ?? [])])),
+			};
+			continue;
+		}
+		if (isDebugEvent(ev)) {
+			out.push({ ...ev, title: "第 1 次改错", progressText: "累计 1 次改错", debugCount: 1 });
+			continue;
+		}
 		if (prev && prev.actor === ev.actor && prev.type === ev.type && prev.title === ev.title && ev.type !== "choice" && prev.side === ev.side) {
 			out[out.length - 1] = { ...ev, badges: Array.from(new Set([...(prev.badges ?? []), ...(ev.badges ?? [])])) };
 			continue;
@@ -327,42 +383,12 @@ const hasFlowWarning = computed(() => /任务执行失败|已停止|should_resta
 const flowSteps = computed<FlowStep[]>(() => {
 	const planningDone = hasQuestionWait.value || questionConfirmed.value || modelingConfirmed.value || hasSolvingStarted.value;
 	return [
-		{
-			key: "planning",
-			label: "规划",
-			status: planningDone ? "done" : props.messages.length ? "active" : "pending",
-			detail: planningDone ? "题目拆解完成" : "等待题目拆解",
-		},
-		{
-			key: "question",
-			label: "问题确认",
-			status: questionConfirmed.value ? "done" : hasQuestionWait.value ? "active" : "pending",
-			detail: questionConfirmed.value ? "已确认" : hasQuestionWait.value ? "等待用户确认" : "未开始",
-		},
-		{
-			key: "modeling",
-			label: "建模确认",
-			status: modelingConfirmed.value ? "done" : hasModelingWait.value ? "active" : questionConfirmed.value ? "active" : "pending",
-			detail: modelingConfirmed.value ? "已确认" : hasModelingWait.value ? "等待方案选择" : questionConfirmed.value ? "生成方案中" : "未开始",
-		},
-		{
-			key: "solving",
-			label: "代码求解",
-			status: hasWritingStarted.value || hasWritingDone.value ? "done" : hasSolvingStarted.value ? (hasFlowWarning.value ? "warning" : "active") : "pending",
-			detail: hasWritingStarted.value || hasWritingDone.value ? "已移交写作" : hasSolvingStarted.value ? "子问题求解中" : "未开始",
-		},
-		{
-			key: "writing",
-			label: "论文写作",
-			status: hasWritingDone.value ? "done" : hasWritingStarted.value || hasSolvingDone.value ? "active" : "pending",
-			detail: hasWritingDone.value ? "章节写作完成" : hasWritingStarted.value || hasSolvingDone.value ? "写作中" : "未开始",
-		},
-		{
-			key: "final",
-			label: "终稿",
-			status: hasFinalDone.value ? "done" : hasWritingDone.value ? "active" : "pending",
-			detail: hasFinalDone.value ? "终稿完成" : hasWritingDone.value ? "终稿整合中" : "未开始",
-		},
+		{ key: "planning", label: "规划", status: planningDone ? "done" : props.messages.length ? "active" : "pending", detail: planningDone ? "题目拆解完成" : "等待题目拆解" },
+		{ key: "question", label: "问题确认", status: questionConfirmed.value ? "done" : hasQuestionWait.value ? "active" : "pending", detail: questionConfirmed.value ? "已确认" : hasQuestionWait.value ? "等待用户确认" : "未开始" },
+		{ key: "modeling", label: "建模确认", status: modelingConfirmed.value ? "done" : hasModelingWait.value ? "active" : questionConfirmed.value ? "active" : "pending", detail: modelingConfirmed.value ? "已确认" : hasModelingWait.value ? "等待方案选择" : questionConfirmed.value ? "生成方案中" : "未开始" },
+		{ key: "solving", label: "代码求解", status: hasWritingStarted.value || hasWritingDone.value ? "done" : hasSolvingStarted.value ? (hasFlowWarning.value ? "warning" : "active") : "pending", detail: hasWritingStarted.value || hasWritingDone.value ? "已移交写作" : hasSolvingStarted.value ? "子问题求解中" : "未开始" },
+		{ key: "writing", label: "论文写作", status: hasWritingDone.value ? "done" : hasWritingStarted.value || hasSolvingDone.value ? "active" : "pending", detail: hasWritingDone.value ? "章节写作完成" : hasWritingStarted.value || hasSolvingDone.value ? "写作中" : "未开始" },
+		{ key: "final", label: "终稿", status: hasFinalDone.value ? "done" : hasWritingDone.value ? "active" : "pending", detail: hasFinalDone.value ? "终稿完成" : hasWritingDone.value ? "终稿整合中" : "未开始" },
 	];
 });
 
@@ -370,7 +396,7 @@ const questionStatuses = computed<QuestionStatus[]>(() => {
 	const map = new Map<number, QuestionStatus>();
 	function ensure(index: number) {
 		if (!map.has(index)) {
-			map.set(index, { index, label: `Q${index}`, status: "pending", detail: "等待" });
+			map.set(index, { index, label: `Q${index}`, status: "pending", detail: "等待", debugCount: 0 });
 		}
 		return map.get(index)!;
 	}
@@ -379,21 +405,47 @@ const questionStatuses = computed<QuestionStatus[]>(() => {
 		const q = detectQuestionIndex(text, msg as any);
 		if (!q) continue;
 		const item = ensure(q);
-		if (/已停止|失败|错误|后台判别|should_restart=true|切换新 Coder/.test(text) && item.status !== "done") {
-			item.status = "warning";
-			item.detail = "需关注";
-		}
-		if (/代码手开始求解|子问题组#\d+.*启动/.test(text) && item.status !== "done") {
-			item.status = item.status === "warning" ? "warning" : "solving";
-			item.detail = item.status === "warning" ? "改错中" : "求解中";
-		}
-		if (/代码手求解成功|论文手开始写/.test(text) && item.status !== "done") {
-			item.status = "writing";
-			item.detail = "写作中";
-		}
+		const isDone = item.status === "done";
 		if (/论文手完成|子问题组#\d+.*完成/.test(text)) {
 			item.status = "done";
 			item.detail = "完成";
+			continue;
+		}
+		if (isDone) continue;
+		if (/任务执行失败|代码手已停止|失败/.test(text)) {
+			item.status = "failed";
+			item.detail = "失败";
+			continue;
+		}
+		if (/备用\s*Coder|备用\d+|重写中|重新组织方案/.test(text)) {
+			item.status = "recoding";
+			item.detail = "备用重写中";
+			continue;
+		}
+		if (/should_restart=true|准备换新\s*Coder|切换新\s*Coder/.test(text)) {
+			item.status = "restarting";
+			item.detail = "准备换人";
+			continue;
+		}
+		if (/协调者后台错误判别已启动|后台判别中/.test(text)) {
+			item.status = "judging";
+			item.detail = "后台判别中";
+			continue;
+		}
+		if (/代码执行出错|Traceback|执行错误|改错|同类错误/.test(text)) {
+			item.debugCount = (item.debugCount ?? 0) + 1;
+			item.status = "debugging";
+			item.detail = `第 ${item.debugCount} 次改错`;
+			continue;
+		}
+		if (/代码手求解成功|论文手开始写/.test(text)) {
+			item.status = "writing";
+			item.detail = "写作中";
+			continue;
+		}
+		if (/代码手开始求解|子问题组#\d+.*启动/.test(text)) {
+			item.status = "solving";
+			item.detail = "求解中";
 		}
 	}
 	return Array.from(map.values()).sort((a, b) => a.index - b.index).slice(0, 8);
@@ -432,11 +484,15 @@ function flowStepClass(status: FlowStep["status"]) {
 	return "border-slate-200 bg-slate-50 text-slate-400";
 }
 
-function questionStatusClass(status: QuestionStatus["status"]) {
+function questionStatusClass(status: QuestionStatusType) {
 	if (status === "done") return "border-blue-200 bg-blue-50 text-blue-700";
 	if (status === "solving") return "border-emerald-200 bg-emerald-50 text-emerald-700";
 	if (status === "writing") return "border-violet-200 bg-violet-50 text-violet-700";
-	if (status === "warning") return "border-amber-200 bg-amber-50 text-amber-700";
+	if (status === "debugging") return "border-amber-200 bg-amber-50 text-amber-700";
+	if (status === "judging") return "border-orange-200 bg-orange-50 text-orange-700";
+	if (status === "restarting" || status === "recoding") return "border-red-200 bg-red-50 text-red-700";
+	if (status === "failed") return "border-red-300 bg-red-100 text-red-800";
+	if (status === "plotting") return "border-cyan-200 bg-cyan-50 text-cyan-700";
 	return "border-slate-200 bg-slate-50 text-slate-400";
 }
 
