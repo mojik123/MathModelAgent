@@ -14,6 +14,7 @@ from app.utils.common_utils import get_current_files
 import json
 from app.core.prompts import get_reflection_prompt
 from app.core.functions import coder_tools
+from app.utils.repeat_error_judge import judge_repeated_error, error_signature
 
 
 class CoderAgent(Agent):
@@ -30,7 +31,6 @@ class CoderAgent(Agent):
     ) -> None:
         super().__init__(task_id, model, context_window, cancel_event=cancel_event)
         self.work_dir = work_dir
-        # None/0 表示不使用总重试次数停止；只保留连续相同错误的死循环检测。
         configured_retries = (
             max_retries
             if max_retries is not None
@@ -46,13 +46,6 @@ class CoderAgent(Agent):
         self.code_interpreter = code_interpreter
 
     async def run(self, prompt: str, subtask_title: str) -> CoderToWriter:  # type: ignore[reportIncompatibleMethodOverride]
-        """执行代码手子任务，生成并运行代码。
-
-        推进原则：
-        - 不按总步数停止。
-        - 不按累计错误次数停止。
-        - 只在连续多次遇到同一错误时判定为死循环并停止。
-        """
         logger.info(f"{self.__class__.__name__}:开始:执行子任务: {subtask_title}")
         assert self.code_interpreter is not None, "code_interpreter 未初始化"
         self.code_interpreter.add_section(subtask_title)
@@ -98,7 +91,6 @@ class CoderAgent(Agent):
         while True:
             total_execute_count += 1
 
-            # 旧的总步数上限只作为显式启用的保护；默认 0 表示关闭。
             if max_total_steps > 0 and total_execute_count > max_total_steps:
                 await redis_manager.publish_message(
                     self.task_id,
@@ -118,26 +110,25 @@ class CoderAgent(Agent):
                 )
 
             if consecutive_same_error_count >= max_same_error:
-                logger.error(f"连续相同错误达到上限: {max_same_error}")
+                logger.error(f"连续同类错误达到上限: {max_same_error}")
                 await redis_manager.publish_message(
                     self.task_id,
                     SystemMessage(
                         content=(
-                            f"代码手已停止：连续 {max_same_error} 次遇到相同错误\n"
+                            f"代码手已停止：协调者判定连续 {max_same_error} 次同类错误\n"
                             f"子任务：{subtask_title}\n"
                             f"错误类型：{last_error_type}\n"
-                            f"停止原因：判定进入同一错误死循环，需要换新 Coder 重新求解。\n"
+                            f"停止原因：需要换新 Coder 重新组织方案。\n"
                             f"最后错误：{last_error_message[:1000]}"
                         ),
                         type="error",
                     ),
                 )
                 raise RuntimeError(
-                    f"代码手求解失败：连续 {max_same_error} 次相同错误，子任务：{subtask_title}，"
+                    f"代码手求解失败：协调者判定连续 {max_same_error} 次同类错误，子任务：{subtask_title}，"
                     f"（{last_error_type}），最后错误：{last_error_message}"
                 )
 
-            # 总重试次数默认关闭。只有显式配置了正数时才会生效。
             if self.max_retries is not None and retry_count >= self.max_retries:
                 logger.error(f"超过最大重试次数: {self.max_retries}")
                 await redis_manager.publish_message(
@@ -257,19 +248,59 @@ class CoderAgent(Agent):
 
                             logger.warning(f"代码执行错误: {error_message}")
                             retry_count += 1
+                            previous_error_message = last_error_message
                             last_error_message = error_message
-                            error_lines = error_message.strip().split("\n")
-                            error_type = error_lines[-1][:120] if error_lines else error_message[:120]
-                            if error_type == last_error_type:
+
+                            judge = await judge_repeated_error(
+                                task_id=self.task_id,
+                                subtask_title=subtask_title,
+                                previous_error=previous_error_message,
+                                current_error=error_message,
+                                current_code=code,
+                                same_count=consecutive_same_error_count,
+                                retry_count=retry_count,
+                            )
+                            same_error = bool(judge.get("same_error"))
+                            should_restart = bool(judge.get("should_restart"))
+                            root_cause = str(judge.get("root_cause") or error_signature(error_message))[:160]
+                            advice = str(judge.get("advice") or "")
+                            reason = str(judge.get("reason") or "")
+
+                            if same_error:
                                 consecutive_same_error_count += 1
                             else:
                                 consecutive_same_error_count = 1
-                                last_error_type = error_type
-                            reflection_prompt = get_reflection_prompt(error_message, code)
+                            last_error_type = root_cause
 
                             await redis_manager.publish_message(
                                 self.task_id,
-                                SystemMessage(content="代码手反思纠正错误", type="info"),
+                                SystemMessage(
+                                    content=(
+                                        f"协调者重复错误判别：same_error={same_error}, should_restart={should_restart}\n"
+                                        f"根因：{root_cause}\n"
+                                        f"建议：{advice}\n"
+                                        f"依据：{reason}"
+                                    ),
+                                    type="warning" if same_error else "info",
+                                ),
+                            )
+
+                            if should_restart:
+                                consecutive_same_error_count = max_same_error
+                                continue
+
+                            reflection_prompt = get_reflection_prompt(error_message, code)
+                            if same_error and advice:
+                                reflection_prompt = (
+                                    "【协调者判断】你正在重复遇到同类错误。下一步必须改变修复策略，不要重复上一版代码。\n"
+                                    f"错误根因：{root_cause}\n"
+                                    f"协调者建议：{advice}\n\n"
+                                    + reflection_prompt
+                                )
+
+                            await redis_manager.publish_message(
+                                self.task_id,
+                                SystemMessage(content="代码手根据协调者建议反思纠错", type="info"),
                             )
                             await self.append_chat_history({"role": "user", "content": reflection_prompt})
                             continue
