@@ -10,8 +10,6 @@ import ImageGallery from "@/components/AgentEditor/ImageGallery.vue";
 import ModelerEditor from "@/components/AgentEditor/ModelerEditor.vue";
 import WriterEditor from "@/components/AgentEditor/WriterEditor.vue";
 import ChatArea from "@/components/ChatArea.vue";
-import ModelingDiscussion from "@/components/ModelingDiscussion.vue";
-import QuestionDiscussion from "@/components/QuestionDiscussion.vue";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -439,10 +437,10 @@ const overallProgress = computed(() => {
 });
 
 const progressText = computed(() => {
-	if (isWaitingQuestionConfirm.value) return "请在下方确认问题划分";
+	if (isWaitingQuestionConfirm.value) return "请在对话流中确认问题划分";
 	if (isQuestionConfirmTransition.value)
 		return "问题划分已确认，等待进入建模方案讨论";
-	if (isWaitingModelingConfirm.value) return "请在下方确认各问建模方案";
+	if (isWaitingModelingConfirm.value) return "请在对话流中确认各问建模方案";
 
 	if (taskStore.currentProgress?.description)
 		return taskStore.currentProgress.description;
@@ -1149,34 +1147,14 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- Agent 消息流 -->
+          <!-- Agent 对话流：问题划分与建模方案确认均嵌入对话气泡 -->
           <ChatArea
             class="flex-1 min-h-0"
             :messages="taskStore.messages"
             :task-status="taskStore.taskStatus"
             :taskId="props.task_id"
-          />
-
-          <!-- 建模讨论区（上方） -->
-          <ModelingDiscussion
-            v-if="discussionAvailable"
-            :task_id="props.task_id"
-            :expanded="discussionExpanded"
-            :locked="discussionLocked"
-            :disabled="discussionLocked"
-            @toggle="discussionExpanded = !discussionExpanded; setSavedPanelExpanded(props.task_id, 'modeling', discussionExpanded); if (discussionExpanded) questionDiscussionExpanded = false"
-            @confirm="onModelingConfirmed"
-          />
-
-          <!-- 问题划分讨论区（锚定底部） -->
-          <QuestionDiscussion
-            v-if="questionDiscussionAvailable"
-            :task_id="props.task_id"
-            :expanded="questionDiscussionExpanded"
-            :locked="questionDiscussionLocked"
-            :disabled="questionDiscussionLocked"
-            @toggle="questionDiscussionExpanded = !questionDiscussionExpanded; if (questionDiscussionExpanded) discussionExpanded = false"
-            @confirm="onQuestionConfirmed"
+            @question-confirm="onQuestionConfirmed"
+            @modeling-confirm="onModelingConfirmed"
           />
         </div>
       </ResizablePanel>
