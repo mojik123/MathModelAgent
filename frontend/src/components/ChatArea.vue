@@ -30,6 +30,11 @@ const props = withDefaults(
 	{ taskStatus: "ready" },
 );
 
+const emit = defineEmits<{
+	questionConfirm: [];
+	modelingConfirm: [];
+}>();
+
 interface TimelineEvent {
 	id: string;
 	side: "left" | "right" | "center";
@@ -62,6 +67,34 @@ const roleMap: Record<string, string> = {
 	SystemMonitor: "流程监控",
 	User: "用户确认",
 };
+
+function messageText(m: Message) {
+	return m.content ?? "";
+}
+
+const questionConfirmed = computed(() =>
+	props.messages.some((m) => {
+		const c = messageText(m);
+		return c.includes("问题划分已确认") || c.includes("已复用问题划分") || c.includes("用户确认了最终的问题划分方案");
+	}),
+);
+
+const modelingConfirmed = computed(() =>
+	props.messages.some((m) => {
+		const c = messageText(m);
+		return c.includes("建模方案已确认") || c.includes("已复用建模方案选择") || c.includes("用户确认全部问题的建模方案");
+	}),
+);
+
+function handleInlineQuestionConfirm() {
+	inlineQuestionPanelOpen.value = false;
+	emit("questionConfirm");
+}
+
+function handleInlineModelingConfirm() {
+	inlineModelingPanelOpen.value = false;
+	emit("modelingConfirm");
+}
 
 function timeLabel(input?: string | null) {
 	if (!input) return "";
@@ -171,13 +204,13 @@ function systemEvent(msg: Message): TimelineEvent | null {
 		return {
 			...base,
 			type: "choice",
-			status: "waiting",
+			status: questionConfirmed.value ? "done" : "waiting",
 			actor: "CoordinatorAgent",
 			role: roleMap.CoordinatorAgent,
-			title: "问题划分已生成，请确认",
-			detail: "可在这条对话消息内直接修改、增删问题卡片，确认后继续进入建模方案选择。",
+			title: questionConfirmed.value ? "问题划分已确认" : "问题划分已生成，请确认",
+			detail: questionConfirmed.value ? "该步骤已完成。" : "可在这条对话消息内直接修改、增删问题卡片，确认后继续进入建模方案选择。",
 			choiceKind: "question",
-			badges: ["需要用户确认"],
+			badges: questionConfirmed.value ? ["已确认"] : ["需要用户确认"],
 		};
 	}
 	if (line.includes("问题划分已确认") || line.includes("已复用问题划分")) {
@@ -187,13 +220,13 @@ function systemEvent(msg: Message): TimelineEvent | null {
 		return {
 			...base,
 			type: "choice",
-			status: "waiting",
+			status: modelingConfirmed.value ? "done" : "waiting",
 			actor: "ModelerAgent",
 			role: roleMap.ModelerAgent,
-			title: "候选建模方案已生成，请选择",
-			detail: "可在这条对话消息内直接选择每一问的建模方案，也可以要求重新生成。",
+			title: modelingConfirmed.value ? "建模方案已确认" : "候选建模方案已生成，请选择",
+			detail: modelingConfirmed.value ? "该步骤已完成。" : "可在这条对话消息内直接选择每一问的建模方案，也可以要求重新生成。",
 			choiceKind: "modeling",
-			badges: ["需要用户确认"],
+			badges: modelingConfirmed.value ? ["已确认"] : ["需要用户确认"],
 		};
 	}
 	if (line.includes("建模方案已确认") || line.includes("已复用建模方案选择")) {
@@ -342,8 +375,23 @@ watch(() => props.messages.length, () => scrollToBottom(), { flush: "post" });
 						<p v-if="ev.progressText" class="mt-2 rounded-xl border border-current/10 bg-white/45 px-2.5 py-1.5 text-xs opacity-90">{{ ev.progressText }}</p>
 
 						<div v-if="ev.type === 'choice'" class="agent-conversation-inline-panel mt-3 rounded-xl border border-current/10 bg-white/65 p-2 text-xs text-slate-800">
-							<QuestionDiscussion v-if="ev.choiceKind === 'question' && props.taskId" :task_id="props.taskId" :expanded="inlineQuestionPanelOpen" :locked="false" :disabled="false" @toggle="inlineQuestionPanelOpen = !inlineQuestionPanelOpen" />
-							<ModelingDiscussion v-else-if="ev.choiceKind === 'modeling'" :expanded="inlineModelingPanelOpen" :locked="false" :disabled="false" @toggle="inlineModelingPanelOpen = !inlineModelingPanelOpen" />
+							<QuestionDiscussion
+								v-if="ev.choiceKind === 'question' && props.taskId"
+								:task_id="props.taskId"
+								:expanded="inlineQuestionPanelOpen && !questionConfirmed"
+								:locked="questionConfirmed"
+								:disabled="questionConfirmed"
+								@toggle="inlineQuestionPanelOpen = !inlineQuestionPanelOpen"
+								@confirm="handleInlineQuestionConfirm"
+							/>
+							<ModelingDiscussion
+								v-else-if="ev.choiceKind === 'modeling'"
+								:expanded="inlineModelingPanelOpen && !modelingConfirmed"
+								:locked="modelingConfirmed"
+								:disabled="modelingConfirmed"
+								@toggle="inlineModelingPanelOpen = !inlineModelingPanelOpen"
+								@confirm="handleInlineModelingConfirm"
+							/>
 						</div>
 
 						<div v-if="ev.artifacts?.length" class="mt-3 grid gap-1.5">
