@@ -17,6 +17,7 @@ from typing import Any
 
 from app.utils.image_code_index import normalize_image_name
 from app.utils.log_util import logger
+from app.utils.paper_cleaner import clean_visible_image_alt, looks_like_image_filename
 
 PATCH_DIR = ".artifact_edits"
 TEXT_PATCH_FILE = "paper_text_patches.json"
@@ -184,30 +185,32 @@ def _apply_image_text_revision(
     pattern = rf"!\[([^\]]*)\]\(([^)]*{escaped})\)"
     match = re.search(pattern, paper_content, re.IGNORECASE)
     if not match:
-        # 兼容只写 basename 的 Markdown 引用
         base = re.escape(image_name.split("/")[-1])
         pattern = rf"!\[([^\]]*)\]\(([^)]*{base})\)"
         match = re.search(pattern, paper_content, re.IGNORECASE)
         if not match:
             return paper_content, False
 
-    new_alt = (updated_alt_text or match.group(1)).strip()
+    raw_alt = (updated_alt_text or match.group(1)).strip()
+    new_alt = clean_visible_image_alt(raw_alt, match.group(2), 1)
     new_ref = f"![{new_alt}]({match.group(2)})"
     updated = paper_content[: match.start()] + new_ref + paper_content[match.end() :]
 
-    if not updated_caption:
+    caption = (updated_caption or "").strip()
+    if not caption or looks_like_image_filename(caption):
         return updated, updated != paper_content
+    caption = clean_visible_image_alt(caption, match.group(2), 1) if not re.search(r"[\u4e00-\u9fff]", caption) else caption
 
     insert_at = match.start() + len(new_ref)
-    caption = updated_caption.strip()
     caption_block = f"\n\n{caption}\n"
     paragraph_end = updated.find("\n\n", insert_at + 1)
     next_image = updated.find("![", insert_at + 1)
     if paragraph_end != -1 and (next_image == -1 or paragraph_end < next_image):
         existing = updated[insert_at:paragraph_end].strip()
         if existing:
-            # 如果已有说明是同一个 caption，则不重复插入
-            if caption in existing:
+            if caption in existing or looks_like_image_filename(existing):
+                if looks_like_image_filename(existing):
+                    updated = updated[:insert_at] + caption_block + updated[paragraph_end:]
                 return updated, updated != paper_content
             updated = updated[:insert_at] + caption_block + updated[paragraph_end:]
         else:
@@ -219,19 +222,12 @@ def _apply_image_text_revision(
 
 
 def apply_artifact_patches_to_markdown(text: str, work_dir: str) -> str:
-    """Apply active image/text patches to markdown.
-
-    This is deliberately conservative: patches that cannot be uniquely applied are
-    skipped, so the main paper assembly will not be corrupted by an old edit.
-    """
     updated = text or ""
 
     for patch in list_text_patches(work_dir):
         if patch.get("status") != "active":
             continue
         if patch.get("scope") != "selection":
-            # Full-paper patches are already written to res.md immediately and are
-            # too risky to replay blindly after a new final assembly.
             continue
         selected = str(patch.get("selected_text") or "")
         revised = str(patch.get("revised_text") or "")
