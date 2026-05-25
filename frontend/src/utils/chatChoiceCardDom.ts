@@ -21,13 +21,13 @@ function addStyle() {
 	display: flex;
 	width: fit-content;
 	margin: 0 auto 6px auto;
-	border: 1px solid rgba(167, 139, 250, .25);
+	border: 1px solid rgba(96, 165, 250, .28);
 	border-radius: 999px;
-	background: rgba(245, 243, 255, .82);
+	background: rgba(239, 246, 255, .88);
 	padding: 3px 9px;
 	font-size: 10px;
 	font-weight: 700;
-	color: rgba(109, 40, 217, .86);
+	color: rgba(29, 78, 216, .9);
 	backdrop-filter: blur(10px);
 	-webkit-backdrop-filter: blur(10px);
 }
