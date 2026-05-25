@@ -290,14 +290,28 @@ function resetRuntimeDecorations(panel: HTMLElement) {
 	}
 }
 
+function clearUnsafeDuplicateHide(panel: HTMLElement) {
+	for (const node of panel.querySelectorAll<HTMLElement>("[data-chat-duplicate-flow-overview]")) {
+		node.removeAttribute("data-chat-duplicate-flow-overview");
+	}
+}
+
 function hideDuplicateChatFlowOverview(panel: HTMLElement) {
+	clearUnsafeDuplicateHide(panel);
 	const candidates = Array.from(panel.querySelectorAll<HTMLElement>("div"));
 	for (const node of candidates) {
 		const text = (node.textContent || "").replace(/\s+/g, " ").trim();
-		if (
+		const cls = node.getAttribute("class") || "";
+		const parentText = (node.parentElement?.textContent || "").replace(/\s+/g, " ").trim();
+		const isSmallFlowCard =
+			cls.includes("rounded-2xl") &&
+			cls.includes("border") &&
+			cls.includes("shadow-sm") &&
 			text.includes("当前流程") &&
-			text.includes("确认、求解、写作与终稿状态集中显示")
-		) {
+			text.includes("确认、求解、写作与终稿状态集中显示") &&
+			!parentText.includes("Agent 对话流 当前") &&
+			text.length < 260;
+		if (isSmallFlowCard) {
 			node.setAttribute("data-chat-duplicate-flow-overview", "true");
 		}
 	}
