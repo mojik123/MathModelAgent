@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+	compilePdf,
 	getImageCode,
 	getPaper,
 	reviseImageChat,
@@ -13,9 +14,12 @@ import { AgentType } from "@/utils/enum";
 import { renderMarkdown } from "@/utils/markdown";
 import type { InterpreterMessage, WriterMessage } from "@/utils/response";
 import {
+	AlertTriangle,
 	CheckCircle2,
 	ChevronDown,
 	Code2,
+	FileCheck2,
+	FileText,
 	ImageIcon,
 	ListTree,
 	MessageSquare,
@@ -23,6 +27,7 @@ import {
 	PanelLeftOpen,
 	RefreshCw,
 	Send,
+	Undo2,
 	X,
 } from "lucide-vue-next";
 import {
@@ -42,6 +47,8 @@ interface TocItem {
 	level: number;
 	text: string;
 }
+
+type PaperPreviewMode = "markdown" | "pdf";
 
 interface SelectedImage {
 	filename: string;
@@ -198,6 +205,11 @@ function defaultDialogPos() {
 const paperMarkdown = ref("");
 const renderedContent = ref("");
 const loadingPaper = ref(false);
+const previewMode = ref<PaperPreviewMode>("markdown");
+const compilingPdf = ref(false);
+const compiledPdfUrl = ref("");
+const compileError = ref("");
+const lastCompiledMarkdown = ref("");
 const paperImageVersion = ref(
 	(() => {
 		if (typeof window !== "undefined" && taskId.value) {
@@ -211,6 +223,19 @@ const paperImageVersion = ref(
 );
 const writerScrollHost = ref<HTMLDivElement | null>(null);
 const tocItems = ref<TocItem[]>([]);
+const hasPaperContent = computed(() => Boolean(paperMarkdown.value.trim()));
+const compiledPdfStale = computed(
+	() =>
+		Boolean(compiledPdfUrl.value) &&
+		lastCompiledMarkdown.value !== paperMarkdown.value,
+);
+const canCompilePaper = computed(
+	() =>
+		Boolean(taskId.value) &&
+		hasPaperContent.value &&
+		!loadingPaper.value &&
+		!compilingPdf.value,
+);
 
 // ---- Image preview ----
 
@@ -239,6 +264,64 @@ function getImageTarget(el: EventTarget | null): HTMLImageElement | null {
 function getSentenceTarget(el: EventTarget | null): HTMLElement | null {
 	if (!el || !(el instanceof HTMLElement)) return null;
 	return el.closest("[data-sentence]") as HTMLElement | null;
+}
+
+function addCacheBuster(url: string) {
+	const separator = url.includes("?") ? "&" : "?";
+	return `${url}${separator}t=${Date.now()}`;
+}
+
+function getCompileErrorMessage(error: unknown) {
+	const maybeError = error as {
+		message?: string;
+		response?: { data?: { detail?: unknown; message?: unknown } };
+	};
+	const detail =
+		maybeError.response?.data?.detail ??
+		maybeError.response?.data?.message ??
+		maybeError.message;
+	return typeof detail === "string" && detail.trim()
+		? detail
+		: "PDF 编译失败，请检查 Pandoc、xelatex 或论文内容后重试。";
+}
+
+function resetCompiledPaperState() {
+	previewMode.value = "markdown";
+	compilingPdf.value = false;
+	compiledPdfUrl.value = "";
+	compileError.value = "";
+	lastCompiledMarkdown.value = "";
+}
+
+function returnToMarkdownPreview() {
+	previewMode.value = "markdown";
+	compileError.value = "";
+	nextTick(() => {
+		wrapPreviewSentences();
+		injectPaperToc();
+		bindPaperTocClicks();
+		attachScrollListener();
+	});
+}
+
+async function confirmAndCompilePdf() {
+	if (!canCompilePaper.value) return;
+	compilingPdf.value = true;
+	compileError.value = "";
+	try {
+		await savePaper(taskId.value, paperMarkdown.value);
+		const res = await compilePdf(taskId.value);
+		const pdfUrl = res.data?.pdf_url;
+		if (!pdfUrl) throw new Error("后端没有返回 PDF 预览地址。");
+		compiledPdfUrl.value = addCacheBuster(pdfUrl);
+		lastCompiledMarkdown.value = paperMarkdown.value;
+		previewMode.value = "pdf";
+	} catch (error) {
+		compileError.value = getCompileErrorMessage(error);
+		previewMode.value = "markdown";
+	} finally {
+		compilingPdf.value = false;
+	}
 }
 
 function openPreview(src: string, filename: string) {
@@ -424,9 +507,65 @@ function wrapPreviewSentences() {
 			block.removeAttribute("data-sentence");
 			continue;
 		}
-		if (block.closest("pre, code, .katex, .math-block")) continue;
+		if (block.closest("pre, code, .katex, .math-block, .paper-toc-content")) {
+			block.removeAttribute("data-sentence");
+			continue;
+		}
 		block.dataset.sentence = String(index++);
 	}
+}
+
+function normalizeTocText(text: string) {
+	return text
+		.replace(/\u00a0/g, " ")
+		.replace(/\u3000/g, " ")
+		.replace(/\s+/g, " ")
+		.replace(/\s*\.{2,}\s*\d+\s*$/, "")
+		.replace(/\s+\d+\s*$/, "")
+		.trim();
+}
+
+function getPaperHeadings(root: HTMLElement) {
+	return Array.from(
+		root.querySelectorAll<HTMLHeadingElement>("h1, h2, h3, h4"),
+	).filter((h) => h.textContent?.trim() !== "目录");
+}
+
+function findTocTargetHeading(text: string) {
+	const root = getPreviewRoot();
+	if (!root) return null;
+	const normalized = normalizeTocText(text);
+	if (!normalized) return null;
+	const compact = normalized.replace(/\s/g, "");
+	const headings = getPaperHeadings(root);
+	return (
+		headings.find((h) => normalizeTocText(h.textContent ?? "") === normalized) ??
+		headings.find(
+			(h) => normalizeTocText(h.textContent ?? "").replace(/\s/g, "") === compact,
+		) ??
+		null
+	);
+}
+
+function ensureHeadingId(
+	heading: HTMLHeadingElement,
+	index: number,
+	root: HTMLElement,
+) {
+	if (!heading.id) {
+		const base = `paper-heading-${index}`;
+		let candidate = base;
+		let suffix = 1;
+		while (true) {
+			const existing = root.querySelector<HTMLElement>(
+				`#${CSS.escape(candidate)}`,
+			);
+			if (!existing || existing === heading) break;
+			candidate = `${base}-${suffix++}`;
+		}
+		heading.id = candidate;
+	}
+	return heading.id;
 }
 
 /** 从渲染后的标题自动生成目录并注入到 # 目录 标题下方 */
@@ -444,12 +583,13 @@ function injectPaperToc() {
 	let nextEl = tocHeading.nextElementSibling;
 	while (nextEl) {
 		const tag = nextEl.tagName;
-		if (tag === "H1") break;
+		if (/^H[1-6]$/.test(tag)) break;
 		const toRemove = nextEl;
 		nextEl = nextEl.nextElementSibling;
 		if (
 			tag === "OL" ||
 			tag === "UL" ||
+			(tag === "DIV" && toRemove.classList.contains("paper-toc-content")) ||
 			(tag === "P" && !toRemove.querySelector("img"))
 		) {
 			toRemove.remove();
@@ -466,31 +606,90 @@ function injectPaperToc() {
 
 	// 估计每个章节页数，生成目录条目
 	let page = 1; // 摘要页第1页
-	const lines: string[] = [];
+	const wrapper = document.createElement("div");
+	wrapper.className = "paper-toc-content";
+	const allPaperHeadings = getPaperHeadings(root);
 	for (let i = 0; i < paperHeadings.length; i++) {
 		const h = paperHeadings[i];
 		const level = Number(h.tagName.slice(1));
 		const text = h.textContent?.trim() || "";
 		if (!text) continue;
+		const headingIndex = allPaperHeadings.indexOf(h);
+		const targetId = ensureHeadingId(
+			h,
+			headingIndex >= 0 ? headingIndex : i,
+			root,
+		);
 
 		const pageStr = String(page);
 		const indent = level === 2 ? "　　" : "";
 		const totalLen = text.length + indent.length + pageStr.length;
 		const dots = ".".repeat(Math.max(2, 40 - totalLen));
-		const label = level === 1 ? `<b>${text}</b>` : text;
-		lines.push(
-			`<p class="toc-line" style="margin:0.2rem 0;text-indent:0;font-size:12pt;line-height:1.8;">${indent}${label} ${dots} ${pageStr}</p>`,
-		);
+		const line = document.createElement("p");
+		line.className = "toc-line paper-toc-link";
+		line.dataset.tocTarget = targetId;
+		line.setAttribute("role", "button");
+		line.tabIndex = 0;
+		line.style.margin = "0.2rem 0";
+		line.style.textIndent = "0";
+		line.style.fontSize = "12pt";
+		line.style.lineHeight = "1.8";
+		if (indent) line.appendChild(document.createTextNode(indent));
+		if (level === 1) {
+			const bold = document.createElement("b");
+			bold.textContent = text;
+			line.appendChild(bold);
+		} else {
+			line.appendChild(document.createTextNode(text));
+		}
+		line.appendChild(document.createTextNode(` ${dots} ${pageStr}`));
+		wrapper.appendChild(line);
 
 		// 粗略页码估算
 		if (level === 1 && i > 0) page += 2;
 		else page += 1;
 	}
 
-	const wrapper = document.createElement("div");
-	wrapper.className = "paper-toc-content";
-	wrapper.innerHTML = lines.join("\n");
 	tocHeading.insertAdjacentElement("afterend", wrapper);
+}
+
+function bindPaperTocClicks() {
+	const root = getPreviewRoot();
+	const toc = root?.querySelector<HTMLElement>(".paper-toc-content");
+	if (!root || !toc) return;
+	const lines = Array.from(
+		toc.querySelectorAll<HTMLElement>(".toc-line, p, li"),
+	).filter((line) => Boolean(line.textContent?.trim()));
+	for (const line of lines) {
+		const explicitId = line.dataset.tocTarget;
+		let target = explicitId
+			? root.querySelector<HTMLElement>(`#${CSS.escape(explicitId)}`)
+			: null;
+		target = target ?? findTocTargetHeading(line.textContent ?? "");
+		if (!target?.id) continue;
+		const targetId = target.id;
+		line.dataset.tocTarget = target.id;
+		line.classList.add("paper-toc-link");
+		line.setAttribute("role", "button");
+		line.tabIndex = 0;
+		line.removeAttribute("data-sentence");
+		line
+			.querySelectorAll<HTMLElement>("[data-sentence]")
+			.forEach((child) => child.removeAttribute("data-sentence"));
+		line.onmousedown = (event) => {
+			event.stopPropagation();
+		};
+		line.onclick = (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			scrollToSection(targetId);
+		};
+		line.onkeydown = (event) => {
+			if (event.key !== "Enter" && event.key !== " ") return;
+			event.preventDefault();
+			scrollToSection(targetId);
+		};
+	}
 }
 
 function buildTocFromRendered() {
@@ -501,11 +700,9 @@ function buildTocFromRendered() {
 		return;
 	}
 	// 过滤掉目录标题本身
-	const headings = Array.from(
-		root.querySelectorAll<HTMLHeadingElement>("h1, h2, h3, h4"),
-	).filter((h) => h.textContent?.trim() !== "目录");
+	const headings = getPaperHeadings(root);
 	tocItems.value = headings.map((heading, index) => {
-		if (!heading.id) heading.id = `paper-heading-${index}`;
+		ensureHeadingId(heading, index, root);
 		return {
 			id: heading.id,
 			level: Number(heading.tagName.slice(1)),
@@ -561,7 +758,9 @@ function attachScrollListener() {
 }
 
 function scrollToSection(id: string) {
-	const target = document.getElementById(id);
+	const target =
+		writerScrollHost.value?.querySelector<HTMLElement>(`#${CSS.escape(id)}`) ??
+		document.getElementById(id);
 	if (!target) return;
 	activeHeadingId.value = id;
 	target.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -585,6 +784,7 @@ async function loadPaper() {
 		await nextTick();
 		wrapPreviewSentences();
 		injectPaperToc();
+		bindPaperTocClicks();
 		attachScrollListener();
 	} catch (error) {
 		console.error("Load paper failed:", error);
@@ -1364,10 +1564,11 @@ watch(
 watch(
 	renderedContent,
 	() => {
-		attachScrollListener();
 		nextTick(() => {
 			wrapPreviewSentences();
 			injectPaperToc();
+			bindPaperTocClicks();
+			attachScrollListener();
 		});
 	},
 	{ flush: "post" },
@@ -1376,6 +1577,7 @@ watch(
 watch(
 	() => taskId.value,
 	() => {
+		resetCompiledPaperState();
 		restoreRevisionSessions();
 		// 加载当前任务的图片版本号
 		if (typeof window !== "undefined" && taskId.value) {
@@ -1391,7 +1593,7 @@ watch(
 <template>
 	<div class="flex h-full min-h-0 bg-white/70 backdrop-blur-sm">
 		<!-- 目录侧栏 -->
-		<aside v-if="showToc" class="w-60 shrink-0 bg-slate-50/90 backdrop-blur-xl">
+		<aside v-if="showToc && previewMode === 'markdown'" class="w-60 shrink-0 bg-slate-50/90 backdrop-blur-xl">
 			<div class="flex items-center justify-between bg-gradient-to-b from-white/70 to-white/35 px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-md">
 				<div class="flex items-center gap-2 text-sm font-semibold text-slate-800">
 					<ListTree class="h-4 w-4" />
@@ -1417,12 +1619,62 @@ watch(
 
 		<!-- 论文正文区域 -->
 		<div class="flex min-w-0 flex-1 flex-col bg-white/80 backdrop-blur-sm">
-			<div class="flex items-center justify-between bg-gradient-to-b from-white/72 to-white/42 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-md">
+			<div class="flex flex-wrap items-center justify-between gap-3 bg-gradient-to-b from-white/72 to-white/42 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] backdrop-blur-md">
 				<div class="flex items-center gap-2">
-					<Button v-if="!showToc" variant="ghost" size="icon" @click="showToc = true"><PanelLeftOpen class="h-4 w-4" /></Button>
-					<h2 class="text-base font-semibold text-gray-900">论文内容</h2>
+					<Button v-if="!showToc && previewMode === 'markdown'" variant="ghost" size="icon" @click="showToc = true"><PanelLeftOpen class="h-4 w-4" /></Button>
+					<h2 class="text-base font-semibold text-gray-900">{{ previewMode === 'pdf' ? '论文 PDF 预览' : '论文预览' }}</h2>
 				</div>
-				<span v-if="loadingPaper" class="text-xs text-slate-500">加载中...</span>
+				<div class="flex flex-wrap items-center justify-end gap-2">
+					<span v-if="loadingPaper" class="inline-flex items-center gap-1 text-xs text-slate-500">
+						<RefreshCw class="h-3.5 w-3.5 animate-spin" />
+						加载中...
+					</span>
+					<span v-else-if="compilingPdf" class="inline-flex items-center gap-1 text-xs text-blue-700">
+						<RefreshCw class="h-3.5 w-3.5 animate-spin" />
+						正在生成 LaTeX 并编译 PDF
+					</span>
+					<span v-else-if="compileError" class="inline-flex items-center gap-1 text-xs text-rose-700">
+						<AlertTriangle class="h-3.5 w-3.5" />
+						编译失败
+					</span>
+					<span v-else-if="previewMode === 'pdf' && compiledPdfStale" class="inline-flex items-center gap-1 text-xs text-amber-700">
+						<AlertTriangle class="h-3.5 w-3.5" />
+						论文已修改，PDF 需重新编译
+					</span>
+					<span v-else-if="previewMode === 'pdf'" class="inline-flex items-center gap-1 text-xs text-emerald-700">
+						<CheckCircle2 class="h-3.5 w-3.5" />
+						已显示编译 PDF
+					</span>
+					<span v-else class="inline-flex items-center gap-1 text-xs text-slate-500">
+						<FileText class="h-3.5 w-3.5" />
+						直接预览版
+					</span>
+
+					<Button
+						v-if="previewMode === 'markdown'"
+						size="sm"
+						:disabled="!canCompilePaper"
+						@click="confirmAndCompilePdf"
+					>
+						<RefreshCw v-if="compilingPdf" class="h-3.5 w-3.5 animate-spin" />
+						<FileCheck2 v-else class="h-3.5 w-3.5" />
+						{{ compilingPdf ? '正在编译' : '确认并编译 PDF' }}
+					</Button>
+					<template v-else>
+						<Button variant="outline" size="sm" @click="returnToMarkdownPreview">
+							<Undo2 class="h-3.5 w-3.5" />
+							返回预览修改
+						</Button>
+						<Button size="sm" :disabled="!canCompilePaper" @click="confirmAndCompilePdf">
+							<RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': compilingPdf }" />
+							{{ compilingPdf ? '正在编译' : '重新编译 PDF' }}
+						</Button>
+					</template>
+				</div>
+			</div>
+			<div v-if="compileError" class="flex items-start gap-2 border-t border-rose-100 bg-rose-50/80 px-4 py-2 text-xs leading-5 text-rose-700">
+				<AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+				<span class="min-w-0 break-words">{{ compileError }}</span>
 			</div>
 			<div
 				ref="writerScrollHost"
@@ -1432,10 +1684,20 @@ watch(
 				@mousedown="onPaperMouseDown"
 				@mouseup="onPaperMouseUp"
 			>
-				<article class="mx-auto max-w-4xl px-8 py-6">
+				<article v-if="previewMode === 'markdown'" class="mx-auto max-w-4xl px-8 py-6">
 					<div v-if="renderedContent" class="paper-preview glass-card prose prose-slate max-w-none" v-html="renderedContent" />
 					<div v-else class="glass-card flex h-40 items-center justify-center text-sm text-slate-500">暂无论文内容</div>
 				</article>
+				<div v-else class="h-full min-h-[520px] p-4">
+					<div v-if="compiledPdfUrl" class="pdf-preview-shell h-full min-h-[520px] overflow-hidden rounded-md border border-slate-200 bg-slate-100 shadow-sm">
+						<iframe
+							:src="compiledPdfUrl"
+							title="编译后的 PDF 预览"
+							class="h-full w-full bg-white"
+						/>
+					</div>
+					<div v-else class="glass-card flex h-40 items-center justify-center text-sm text-slate-500">暂无 PDF 预览</div>
+				</div>
 			</div>
 		</div>
 
@@ -1704,15 +1966,29 @@ watch(
 /* 图片所在的段落不缩进 */
 .paper-preview :deep(p:has(img)),
 .paper-preview :deep(p:has(figure)) {
-t/* 目录（自动生成） */
+	text-indent: 0;
+}
+
+/* 目录（自动生成） */
 .paper-preview :deep(.paper-toc-content) {
 	margin: 1rem 0;
 	padding: 0.5rem 1rem;
 }
 .paper-preview :deep(.toc-line) {
 	font-family: "Times New Roman", "SimSun", "宋体", serif !important;
+	cursor: pointer;
+	border-radius: 0.25rem;
+	transition: background-color 0.16s ease, color 0.16s ease;
 }
-	text-indent: 0;
+.paper-preview :deep(.paper-toc-link:hover),
+.paper-preview :deep(.paper-toc-link:focus-visible) {
+	background: rgba(37, 99, 235, 0.08);
+	color: #1d4ed8;
+	outline: none;
+}
+
+.pdf-preview-shell iframe {
+	border: 0;
 }
 
 /* 列表 */

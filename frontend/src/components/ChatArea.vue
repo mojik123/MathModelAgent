@@ -53,7 +53,7 @@ interface TimelineEvent {
 	progressText?: string;
 	debugCount?: number;
 	isGroup?: boolean;
-	groupPhase?: "question" | "writing";
+	groupPhase?: "question" | "writing" | "planning" | "modeling" | "coding" | "final" | "process";
 	groupEvents?: TimelineEvent[];
 	groupActors?: string[];
 }
@@ -391,8 +391,8 @@ const timelineEvents = computed(() => {
 			out.push({ ...ev, title: "第 1 次改错", progressText: "累计 1 次改错", debugCount: 1 });
 			continue;
 		}
-		if (prev && prev.actor === ev.actor && prev.type === ev.type && prev.title === ev.title && ev.type !== "choice" && prev.side === ev.side) {
-			out[out.length - 1] = { ...ev, badges: Array.from(new Set([...(prev.badges ?? []), ...(ev.badges ?? [])])) };
+		if (prev && prev.actor === ev.actor && prev.type === ev.type && prev.title === ev.title && ev.type !== "choice" && prev.side === ev.side && prev.questionIndex === ev.questionIndex) {
+			out[out.length - 1] = { ...ev, id: prev.id, badges: Array.from(new Set([...(prev.badges ?? []), ...(ev.badges ?? [])])) };
 			continue;
 		}
 		out.push(ev);
@@ -407,12 +407,18 @@ function isRevisionEvent(ev: TimelineEvent) {
 
 function groupKeyOf(ev: TimelineEvent) {
 	if (ev.type === "choice" || ev.side !== "left" || isRevisionEvent(ev)) return "";
+	const text = `${ev.title}\n${ev.detail ?? ""}`;
 	if (ev.questionIndex && ["SubCoordinatorAgent", "CoderAgent", "WriterAgent"].includes(ev.actor)) {
 		return `question-${ev.questionIndex}`;
 	}
-	if (!ev.questionIndex && ev.actor === "WriterAgent" && /并行写作|论文手开始写|论文手完成/.test(`${ev.title}\n${ev.detail ?? ""}`) && !/终稿|整体检查/.test(`${ev.title}\n${ev.detail ?? ""}`)) {
+	if (!ev.questionIndex && ev.actor === "WriterAgent" && /并行写作|论文手开始写|论文手完成|正在思考与生成|输出结果摘要/.test(text) && !/终稿|整体检查/.test(text)) {
 		return "writing-parallel";
 	}
+	if (ev.actor === "CoderAgent") return "phase-coding";
+	if (ev.actor === "SubCoordinatorAgent") return "phase-coding";
+	if (ev.actor === "ModelerAgent") return "phase-modeling";
+	if (ev.actor === "WriterAgent") return /终稿|整体检查|论文生成/.test(text) ? "phase-final" : "writing-parallel";
+	if (ev.actor === "CoordinatorAgent") return /集成|整合|终稿|整体检查|论文生成/.test(text) ? "phase-final" : "phase-planning";
 	return "";
 }
 
@@ -433,6 +439,13 @@ function groupTitle(group: TimelineEvent) {
 		if (group.status === "error") return "并行写作组 · 已停止";
 		return "并行写作组 · 写作中";
 	}
+	if (group.groupPhase !== "question") {
+		const label = phaseLabel(group.groupPhase);
+		if (group.status === "done") return `${label} · 已完成`;
+		if (group.status === "warning") return `${label} · 需关注`;
+		if (group.status === "error") return `${label} · 已停止`;
+		return `${label} · 进行中`;
+	}
 	const q = group.questionIndex;
 	if (group.status === "error") return `子问题组 ${q} · 已停止`;
 	if (group.status === "warning") {
@@ -452,31 +465,70 @@ function pushUnique<T>(source: T[] | undefined, values: T[]) {
 	return Array.from(new Set([...(source ?? []), ...values]));
 }
 
+function groupPhaseFromKey(key: string): TimelineEvent["groupPhase"] {
+	if (key.startsWith("question-")) return "question";
+	if (key === "writing-parallel") return "writing";
+	if (key === "phase-planning") return "planning";
+	if (key === "phase-modeling") return "modeling";
+	if (key === "phase-coding") return "coding";
+	if (key === "phase-final") return "final";
+	return "process";
+}
+
+function phaseLabel(phase?: TimelineEvent["groupPhase"]) {
+	if (phase === "planning") return "规划阶段";
+	if (phase === "modeling") return "建模阶段";
+	if (phase === "coding") return "代码求解";
+	if (phase === "final") return "终稿整合";
+	if (phase === "writing") return "并行写作组";
+	return "阶段过程";
+}
+
+function phaseActor(phase?: TimelineEvent["groupPhase"], fallback = "SystemMonitor") {
+	if (phase === "planning" || phase === "final") return "CoordinatorAgent";
+	if (phase === "modeling") return "ModelerAgent";
+	if (phase === "coding") return "CoderAgent";
+	if (phase === "writing") return "WriterAgent";
+	if (phase === "question") return "SubCoordinatorAgent";
+	return fallback;
+}
+
 function makeGroupEvent(key: string, ev: TimelineEvent): TimelineEvent {
-	const isWriting = key === "writing-parallel";
+	const phase = groupPhaseFromKey(key);
+	const isWriting = phase === "writing";
+	const isQuestion = phase === "question";
+	const actor = phaseActor(phase, ev.actor);
 	const group: TimelineEvent = {
-		id: `group-${key}`,
+		id: `group-${key}-${ev.id}`,
 		side: "left",
-		actor: isWriting ? "WriterAgent" : "SubCoordinatorAgent",
-		role: isWriting ? "并行写作" : "子问题组",
+		actor,
+		role: isQuestion ? "子问题组" : phaseLabel(phase),
 		type: "stage",
 		status: ev.status,
 		title: "",
 		detail: "",
 		timeLabel: ev.timeLabel,
 		questionIndex: ev.questionIndex,
-		badges: isWriting ? ["写作组"] : ev.questionIndex ? [`Q${ev.questionIndex}`, "子问题组"] : ["子问题组"],
+		badges: isQuestion ? (ev.questionIndex ? [`Q${ev.questionIndex}`, "子问题组"] : ["子问题组"]) : [phaseLabel(phase)],
 		artifacts: [],
 		debugCount: 0,
 		isGroup: true,
-		groupPhase: isWriting ? "writing" : "question",
+		groupPhase: phase,
 		groupEvents: [],
 		groupActors: [],
 	};
 	return group;
 }
 
-function updateGroup(group: TimelineEvent, ev: TimelineEvent) {
+function updateGroupProgressText(group: TimelineEvent, latestProgressText?: string) {
+	const pieces: string[] = [];
+	if (latestProgressText) pieces.push(`到这里 ${latestProgressText}`);
+	pieces.push(`${group.groupEvents?.length ?? 0} 条更新`);
+	if (group.debugCount) pieces.push(`累计 ${group.debugCount} 次改错 / 重试记录`);
+	group.progressText = pieces.join(" · ");
+}
+
+function updateGroup(group: TimelineEvent, ev: TimelineEvent, latestProgressText?: string) {
 	group.groupEvents = [...(group.groupEvents ?? []), ev];
 	group.groupActors = pushUnique(group.groupActors, [ev.actor]);
 	group.badges = pushUnique(group.badges, ev.badges ?? []);
@@ -488,27 +540,63 @@ function updateGroup(group: TimelineEvent, ev: TimelineEvent) {
 	const latest = group.groupEvents[group.groupEvents.length - 1];
 	const actors = group.groupActors.map((actor) => roleMap[actor] ?? actor).join(" / ");
 	group.detail = `${actors || group.role} 正在协同推进；当前步骤：${latest.title}`;
-	if (group.debugCount) group.progressText = `累计 ${group.debugCount} 次改错 / 重试记录`;
+	updateGroupProgressText(group, latestProgressText);
+}
+
+function taskCompletedForDisplay() {
+	return /论文生成完成|任务处理完成|完成终稿整体检查/.test(allMessageText.value) || props.taskStatus === "completed";
+}
+
+function taskStoppedForDisplay() {
+	return /任务执行失败|任务已停止|已中断/.test(allMessageText.value) || ["failed", "stopped", "interrupted"].includes(props.taskStatus);
+}
+
+function normalizeDisplayStatus(status: TimelineEvent["status"]) {
+	if (taskCompletedForDisplay() && status !== "warning" && status !== "error") return "done";
+	if (taskStoppedForDisplay() && (status === "running" || status === "waiting")) return "warning";
+	return status;
+}
+
+function normalizeDisplayEvent(ev: TimelineEvent): TimelineEvent {
+	const normalized: TimelineEvent = {
+		...ev,
+		status: normalizeDisplayStatus(ev.status),
+	};
+	if (ev.groupEvents?.length) {
+		normalized.groupEvents = ev.groupEvents.map(normalizeDisplayEvent);
+	}
+	return normalized;
 }
 
 const displayEvents = computed(() => {
 	const out: TimelineEvent[] = [];
-	const groups = new Map<string, TimelineEvent>();
+	const groupMap = new Map<string, TimelineEvent>();
+	let latestProgressText: string | undefined;
 	for (const ev of timelineEvents.value) {
+		if (ev.type === "progress") {
+			latestProgressText = ev.progressText ?? latestProgressText;
+			for (const group of groupMap.values()) {
+				updateGroupProgressText(group, latestProgressText);
+			}
+			out.push(ev);
+			continue;
+		}
+
 		const key = groupKeyOf(ev);
 		if (!key) {
 			out.push(ev);
 			continue;
 		}
-		let group = groups.get(key);
-		if (!group) {
-			group = makeGroupEvent(key, ev);
-			groups.set(key, group);
+		if (groupMap.has(key)) {
+			updateGroup(groupMap.get(key)!, ev, latestProgressText);
+		} else {
+			const group = makeGroupEvent(key, ev);
+			groupMap.set(key, group);
 			out.push(group);
+			updateGroup(group, ev, latestProgressText);
 		}
-		updateGroup(group, ev);
 	}
-	return out;
+	return out.map(normalizeDisplayEvent);
 });
 
 const hasQuestionWait = computed(() => allMessageText.value.includes("等待用户确认问题划分"));
@@ -735,10 +823,10 @@ watch(displayEvents, () => {
 						<div v-if="ev.groupEvents?.length" class="mt-3 rounded-2xl border border-slate-200/70 bg-white/55 p-2 shadow-inner">
 							<div class="mb-2 flex items-center justify-between gap-2">
 								<span class="text-[11px] font-bold text-slate-600">组内进度</span>
-								<span class="text-[10px] text-slate-400">{{ ev.groupEvents.length }} 条更新合并显示</span>
+								<span class="text-[10px] text-slate-400">{{ ev.groupEvents.length }} 条更新</span>
 							</div>
 							<div class="space-y-1.5">
-								<div v-for="sub in ev.groupEvents.slice(-7)" :key="sub.id" class="rounded-xl border px-2.5 py-1.5 text-[11px]" :class="groupSubStatusClass(sub.status)">
+								<div v-for="sub in ev.groupEvents" :key="sub.id" class="rounded-xl border px-2.5 py-1.5 text-[11px]" :class="groupSubStatusClass(sub.status)">
 									<div class="flex items-center justify-between gap-2">
 										<span class="min-w-0 truncate font-semibold">{{ sub.actor }} · {{ sub.title }}</span>
 										<span class="shrink-0 opacity-60">{{ sub.timeLabel }}</span>

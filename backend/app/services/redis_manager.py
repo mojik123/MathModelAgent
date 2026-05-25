@@ -154,9 +154,11 @@ class RedisManager:
             message_data = message.model_dump()
             msg_type = message_data.get("msg_type")
             stream_state = message_data.get("stream_state")
-            if msg_type == "agent" and stream_state == "streaming":
+            if msg_type == "agent":
                 agent_instance_id = message_data.get("agent_instance_id")
                 agent_type = message_data.get("agent_type")
+                if stream_state != "streaming" and not stream_state:
+                    message_data["stream_state"] = "complete"
                 replaced = False
                 for i in range(len(messages) - 1, -1, -1):
                     existing = messages[i]

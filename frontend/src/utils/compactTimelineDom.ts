@@ -170,7 +170,7 @@ function isImportantCard(text: string) {
 }
 
 function isTerminalCard(text: string) {
-	return /已确认|已完成|完成|成功|失败|错误|任务执行失败|论文终稿完成/.test(text);
+	return /100%|已确认|已完成|完成|成功|失败|错误|任务执行失败|任务已完成|论文终稿完成|论文生成完成/.test(text);
 }
 
 function isActiveProgressCard(row: HTMLElement) {
@@ -290,7 +290,8 @@ function compactLiveProgressRows(rows: HTMLElement[]) {
 }
 
 function decorateRunningRows(rows: HTMLElement[]) {
-	const visibleActiveRows = rows.filter((row) => row.getAttribute("data-compact-live-progress-hidden") !== "true" && isActiveProgressCard(row));
+	const timelineDone = rows.some((row) => /100%|任务已完成|论文终稿完成|论文生成完成|任务处理完成/.test(textOf(row)));
+	const visibleActiveRows = timelineDone ? [] : rows.filter((row) => row.getAttribute("data-compact-live-progress-hidden") !== "true" && isActiveProgressCard(row));
 	const latestActive = visibleActiveRows.at(-1) || null;
 	const desired = new Map<HTMLElement, "running" | "stale" | "none">();
 	for (const row of rows) {

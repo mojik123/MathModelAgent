@@ -1,5 +1,5 @@
 # 使用官方推荐的 Python 基础镜像
-ARG PYTHON_IMAGE=dockerproxy.com/library/python:3.12-slim
+ARG PYTHON_IMAGE=python:3.12-slim
 FROM ${PYTHON_IMAGE} AS builder
 
 ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
@@ -8,7 +8,10 @@ ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
     UV_LINK_MODE=copy
 
 # 安装中文字体和 LaTeX PDF 编译环境（用于生成数学建模论文 PDF）
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 使用阿里云镜像加速 apt，解决国内访问 deb.debian.org 超时问题
+RUN sed -i 's|http://deb.debian.org/debian|http://mirrors.aliyun.com/debian|g' /etc/apt/sources.list.d/debian.sources \
+    && sed -i 's|http://security.debian.org/debian-security|http://mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-cjk fonts-wqy-microhei \
     texlive-xetex \
     texlive-latex-recommended \

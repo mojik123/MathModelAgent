@@ -380,8 +380,65 @@ export const useTaskStore = defineStore("task", () => {
 		);
 	}
 
+	function isStreamingAgentMessage(message: Message): message is AgentMessage {
+		return (
+			message.msg_type === "agent" &&
+			(message as AgentMessage).stream_state === "streaming"
+		);
+	}
+
+	function isFinalAgentMessage(message: Message): message is AgentMessage {
+		return (
+			message.msg_type === "agent" &&
+			(message as AgentMessage).stream_state !== "streaming"
+		);
+	}
+
+	function markAgentComplete(message: AgentMessage): AgentMessage {
+		return {
+			...message,
+			stream_state: message.stream_state ?? "complete",
+		};
+	}
+
+	function coalesceAgentStreamMessages(items: Message[]) {
+		const result: Message[] = [];
+		const streamingIndexByKey = new Map<string, number>();
+
+		for (const message of sortMessages(items)) {
+			if (!isStreamingAgentMessage(message) && !isFinalAgentMessage(message)) {
+				result.push(message);
+				continue;
+			}
+
+			const key = getAgentStreamKey(message);
+			const streamingIndex = streamingIndexByKey.get(key);
+
+			if (isStreamingAgentMessage(message)) {
+				if (streamingIndex != null) {
+					result[streamingIndex] = message;
+				} else {
+					streamingIndexByKey.set(key, result.length);
+					result.push(message);
+				}
+				continue;
+			}
+
+			const completed = markAgentComplete(message);
+			if (streamingIndex != null) {
+				result[streamingIndex] = completed;
+				streamingIndexByKey.delete(key);
+			} else {
+				result.push(completed);
+			}
+		}
+
+		return result;
+	}
+
 	function appendMessage(taskId: string, message: Message) {
 		ensureTaskBucket(taskId);
+		const seenIds = seenMessageIdsByTask.get(taskId);
 
 		if (message.msg_type === "agent" && "stream_state" in message) {
 			const agentMsg = message as AgentMessage;
@@ -407,7 +464,24 @@ export const useTaskStore = defineStore("task", () => {
 			}
 		}
 
-		const seenIds = seenMessageIdsByTask.get(taskId);
+		if (isFinalAgentMessage(message)) {
+			const bucket = messagesByTask.value[taskId];
+			const key = getAgentStreamKey(message);
+			for (let i = bucket.length - 1; i >= 0; i--) {
+				const existing = bucket[i];
+				if (
+					isStreamingAgentMessage(existing) &&
+					getAgentStreamKey(existing) === key
+				) {
+					bucket[i] = markAgentComplete(message);
+					if (message.id) seenIds?.add(message.id);
+					messagesByTask.value[taskId] = sortMessages([...bucket]);
+					applyTerminalSystemMessage(taskId, message);
+					return;
+				}
+			}
+		}
+
 		if (message.id && seenIds?.has(message.id)) {
 			messagesByTask.value[taskId] = sortMessages(
 				messagesByTask.value[taskId].map((existing) =>
@@ -439,7 +513,9 @@ export const useTaskStore = defineStore("task", () => {
 			mergedById.set(message.id, message);
 		}
 
-		const mergedMessages = Array.from(mergedById.values());
+		const mergedMessages = coalesceAgentStreamMessages(
+			Array.from(mergedById.values()),
+		);
 		messagesByTask.value[taskId] = sortMessages(mergedMessages);
 		seenMessageIdsByTask.set(
 			taskId,

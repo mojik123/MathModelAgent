@@ -1,4 +1,4 @@
-ARG NODE_IMAGE=dockerproxy.com/library/node:20-alpine
+ARG NODE_IMAGE=node:20-alpine
 FROM ${NODE_IMAGE}
 
 WORKDIR /app
