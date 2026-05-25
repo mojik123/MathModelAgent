@@ -221,7 +221,15 @@ class Flows:
             q_question = str(self.questions.get(qkey, ""))
             modeler_section = ""
             if q_solution:
-                modeler_section = f"\n\n【建模手的数学建模方案】\n{q_solution}\n请在论文中充分体现上述建模方案的数学原理、模型选择理由和方法论。\n"
+                modeler_section = (
+                    f"\n\n【建模手的深度调研成果与建模方案】\n{q_solution}\n"
+                    "上述方案是建模手经过系统性文献调研和头脑风暴后产出的成果，包含：\n"
+                    "- 文献调研综述和前沿方法分析\n"
+                    "- 模型选择的理论依据和文献支撑\n"
+                    "- 详细的数学原理、公式推导和约束条件\n"
+                    "- 参考文献列表\n"
+                    "请在论文中充分体现上述内容，将建模手提供的文献引用转化为正式脚注格式。\n"
+                )
 
             quesx_writer_prompt[qkey] = f"""
 问题背景：{bgc}
@@ -242,12 +250,15 @@ class Flows:
         modeler_eda_solution = modeler_solutions.get("eda", "")
         eda_modeler_section = ""
         if modeler_eda_solution:
-            eda_modeler_section = f"\n\n【建模手的 EDA 方案】\n{modeler_eda_solution}\n"
+            eda_modeler_section = f"\n\n【建模手的 EDA 调研方案】\n{modeler_eda_solution}\n"
 
         modeler_sa_solution = modeler_solutions.get("sensitivity_analysis", "")
         sa_modeler_section = ""
         if modeler_sa_solution:
-            sa_modeler_section = f"\n\n【建模手的灵敏度分析方案】\n{modeler_sa_solution}\n请在论文中体现分析方法的选择理由和数学原理。\n"
+            sa_modeler_section = (
+                f"\n\n【建模手的灵敏度分析调研方案】\n{modeler_sa_solution}\n"
+                "请在论文中体现分析方法的选择理由、数学原理，并引用建模手提供的相关文献。\n"
+            )
 
         writer_prompt = {
             "eda": f"""

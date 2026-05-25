@@ -101,7 +101,7 @@ class ModelerAgent(Agent):
             logger.info("建模手调用工具: search_papers")
             await redis_manager.publish_message(
                 self.task_id,
-                SystemMessage(content="建模手正在检索相关学术文献..."),
+                SystemMessage(content="建模手正在系统性检索学术文献（深度调研模式）..."),
             )
 
             try:
@@ -158,12 +158,12 @@ class ModelerAgent(Agent):
         attempt = 0
         await redis_manager.publish_message(
             self.task_id,
-            SystemMessage(content="建模手正在分析问题、选择模型和制定方案..."),
+            SystemMessage(content="建模手正在进行深度调研：问题分析 → 文献检索 → 头脑风暴 → 方案制定..."),
         )
 
         # 第一轮：允许工具调用（搜索文献）
         tools = modeler_tools if self.scholar else None
-        max_tool_rounds = 3  # 最多允许 3 轮工具调用
+        max_tool_rounds = 6  # 最多允许 6 轮工具调用，支持深度系统性文献调研
 
         while True:
             response = await self._chat(
@@ -185,14 +185,28 @@ class ModelerAgent(Agent):
                     await self.append_chat_history(
                         {
                             "role": "user",
-                            "content": "文献检索已完成。请不要再调用工具，直接输出最终的 JSON 格式建模方案。在方案中引用检索到的文献。",
+                            "content": (
+                                "系统性文献调研已完成。请基于所有检索到的文献，进行头脑风暴和方案综合，"
+                                "直接输出最终的 JSON 格式建模方案。\n"
+                                "要求：\n"
+                                "1. 每个问题的方案中必须引用检索到的相关文献\n"
+                                "2. 基于文献说明模型选择的理论依据\n"
+                                "3. 详细描述数学原理和公式，供下游写作手直接引用\n"
+                                "4. 每个问题末尾汇总该问题的参考文献列表"
+                            ),
                         }
                     )
                 else:
                     await self.append_chat_history(
                         {
                             "role": "user",
-                            "content": "文献检索结果已返回。你可以继续搜索其他问题的相关文献，或者直接输出最终 JSON 格式建模方案。",
+                            "content": (
+                                "文献检索结果已返回。请继续深度调研：\n"
+                                "- 还有哪些问题没有搜索相关文献？请继续搜索\n"
+                                "- 是否需要搜索方法的改进变体或前沿应用？\n"
+                                "- 是否需要搜索方法组合的创新案例？\n"
+                                "如果所有问题都已充分调研，可以直接输出最终 JSON 格式建模方案。"
+                            ),
                         }
                     )
                 continue
@@ -204,7 +218,7 @@ class ModelerAgent(Agent):
                 ic(questions_solution)
                 await redis_manager.publish_message(
                     self.task_id,
-                    SystemMessage(content="建模手分析完成，方案已生成"),
+                    SystemMessage(content="建模手深度调研完成，前沿建模方案已生成（含文献支撑）"),
                 )
                 return ModelerToCoder(questions_solution=questions_solution)
 
