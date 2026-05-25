@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 from app.routers import (
     modeling_reference_router,
+    openalex_test_router,
     modeling_router,
     ws_router,
     common_router,
@@ -40,6 +41,7 @@ app = FastAPI(
 
 # Enhanced routes must be registered before the legacy modeling router because
 # FastAPI resolves duplicate path+method routes in registration order.
+app.include_router(openalex_test_router.router)
 app.include_router(modeling_reference_router.router)
 app.include_router(modeling_router.router)
 app.include_router(ws_router.router)
