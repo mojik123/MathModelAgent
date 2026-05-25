@@ -8,6 +8,7 @@ import { installArtifactEditChatDomPatch } from "@/utils/artifactEditChatDom";
 import { installCompactTimelineDomPatch } from "@/utils/compactTimelineDom";
 import { installChatArtifactLinkDomPatch } from "@/utils/chatArtifactLinkDom";
 import { installImageGalleryTitleDomPatch } from "@/utils/imageGalleryTitleDom";
+import { installModelingDiscussionSync } from "@/utils/modelingDiscussionSync";
 
 const pinia = createPinia();
 pinia.use(piniaPluginPersistedstate);
@@ -21,3 +22,4 @@ installArtifactEditChatDomPatch();
 installCompactTimelineDomPatch();
 installChatArtifactLinkDomPatch();
 installImageGalleryTitleDomPatch();
+installModelingDiscussionSync();
