@@ -22,6 +22,9 @@ import { resolveTaskImageUrl } from "@/utils/markdown";
 import type { InterpreterMessage } from "@/utils/response";
 import {
 	CheckCircle2,
+	ChevronDown,
+	ChevronRight,
+	Folder,
 	ImageIcon,
 	ListTree,
 	PanelLeftClose,
@@ -88,6 +91,7 @@ const { openPreview } = useFilePreview();
 const showToc = ref(true);
 const activeImageId = ref<string>("");
 const hoveredImageId = ref<string>("");
+const expandedImageSections = ref<Set<string>>(new Set());
 const imageTocScrollHost = ref<HTMLElement | null>(null);
 const imageScrollHost = ref<HTMLElement | null>(null);
 const revisionStates = ref<Record<string, RevisionState>>({});
@@ -131,6 +135,22 @@ const sectionGroups = computed(() => {
 const currentImageRevision = computed(() =>
 	activeImage.value ? revisionStates.value[activeImage.value.filename] : null,
 );
+
+function imageSectionKey(dir: string) {
+	return dir || "__root__";
+}
+
+function isImageSectionExpanded(dir: string) {
+	return expandedImageSections.value.has(imageSectionKey(dir));
+}
+
+function toggleImageSection(dir: string) {
+	const key = imageSectionKey(dir);
+	const next = new Set(expandedImageSections.value);
+	if (next.has(key)) next.delete(key);
+	else next.add(key);
+	expandedImageSections.value = next;
+}
 
 function getRevisionMemoryKey() {
 	return `image-revision-memory:${taskId.value}`;
@@ -695,6 +715,7 @@ watch(
 watch(
 	() => taskId.value,
 	() => {
+		expandedImageSections.value = new Set();
 		restoreRevisionMemory();
 		if (activeImage.value) {
 			chatMessages.value = [
@@ -718,13 +739,25 @@ watch(
       <div ref="imageTocScrollHost" class="image-toc-scroll h-[calc(100%-45px)] overflow-y-auto overflow-x-hidden">
         <div class="p-2">
           <template v-for="[dir, groupImages] in sectionGroups" :key="`toc-sec-${dir}`">
-            <div v-if="dir" class="mt-2 mb-1 px-2 text-[11px] font-semibold text-slate-400 uppercase tracking-wide">{{ sectionLabel(dir) }}</div>
             <button
+              type="button"
+              class="mb-1 mt-1 flex w-full items-center gap-1.5 rounded px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600 transition-colors hover:bg-white hover:text-blue-700"
+              :aria-expanded="isImageSectionExpanded(dir)"
+              @click="toggleImageSection(dir)"
+            >
+              <ChevronDown v-if="isImageSectionExpanded(dir)" class="h-3.5 w-3.5 shrink-0 text-slate-400" />
+              <ChevronRight v-else class="h-3.5 w-3.5 shrink-0 text-slate-400" />
+              <Folder class="h-3.5 w-3.5 shrink-0 text-blue-500" />
+              <span class="min-w-0 flex-1 truncate">{{ sectionLabel(dir) }}</span>
+              <span class="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500">{{ groupImages.length }}</span>
+            </button>
+            <button
+              v-show="isImageSectionExpanded(dir)"
               v-for="image in groupImages"
               :key="`toc-${image.filename}`"
               type="button"
               :data-image-id="imageDomId(image.filename)"
-              class="image-toc-item block w-full rounded px-2 py-1.5 text-left text-xs leading-5 transition-colors"
+              class="image-toc-item block w-full rounded py-1.5 pl-8 pr-2 text-left text-xs leading-5 transition-colors"
               :class="activeImageId === image.filename ? 'image-toc-item-active bg-blue-100 text-blue-700 ring-1 ring-blue-200' : hoveredImageId === image.filename ? 'bg-blue-50/80 text-blue-600 ring-1 ring-blue-300/50' : 'text-slate-600 hover:bg-white hover:text-blue-600'"
               @click="scrollToImage(image.filename)"
             >{{ image.title }}</button>

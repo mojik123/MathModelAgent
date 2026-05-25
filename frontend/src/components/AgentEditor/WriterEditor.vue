@@ -630,10 +630,10 @@ function injectPaperToc() {
 		line.dataset.tocTarget = targetId;
 		line.setAttribute("role", "button");
 		line.tabIndex = 0;
-		line.style.margin = "0.2rem 0";
+		line.style.margin = "0";
 		line.style.textIndent = "0";
 		line.style.fontSize = "12pt";
-		line.style.lineHeight = "1.8";
+		line.style.lineHeight = "23pt";
 		if (indent) line.appendChild(document.createTextNode(indent));
 		if (level === 1) {
 			const bold = document.createElement("b");
@@ -1914,52 +1914,84 @@ watch(
 <style scoped>
 @import 'katex/dist/katex.min.css';
 
-/* ---- 论文预览（中文学术排版规范） ----
-   论文题目/一级标题: 黑体 四号(14pt) 居中
-   二级标题: 黑体 小四(12pt) 左对齐
-   正文: 宋体(中文) + Times New Roman(西文/数字) 小四(12pt)
-   段首缩进2字符, 多倍行距1.25
+/* ---- 论文预览（A4 中文学术论文排版） ----
+   页面: A4 纸面，四周 2.5cm 页边距
+   正文: 小四 12pt，中文宋体，英文/数字 Times New Roman，固定 23pt 行距
+   标题: 顶格左对齐，标题末尾不加标点；段前段后用 pt 控制
 ---- */
-.paper-preview { color: #000; }
+.paper-preview.glass-card {
+	box-sizing: border-box;
+	width: 210mm;
+	min-height: 297mm;
+	max-width: 100%;
+	margin: 0 auto;
+	padding: 25mm;
+	border: 1px solid rgba(15, 23, 42, 0.12);
+	border-radius: 4px;
+	background: #fff;
+	box-shadow: 0 16px 42px rgba(15, 23, 42, 0.10);
+	color: #000;
+	font-family: "Times New Roman", "SimSun", "宋体", serif;
+	font-size: 12pt;
+	line-height: 23pt;
+}
 
-/* 一级标题（论文题目 + 摘要/问题重述等章节标题）: 黑体 四号 居中 */
+/* 一级标题：三号黑体，顶格左对齐 */
 .paper-preview :deep(h1) {
-	margin: 1.5rem 0 1rem;
-	text-align: center;
+	margin: 14pt 0 6pt;
+	text-align: left;
+	font-family: "SimHei", "黑体", "Microsoft YaHei", "微软雅黑", sans-serif;
+	font-size: 16pt;
+	line-height: 23pt;
+	font-weight: 700;
+	color: #000;
+}
+.paper-preview :deep(h1:first-child) {
+	margin-top: 0;
+}
+
+/* 二级标题：四号黑体，顶格左对齐 */
+.paper-preview :deep(h2) {
+	margin: 12pt 0 4pt;
+	text-align: left;
 	font-family: "SimHei", "黑体", "Microsoft YaHei", "微软雅黑", sans-serif;
 	font-size: 14pt;
+	line-height: 23pt;
 	font-weight: 700;
 	color: #000;
 }
 
-/* 二级标题（2.1 模型假设等）: 黑体 小四 左对齐 */
-.paper-preview :deep(h2) {
-	margin: 1.25rem 0 0.75rem;
-	text-align: left;
-	font-family: "SimHei", "黑体", "Microsoft YaHei", "微软雅黑", sans-serif;
-	font-size: 12pt;
-	font-weight: 700;
-	color: #000;
-}
-
-/* 三级标题 */
+/* 三级标题：小四黑体，顶格左对齐 */
 .paper-preview :deep(h3) {
-	margin: 1rem 0 0.5rem;
+	margin: 8pt 0 3pt;
 	text-align: left;
 	font-family: "SimHei", "黑体", "Microsoft YaHei", "微软雅黑", sans-serif;
 	font-size: 12pt;
+	line-height: 23pt;
 	font-weight: 700;
 	color: #000;
 }
 
-/* 正文: 宋体 + Times New Roman, 小四(12pt), 首行缩进2字符, 多倍行距1.25 */
+/* 四级标题：小四宋体加粗，顶格左对齐 */
+.paper-preview :deep(h4) {
+	margin: 6pt 0 2pt;
+	text-align: left;
+	font-family: "Times New Roman", "SimSun", "宋体", serif;
+	font-size: 12pt;
+	line-height: 23pt;
+	font-weight: 700;
+	color: #000;
+}
+
+/* 正文：首行缩进 2 字符，两端对齐，段前段后 0 */
 .paper-preview :deep(p) {
 	margin: 0;
 	padding: 0;
 	text-indent: 2em;
-	line-height: 1.5;
 	font-family: "Times New Roman", "SimSun", "宋体", serif;
 	font-size: 12pt;
+	line-height: 23pt;
+	text-align: justify;
 	color: #000;
 }
 
@@ -1971,11 +2003,16 @@ watch(
 
 /* 目录（自动生成） */
 .paper-preview :deep(.paper-toc-content) {
-	margin: 1rem 0;
-	padding: 0.5rem 1rem;
+	margin: 0 0 12pt;
+	padding: 0;
 }
 .paper-preview :deep(.toc-line) {
+	margin: 0 !important;
+	text-indent: 0 !important;
 	font-family: "Times New Roman", "SimSun", "宋体", serif !important;
+	font-size: 12pt !important;
+	line-height: 23pt !important;
+	text-align: left;
 	cursor: pointer;
 	border-radius: 0.25rem;
 	transition: background-color 0.16s ease, color 0.16s ease;
@@ -1993,18 +2030,21 @@ watch(
 
 /* 列表 */
 .paper-preview :deep(ul), .paper-preview :deep(ol) {
-	margin: 0.5rem 0;
+	margin: 0 0 6pt;
 	padding-left: 2em;
 	font-family: "Times New Roman", "SimSun", "宋体", serif;
 	font-size: 12pt;
-	line-height: 1.5;
+	line-height: 23pt;
 }
 .paper-preview :deep(ul) { list-style: disc; }
 .paper-preview :deep(ol) { list-style: decimal; }
-.paper-preview :deep(li) { margin: 0.15rem 0; }
+.paper-preview :deep(li) {
+	margin: 0;
+	line-height: 23pt;
+}
 
 /* 表格 — 三线表风格 */
-.paper-preview :deep(.markdown-table-wrapper) { margin: 1rem 0; overflow-x: auto; }
+.paper-preview :deep(.markdown-table-wrapper) { margin: 8pt 0 10pt; overflow-x: auto; }
 .paper-preview :deep(table) {
 	margin: 0 auto;
 	width: 100%;
@@ -2016,7 +2056,7 @@ watch(
 	padding: 0.3rem 0.5rem;
 	font-family: "Times New Roman", "SimSun", "宋体", serif;
 	font-size: 10.5pt;
-	line-height: 1.3;
+	line-height: 18pt;
 	text-align: center;
 }
 .paper-preview :deep(thead) {
@@ -2038,24 +2078,26 @@ watch(
 	text-align: center;
 	font-family: "SimHei", "黑体", "Microsoft YaHei", sans-serif;
 	font-size: 10.5pt;
+	line-height: 18pt;
 	font-weight: 700;
-	margin-bottom: 0.35rem;
+	margin-bottom: 4pt;
 }
 
 /* figure 图片容器 */
-.paper-preview :deep(figure) { margin: 0.75rem 0; text-align: center; }
+.paper-preview :deep(figure) { margin: 8pt 0 10pt; text-align: center; }
 .paper-preview :deep(figcaption) {
-	margin-top: 0.35rem;
+	margin-top: 4pt;
 	text-align: center;
 	font-family: "SimHei", "黑体", "Microsoft YaHei", sans-serif;
 	font-size: 10.5pt;
+	line-height: 18pt;
 	font-weight: 600;
 	text-indent: 0;
 }
 
 /* 图片 */
 .paper-preview :deep(img) {
-	margin: 0.5rem auto;
+	margin: 6pt auto;
 	max-width: 100%;
 	display: block;
 	cursor: pointer;
@@ -2064,10 +2106,23 @@ watch(
 }
 
 /* 公式块 */
-.paper-preview :deep(.math-block), .paper-preview :deep(.katex-display) { overflow-x: auto; text-align: center; }
+.paper-preview :deep(.math-block), .paper-preview :deep(.katex-display) {
+	margin: 6pt 0;
+	overflow-x: auto;
+	text-align: center;
+	line-height: 18pt;
+}
 
 /* 代码块 */
-.paper-preview :deep(pre) { overflow: auto; border-radius: 0.25rem; background: rgba(248, 250, 252, 0.88); padding: 0.75rem; }
+.paper-preview :deep(pre) {
+	margin: 6pt 0;
+	overflow: auto;
+	border-radius: 0.25rem;
+	background: rgba(248, 250, 252, 0.88);
+	padding: 8pt;
+	font-size: 10.5pt;
+	line-height: 16pt;
+}
 
 /* ---- 图片悬停 / 选中 ---- */
 .paper-preview :deep(img.image-hovered) {
@@ -2148,6 +2203,14 @@ watch(
 	box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.8);
 	border-radius: 1rem;
 	padding: 0.5rem 0;
+}
+
+@media (max-width: 900px) {
+	.paper-preview.glass-card {
+		width: 100%;
+		min-height: auto;
+		padding: 18mm 12mm;
+	}
 }
 
 /* ---- 修改按钮（Teleport，用 :global） ---- */

@@ -10,6 +10,7 @@ import ImageGallery from "@/components/AgentEditor/ImageGallery.vue";
 import ModelerEditor from "@/components/AgentEditor/ModelerEditor.vue";
 import WriterEditor from "@/components/AgentEditor/WriterEditor.vue";
 import ChatArea from "@/components/ChatArea.vue";
+import SimpleChat from "@/components/SimpleChat.vue";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -45,9 +46,12 @@ import {
 	FileText,
 	Folder,
 	FolderOpen,
+	LayoutDashboard,
+	PanelRight,
 	Plus,
 	RefreshCw,
 	ScrollText,
+	Terminal,
 } from "lucide-vue-next";
 import {
 	computed,
@@ -117,6 +121,30 @@ const terminalRuntimeStatuses = new Set([
 	"interrupted",
 ]);
 const activeTab = ref<"modeler" | "writer" | "images" | "code">("modeler");
+
+// ---- 视图模式 ----
+
+const viewMode = ref<"detailed" | "simple">(
+	(typeof window !== "undefined" &&
+		(window.localStorage.getItem("task-view-mode") as "detailed" | "simple")) ||
+		"detailed",
+);
+const rightPanelOpen = ref(false);
+
+const rightPanelVisible = computed(
+	() => viewMode.value === "detailed" || rightPanelOpen.value,
+);
+
+function toggleViewMode() {
+	const next = viewMode.value === "detailed" ? "simple" : "detailed";
+	viewMode.value = next;
+	if (typeof window !== "undefined") {
+		window.localStorage.setItem("task-view-mode", next);
+	}
+	if (next === "simple") {
+		rightPanelOpen.value = false;
+	}
+}
 
 // ---- 子任务进度追踪 ----
 
@@ -994,8 +1022,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="fixed inset-0">
-    <ResizablePanelGroup direction="horizontal" class="h-full rounded-lg border">
-      <ResizablePanel :default-size="36" class="h-full min-w-[320px]">
+    <ResizablePanelGroup :key="rightPanelVisible ? 'split' : 'full'" direction="horizontal" class="h-full rounded-lg border">
+      <ResizablePanel :default-size="rightPanelVisible ? 36 : 100" class="h-full" :class="rightPanelVisible ? 'min-w-[320px]' : ''">
         <div class="flex h-full flex-col border-r border-white/20 glass-left-panel">
           <div class="border-b border-white/20 px-4 py-2 space-y-2 glass-header">
             <div class="flex items-center justify-between gap-3">
@@ -1038,6 +1066,26 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <div class="flex shrink-0 items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="h-8 w-8"
+                  :title="viewMode === 'simple' ? '切换到详细视图' : '切换到简洁视图'"
+                  @click="toggleViewMode"
+                >
+                  <Terminal v-if="viewMode === 'detailed'" class="h-4 w-4" />
+                  <LayoutDashboard v-else class="h-4 w-4" />
+                </Button>
+                <Button
+                  v-if="viewMode === 'simple'"
+                  variant="ghost"
+                  size="icon"
+                  class="h-8 w-8"
+                  :title="rightPanelOpen ? '隐藏侧边栏' : '展开侧边栏'"
+                  @click="rightPanelOpen = !rightPanelOpen"
+                >
+                  <PanelRight class="h-4 w-4" />
+                </Button>
                 <Button v-if="runtimeStatus === 'stopping'" variant="destructive" disabled>
                   停止中...
                 </Button>
@@ -1148,7 +1196,17 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- Agent 对话流：问题划分与建模方案确认均嵌入对话气泡 -->
+          <SimpleChat
+            v-if="viewMode === 'simple'"
+            class="flex-1 min-h-0"
+            :messages="taskStore.messages"
+            :task-status="taskStore.taskStatus"
+            :taskId="props.task_id"
+            @question-confirm="onQuestionConfirmed"
+            @modeling-confirm="onModelingConfirmed"
+          />
           <ChatArea
+            v-else
             class="flex-1 min-h-0"
             :messages="taskStore.messages"
             :task-status="taskStore.taskStatus"
@@ -1159,40 +1217,42 @@ onBeforeUnmount(() => {
         </div>
       </ResizablePanel>
 
-      <ResizableHandle />
+      <template v-if="rightPanelVisible">
+        <ResizableHandle />
 
-      <ResizablePanel :default-size="64" class="h-full">
-        <Tabs v-model="activeTab" class="flex h-full flex-col">
-          <div class="flex items-center justify-between border-b border-white/20 bg-white/50 px-3 py-1.5">
-            <TabsList class="h-8">
-              <TabsTrigger value="modeler" class="text-xs">
-                {{ questionDiscussionAvailable && !questionDiscussionLocked ? "原始题目" : "建模方案" }}
-              </TabsTrigger>
-              <TabsTrigger value="writer" class="text-xs">论文预览</TabsTrigger>
-              <TabsTrigger value="images" class="text-xs">图片</TabsTrigger>
-              <TabsTrigger value="code" class="text-xs">代码</TabsTrigger>
-            </TabsList>
-          </div>
-          <div class="min-h-0 flex-1">
-            <TabsContent value="modeler" class="h-full m-0 p-0">
-              <ModelerEditor :task_id="props.task_id" />
-            </TabsContent>
-            <TabsContent value="writer" class="h-full m-0 p-0">
-              <WriterEditor
-                :messages="taskStore.writerMessages"
-                :writer-sequence="writerSequence"
-                :refresh-key="paperRefreshKey"
-              />
-            </TabsContent>
-            <TabsContent value="images" class="h-full m-0 p-0 overflow-y-auto">
-              <ImageGallery :task_id="props.task_id" :refresh-key="galleryRefreshKey" />
-            </TabsContent>
-            <TabsContent value="code" class="h-full m-0 p-0 overflow-y-auto">
-              <CodeGallery :task_id="props.task_id" :refresh-key="galleryRefreshKey" />
-            </TabsContent>
-          </div>
-        </Tabs>
-      </ResizablePanel>
+        <ResizablePanel :default-size="64" class="h-full">
+          <Tabs v-model="activeTab" class="flex h-full flex-col">
+            <div class="flex items-center justify-between border-b border-white/20 bg-white/50 px-3 py-1.5">
+              <TabsList class="h-8">
+                <TabsTrigger value="modeler" class="text-xs">
+                  {{ questionDiscussionAvailable && !questionDiscussionLocked ? "原始题目" : "建模方案" }}
+                </TabsTrigger>
+                <TabsTrigger value="writer" class="text-xs">论文预览</TabsTrigger>
+                <TabsTrigger value="images" class="text-xs">图片</TabsTrigger>
+                <TabsTrigger value="code" class="text-xs">代码</TabsTrigger>
+              </TabsList>
+            </div>
+            <div class="min-h-0 flex-1">
+              <TabsContent value="modeler" class="h-full m-0 p-0">
+                <ModelerEditor :task_id="props.task_id" />
+              </TabsContent>
+              <TabsContent value="writer" class="h-full m-0 p-0">
+                <WriterEditor
+                  :messages="taskStore.writerMessages"
+                  :writer-sequence="writerSequence"
+                  :refresh-key="paperRefreshKey"
+                />
+              </TabsContent>
+              <TabsContent value="images" class="h-full m-0 p-0 overflow-y-auto">
+                <ImageGallery :task_id="props.task_id" :refresh-key="galleryRefreshKey" />
+              </TabsContent>
+              <TabsContent value="code" class="h-full m-0 p-0 overflow-y-auto">
+                <CodeGallery :task_id="props.task_id" :refresh-key="galleryRefreshKey" />
+              </TabsContent>
+            </div>
+          </Tabs>
+        </ResizablePanel>
+      </template>
     </ResizablePanelGroup>
 
     <!-- 文件夹结构对话框 -->
