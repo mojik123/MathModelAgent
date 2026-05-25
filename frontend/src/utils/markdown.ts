@@ -15,10 +15,7 @@ const defaultOptions = {
 };
 
 const apiBaseUrl = () =>
-	(import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(
-		/\/$/,
-		"",
-	);
+	(import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 
 const renderMath = (tex: string, displayMode = false) => {
 	try {
@@ -48,10 +45,7 @@ export const resolveTaskImageUrl = (src: string, taskId?: string) => {
 	const staticMatch = normalized.match(/(?:^|\/)static\/+(.+)$/);
 	const afterStatic = staticMatch?.[1] ?? normalized;
 	const segments = afterStatic.split("/").filter(Boolean);
-	const filename =
-		segments.length > 1 && segments[0] === currentTaskId
-			? segments.slice(1).join("/")
-			: afterStatic;
+	const filename = segments.length > 1 && segments[0] === currentTaskId ? segments.slice(1).join("/") : afterStatic;
 
 	return `${apiBaseUrl()}/static/${currentTaskId}/${encodeURI(filename)}${suffix}`;
 };
@@ -73,63 +67,25 @@ const openMarkdownImagePreview = (src: string, alt: string) => {
 
 	const overlay = document.createElement("div");
 	overlay.id = IMAGE_PREVIEW_MODAL_ID;
-	overlay.style.cssText = [
-		"position:fixed",
-		"inset:0",
-		"z-index:9999",
-		"background:rgba(0,0,0,0.72)",
-		"display:flex",
-		"align-items:center",
-		"justify-content:center",
-		"padding:24px",
-		"box-sizing:border-box",
-	].join(";");
+	overlay.style.cssText = ["position:fixed", "inset:0", "z-index:9999", "background:rgba(0,0,0,0.72)", "display:flex", "align-items:center", "justify-content:center", "padding:24px", "box-sizing:border-box"].join(";");
 	const close = () => overlay.remove();
 	overlay.addEventListener("click", (event) => {
 		if (event.target === overlay) close();
 	});
 
 	const wrapper = document.createElement("div");
-	wrapper.style.cssText = [
-		"position:relative",
-		"max-width:92vw",
-		"max-height:92vh",
-		"display:flex",
-		"align-items:center",
-		"justify-content:center",
-	].join(";");
+	wrapper.style.cssText = ["position:relative", "max-width:92vw", "max-height:92vh", "display:flex", "align-items:center", "justify-content:center"].join(";");
 
 	const img = document.createElement("img");
 	img.src = src;
 	img.alt = alt;
-	img.style.cssText = [
-		"max-width:92vw",
-		"max-height:92vh",
-		"object-fit:contain",
-		"border-radius:12px",
-		"box-shadow:0 20px 60px rgba(0,0,0,0.45)",
-		"background:#fff",
-	].join(";");
+	img.style.cssText = ["max-width:92vw", "max-height:92vh", "object-fit:contain", "border-radius:12px", "box-shadow:0 20px 60px rgba(0,0,0,0.45)", "background:#fff"].join(";");
 
 	const button = document.createElement("button");
 	button.type = "button";
 	button.textContent = "×";
 	button.setAttribute("aria-label", "关闭图片预览");
-	button.style.cssText = [
-		"position:absolute",
-		"top:-12px",
-		"right:-12px",
-		"width:36px",
-		"height:36px",
-		"border:none",
-		"border-radius:999px",
-		"background:rgba(255,255,255,0.95)",
-		"color:#111",
-		"font-size:24px",
-		"line-height:36px",
-		"cursor:pointer",
-		"box-shadow:0 6px 18px rgba(0,0,0,0.25)",
-	].join(";");
+	button.style.cssText = ["position:absolute", "top:-12px", "right:-12px", "width:36px", "height:36px", "border:none", "border-radius:999px", "background:rgba(255,255,255,0.95)", "color:#111", "font-size:24px", "line-height:36px", "cursor:pointer", "box-shadow:0 6px 18px rgba(0,0,0,0.25)"].join(";");
 	button.addEventListener("click", close);
 
 	wrapper.appendChild(img);
@@ -143,23 +99,9 @@ export const normalizeMarkdownImageUrls = (
 	markdown: string,
 	taskId?: string,
 	imageVersion?: string | number,
-) =>
-	markdown.replace(
-		new RegExp(
-			`!\\[(.*?)\\]\\((.*?\\.(?:${IMAGE_EXTENSION_RE_FRAGMENT})(?:[?#][^)]+)?)\\)`,
-			"gi",
-		),
-		(_, alt, src) => `![${alt}](${withImageVersion(resolveTaskImageUrl(src, taskId), imageVersion)})`,
-	);
+) => markdown.replace(new RegExp(`!\\[(.*?)\\]\\((.*?\\.(?:${IMAGE_EXTENSION_RE_FRAGMENT})(?:[?#][^)]+)?)\\)`, "gi"), (_, alt, src) => `![${alt}](${withImageVersion(resolveTaskImageUrl(src, taskId), imageVersion)})`);
 
-const escapeHtml = (value: string) =>
-	value
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/\"/g, "&quot;")
-		.replace(/'/g, "&#39;");
-
+const escapeHtml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#39;");
 const hasChinese = (value: string) => /[\u4e00-\u9fff]/.test(value || "");
 
 const looksLikeFilename = (value: string) => {
@@ -200,23 +142,17 @@ const visibleImageCaption = (alt: string, src: string) => {
 	return raw;
 };
 
+const isTableCaptionText = (value: string) => /^\s*(?:\*\*)?表\s*\d+(?:\.\d+)?[\s　：:、].+?(?:\*\*)?\s*$/.test(value || "");
+const stripStrong = (value: string) => value.replace(/^\s*\*\*/, "").replace(/\*\*\s*$/, "").trim();
+
 const renderer: Partial<RendererObject> = {
 	heading(this: Renderer, token: { depth: number; text: string }) {
 		const tag = `h${Math.min(Math.max(token.depth, 1), 6)}`;
 		return `<${tag}>${marked.parseInline(token.text)}</${tag}>`;
 	},
-	table(
-		this: Renderer,
-		token: {
-			header: Array<string | { text: string }>;
-			rows: Array<Array<string | { text: string }>>;
-		},
-	) {
-		const cellText = (cell: string | { text: string }) =>
-			typeof cell === "string" ? cell : (cell.text ?? "");
-		const rows = token.rows
-			.map((row) => `<tr>${row.map((cell) => `<td>${marked.parseInline(cellText(cell))}</td>`).join("")}</tr>`)
-			.join("");
+	table(this: Renderer, token: { header: Array<string | { text: string }>; rows: Array<Array<string | { text: string }>> }) {
+		const cellText = (cell: string | { text: string }) => typeof cell === "string" ? cell : (cell.text ?? "");
+		const rows = token.rows.map((row) => `<tr>${row.map((cell) => `<td>${marked.parseInline(cellText(cell))}</td>`).join("")}</tr>`).join("");
 		const head = token.header.map((cell) => `<th>${marked.parseInline(cellText(cell))}</th>`).join("");
 		return `<div class="markdown-table-wrapper">
 			<table class="markdown-table">
@@ -227,6 +163,12 @@ const renderer: Partial<RendererObject> = {
 	},
 	paragraph(this: Renderer, token: { text: string }) {
 		let text = token.text;
+
+		if (isTableCaptionText(text)) {
+			const caption = escapeHtml(stripStrong(text));
+			return `<p class="markdown-table-caption" style="margin:0.75rem 0 0.35rem;text-align:center;font-size:0.95rem;font-weight:400;">${caption}</p>`;
+		}
+
 		const imagePattern = /!\[(.*?)\]\((.*?)\)/g;
 		const images: Array<[string, string, string]> = [];
 		let imageIndex = 0;
@@ -244,21 +186,12 @@ const renderer: Partial<RendererObject> = {
 			const caption = visibleImageCaption(rawAlt, src);
 			const safeAlt = escapeHtml(caption || rawAlt || "图片");
 			const safeSrc = escapeHtml(src);
-			const captionHtml = caption
-				? `<figcaption style="margin-top:0.5rem;text-align:center;font-size:0.95rem;font-weight:600;">${escapeHtml(caption)}</figcaption>`
-				: "";
+			const captionHtml = caption ? `<figcaption style="margin-top:0.5rem;text-align:center;font-size:0.95rem;font-weight:400;">${escapeHtml(caption)}</figcaption>` : "";
 			return `
 				<figure class="markdown-figure" style="margin:1.25rem 0;text-align:center;">
 					<span class="markdown-image-wrapper" style="position:relative;display:inline-block;max-width:100%;">
 						<img src="${safeSrc}" alt="${safeAlt}" class="max-w-full h-auto" style="display:block;" />
-						<button
-							type="button"
-							class="markdown-image-zoom-btn"
-							aria-label="放大预览图片"
-							data-src="${safeSrc}"
-							data-alt="${safeAlt}"
-							style="position:absolute;left:10px;bottom:10px;opacity:0;pointer-events:none;width:32px;height:32px;border:none;border-radius:999px;background:rgba(0,0,0,0.62);color:#fff;cursor:pointer;transition:opacity 0.2s ease;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,0.22);"
-						>⌕</button>
+						<button type="button" class="markdown-image-zoom-btn" aria-label="放大预览图片" data-src="${safeSrc}" data-alt="${safeAlt}" style="position:absolute;left:10px;bottom:10px;opacity:0;pointer-events:none;width:32px;height:32px;border:none;border-radius:999px;background:rgba(0,0,0,0.62);color:#fff;cursor:pointer;transition:opacity 0.2s ease;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,0.22);">⌕</button>
 					</span>
 					${captionHtml}
 				</figure>`;
@@ -307,13 +240,7 @@ const registerMarkdownImageHoverBehavior = () => {
 	});
 };
 
-export const renderMarkdown = async (
-	content: string,
-	options: Record<string, unknown> & {
-		taskId?: string;
-		imageVersion?: string | number;
-	} = {},
-) => {
+export const renderMarkdown = async (content: string, options: Record<string, unknown> & { taskId?: string; imageVersion?: string | number } = {}) => {
 	const { taskId, imageVersion, ...markedOptions } = options;
 	const normalized = normalizeMarkdownImageUrls(content, taskId, imageVersion)
 		.replace(/\\\[\s*\n/g, "\\[")
