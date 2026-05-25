@@ -14,6 +14,7 @@ import { installChatAgentDuplicateDomPatch } from "@/utils/chatAgentDuplicateDom
 import { installChatChoiceCardDomPatch } from "@/utils/chatChoiceCardDom";
 import { installPaperPreviewDomPatch } from "@/utils/paperPreviewDom";
 import { installArtifactSelectionChatDomPatch } from "@/utils/artifactSelectionChatDom";
+import { installPaperPreviewLayoutDomPatch } from "@/utils/paperPreviewLayoutDom";
 
 const pinia = createPinia();
 pinia.use(piniaPluginPersistedstate);
@@ -33,3 +34,4 @@ installChatAgentDuplicateDomPatch();
 installChatChoiceCardDomPatch();
 installPaperPreviewDomPatch();
 installArtifactSelectionChatDomPatch();
+installPaperPreviewLayoutDomPatch();
