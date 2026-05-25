@@ -3,8 +3,6 @@ services:
     image: redis:alpine
     container_name: mathmodelagent_redis
     command: redis-server --maxclients 10000 --timeout 300 --tcp-keepalive 60
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
 
@@ -45,8 +43,8 @@ services:
       - ./frontend/.env.development
     volumes:
       - ./frontend:/app
-      - /app/node_modules
-    command: ["pnpm", "exec", "vite", "--host", "0.0.0.0", "--port", "5174", "--strictPort"]
+      - frontend_node_modules:/app/node_modules
+    command: ["pnpm", "exec", "vite", "--host", "0.0.0.0", "--port", "5174", "--strictPort", "--no-open"]
     depends_on:
       - backend
     stdin_open: true
@@ -55,3 +53,4 @@ services:
 volumes:
   redis_data:
   backend_venv:
+  frontend_node_modules:
