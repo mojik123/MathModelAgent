@@ -32,6 +32,7 @@ interface StepItem {
 	id: string;
 	kind: "step" | "action" | "choice" | "error";
 	content: string;
+	verb?: string;
 	isStreaming: boolean;
 	isError: boolean;
 	choiceKind?: "question" | "modeling";
@@ -200,24 +201,48 @@ const displayItems = computed<StepItem[]>(() => {
 			continue;
 		}
 
-		// Tool → action (collapsible)
+		// Tool → action (collapsible, verb-labeled)
 		if (msg.msg_type === "tool") {
 			const toolMsg = msg as InterpreterMessage;
-			if (toolMsg.tool_name !== "execute_code") continue;
-			const codeInput = (toolMsg.input as { code?: string })?.code ?? "";
-			const codeOutput = formatCodeOutput(toolMsg.output);
-			const hasError = (toolMsg.output ?? []).some(
-				(o: { res_type: string }) => o?.res_type === "error",
-			);
-			items.push({
-				id: msg.id,
-				kind: "action",
-				content: toolMsg.description || "执行代码",
-				isStreaming: false,
-				isError: hasError,
-				codeInput,
-				codeOutput,
-			});
+			if (toolMsg.tool_name === "execute_code") {
+				const codeInput = (toolMsg.input as { code?: string })?.code ?? "";
+				const codeOutput = formatCodeOutput(toolMsg.output);
+				const hasError = (toolMsg.output ?? []).some(
+					(o: { res_type: string }) => o?.res_type === "error",
+				);
+				items.push({
+					id: msg.id,
+					kind: "action",
+					verb: "Ran",
+					content: toolMsg.description || "Python code",
+					isStreaming: false,
+					isError: hasError,
+					codeInput,
+					codeOutput,
+				});
+			} else if (toolMsg.tool_name === "search_papers") {
+				const query = (toolMsg.input as { query?: string })?.query ?? "";
+				const output = formatCodeOutput(toolMsg.output);
+				items.push({
+					id: msg.id,
+					kind: "action",
+					verb: "Searched",
+					content: query || "学术文献",
+					isStreaming: false,
+					isError: false,
+					codeOutput: output,
+				});
+			} else if (toolMsg.tool_name !== "task_complete") {
+				items.push({
+					id: msg.id,
+					kind: "action",
+					verb: "Used",
+					content: toolMsg.tool_name || toolMsg.description || "tool",
+					isStreaming: false,
+					isError: false,
+					codeOutput: formatCodeOutput(toolMsg.output),
+				});
+			}
 		}
 	}
 
@@ -329,6 +354,7 @@ function handleModelingConfirm() {
 							class="h-3.5 w-3.5 shrink-0 transition-transform"
 							:class="isExpanded(item.id) ? 'rotate-90' : ''"
 						/>
+						<span class="font-semibold">{{ item.verb || "Ran" }}</span>
 						<span>{{ item.content }}</span>
 						<span
 							v-if="item.isError"
