@@ -89,7 +89,6 @@ def looks_like_image_filename(text: str) -> bool:
         return True
     if "/" in s or "\\" in s:
         return True
-    # long snake_case / kebab-case visible label is almost always a filename-derived caption
     if not has_chinese(s) and re.search(r"[A-Za-z]", s) and re.search(r"[_\-]", s):
         return True
     return False
@@ -143,7 +142,6 @@ def _clean_common_english_labels(text: str) -> str:
     cleaned = text
     for en, cn in sorted(COMMON_EN_TO_CN.items(), key=lambda item: -len(item[0])):
         cleaned = re.sub(rf"\b{re.escape(en)}\b", cn, cleaned)
-    # clean visible English figure phrases outside paths; keep model abbreviations and formulas as much as possible
     cleaned = re.sub(r"\bAs illustrated in 图\s*([0-9.]+)\b", r"如图\1所示", cleaned)
     cleaned = re.sub(r"\b图\s*([0-9.]+)\s+shows that\b", r"图\1表明", cleaned, flags=re.I)
     cleaned = re.sub(r"\b图\s*([0-9.]+)\s+depicts that\b", r"图\1表明", cleaned, flags=re.I)
@@ -171,8 +169,6 @@ def clean_markdown_images(text: str) -> str:
         flags=re.I,
     )
 
-    # Remove filename-only lines immediately after images, because the renderer already
-    # uses alt text as the visible caption.
     lines = cleaned.splitlines()
     out: list[str] = []
     previous_nonempty_was_image = False
@@ -187,13 +183,24 @@ def clean_markdown_images(text: str) -> str:
     return "\n".join(out)
 
 
-def clean_chinese_paper_markdown(text: str) -> str:
-    """Clean visible paper text for Chinese-only presentation.
+def clean_duplicate_raw_math(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = text
+    cleaned = re.sub(r"\$\$([\s\S]*?)\$\$\s*\\\[\s*\1\s*\\\]", r"$$\1$$", cleaned)
+    cleaned = re.sub(r"\\\[([\s\S]*?)\\\]\s*\$\$\s*\1\s*\$\$", r"\[\1\]", cleaned)
+    cleaned = re.sub(
+        r"(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\])\s*\n\s*([A-Za-z_\\][^\n\u4e00-\u9fff]{8,})\s*(?=\n|$)",
+        r"\1\n",
+        cleaned,
+    )
+    return cleaned
 
-    File paths inside Markdown image links are preserved. Visible captions that look
-    like filenames are replaced by Chinese figure titles.
-    """
+
+def clean_chinese_paper_markdown(text: str) -> str:
+    """Clean visible paper text for Chinese-only presentation."""
     cleaned = text or ""
+    cleaned = clean_duplicate_raw_math(cleaned)
     cleaned = clean_markdown_images(cleaned)
     cleaned = _clean_common_english_labels(cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
