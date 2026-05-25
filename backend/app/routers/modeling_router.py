@@ -47,6 +47,8 @@ router = APIRouter()
 _active_tasks: Dict[str, dict] = {}
 TASK_CONFIG_FILENAME = "task_config.json"
 MODEL_OPTION_LIMIT = 4
+MODEL_OPTION_ATTEMPTS = 3
+MIN_MODEL_OPTIONS = 3
 MODEL_OPTIONS_CACHE_FILENAME = ".modeling_options_cache.json"
 
 
@@ -102,13 +104,6 @@ def _save_model_options_cache(
     except Exception as exc:
         logger.warning(f"写入模型候选缓存失败 {task_id}: {exc}")
 
-
-def _strip_html(text: str | None) -> str:
-    """将搜索结果中的 HTML/多余空白压缩成短文本。"""
-    if not text:
-        return ""
-    text = re.sub(r"<[^>]+>", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
 
 
 def _contains_any(text: str, keywords: tuple[str, ...] | list[str]) -> bool:
@@ -235,63 +230,132 @@ def _normalize_model_options_payload(payload: dict[str, Any]) -> list[dict[str, 
     return normalized_questions
 
 
-def _search_tavily(query: str, limit: int = 3) -> list[dict[str, str]]:
-    if not settings.SEARCH_ENABLED or not settings.TAVILY_API_KEY:
-        return []
-    response = requests.post(
-        "https://api.tavily.com/search",
-        json={
-            "api_key": settings.TAVILY_API_KEY,
-            "query": query,
-            "max_results": limit,
-            "search_depth": "basic",
-            "include_answer": False,
-        },
-        timeout=10,
-    )
-    response.raise_for_status()
-    results = response.json().get("results", [])
-    return [
-        {
-            "title": str(item.get("title") or ""),
-            "url": str(item.get("url") or ""),
-            "snippet": _strip_html(str(item.get("content") or ""))[:500],
-            "source": "tavily",
-        }
-        for item in results[:limit]
-        if item.get("title") or item.get("content")
+def _fallback_model_labels_for_question(question_text: str) -> list[str]:
+    labels = _seed_model_guidance(question_text)
+    if not labels:
+        labels = [
+            "数据预处理 + 探索性分析 + 基线回归/分类模型",
+            "特征工程 + 集成学习模型",
+            "问题约束驱动的统计建模与结果检验",
+        ]
+    fallback_labels = [
+        "可解释统计模型作为稳健基线",
+        "机器学习集成模型作为精度增强方案",
+        "敏感性分析与误差检验作为结果验证方案",
     ]
+    unique_labels = list(dict.fromkeys(labels))
+    for label in fallback_labels:
+        if len(unique_labels) >= MIN_MODEL_OPTIONS:
+            break
+        if label not in unique_labels:
+            unique_labels.append(label)
+    return unique_labels[:MODEL_OPTION_LIMIT]
 
 
-def _search_crossref(query: str, limit: int = 3) -> list[dict[str, str]]:
-    response = requests.get(
-        "https://api.crossref.org/works",
-        params={"query": query, "rows": limit},
-        timeout=10,
-    )
-    response.raise_for_status()
-    items = response.json().get("message", {}).get("items", [])
-    results: list[dict[str, str]] = []
-    for item in items[:limit]:
-        title = " ".join(item.get("title") or []) if isinstance(item.get("title"), list) else str(item.get("title") or "")
-        container = (
-            " ".join(item.get("container-title") or [])
-            if isinstance(item.get("container-title"), list)
-            else str(item.get("container-title") or "")
-        )
-        year_parts = item.get("issued", {}).get("date-parts") or []
-        year = str(year_parts[0][0]) if year_parts and year_parts[0] else ""
-        snippet = _strip_html(item.get("abstract"))
-        fallback = "；".join(part for part in [container, year] if part)
-        results.append(
+def _build_fallback_model_options(
+    question: dict[str, Any],
+    research: list[dict[str, str]] | None = None,
+    reason: str = "",
+) -> dict[str, Any]:
+    """在 LLM 多次未通过门禁时，仍为这一问给出可编辑的保底候选。"""
+    q_idx = int(question.get("questionIndex") or 0)
+    question_text = str(question.get("questionText") or "")
+    labels = _fallback_model_labels_for_question(question_text)
+    options: list[dict[str, Any]] = []
+
+    for idx, label in enumerate(labels, start=1):
+        options.append(
             {
-                "title": title,
-                "url": str(item.get("URL") or ""),
-                "snippet": snippet[:500] or fallback,
-                "source": "crossref",
+                "id": _model_option_id(label, q_idx, idx),
+                "label": label,
+                "description": (
+                    "基于当前题面关键词自动生成的保底建模方案，可在卡片中继续修改或替换。"
+                ),
+                "pros": "不会阻塞后续流程，结构完整，便于快速进入正式建模与代码求解。",
+                "cons": "未经严格自动质检完全确认，建议结合题面和数据再人工调整。",
+                "reason": (
+                    f"第 {q_idx} 问需要先形成可执行方案；"
+                    "该候选优先覆盖题面中的核心变量、目标和约束。"
+                ),
+                "score": max(70, 88 - (idx - 1) * 5),
+                "isRecommended": idx == 1,
+                "sources": [],
             }
         )
-    return [result for result in results if result["title"] or result["snippet"]]
+
+    research_summary = "自动质检未能稳定通过，已降级生成保底候选方案。"
+    if reason:
+        research_summary += f" 质检提示：{reason}"
+    if research:
+        research_summary += " 已参考联网检索摘要，但最终以题面为准。"
+
+    return {
+        "questionIndex": q_idx,
+        "researchSummary": research_summary,
+        "recommendedOptionId": options[0]["id"] if options else "",
+        "options": options,
+        "qualityWarnings": [reason] if reason else [],
+        "fallback": True,
+    }
+
+
+def _candidate_with_fallback_fill(
+    candidate: dict[str, Any],
+    question: dict[str, Any],
+    research: list[dict[str, str]] | None,
+    issues: list[str],
+) -> dict[str, Any]:
+    """保留已有候选；候选数量不足时用保底选项补齐。"""
+    q_idx = int(question.get("questionIndex") or 0)
+    fallback = _build_fallback_model_options(
+        question,
+        research,
+        "；".join(issues),
+    )
+    options = list(candidate.get("options") or [])
+    existing_ids = {str(option.get("id") or "") for option in options}
+    for option in fallback["options"]:
+        if len(options) >= MIN_MODEL_OPTIONS:
+            break
+        if option["id"] in existing_ids:
+            continue
+        option = {**option, "isRecommended": False}
+        options.append(option)
+
+    if not options:
+        return fallback
+
+    recommended_id = str(candidate.get("recommendedOptionId") or "").strip()
+    if not any(option.get("isRecommended") for option in options):
+        if recommended_id:
+            for option in options:
+                if option.get("id") == recommended_id:
+                    option["isRecommended"] = True
+                    break
+        if not any(option.get("isRecommended") for option in options):
+            options[0]["isRecommended"] = True
+
+    recommended_id = next(
+        (str(option.get("id")) for option in options if option.get("isRecommended")),
+        str(options[0].get("id")),
+    )
+    summary = str(candidate.get("researchSummary") or "").strip()
+    warning_text = "；".join(issues)
+    if warning_text:
+        summary = (
+            f"{summary}\n\n自动质检提示：{warning_text}。"
+            "已降级放行，用户可在卡片中继续修改。"
+        ).strip()
+
+    return {
+        **candidate,
+        "questionIndex": q_idx,
+        "researchSummary": summary or fallback["researchSummary"],
+        "recommendedOptionId": recommended_id,
+        "options": options[:MODEL_OPTION_LIMIT],
+        "qualityWarnings": issues,
+        "fallback": True,
+    }
 
 
 def _search_modeling_references(
@@ -300,7 +364,9 @@ def _search_modeling_references(
     user_message: str = "",
     limit: int = 3,
 ) -> list[dict[str, str]]:
-    """联网检索与当前问题相关的建模方法，优先 Tavily，失败时退到 Crossref。"""
+    """使用 OpenAlex 检索与当前问题相关的建模方法。"""
+    from app.services.modeling_reference_service import _search_openalex
+
     inferred_terms = _infer_modeling_search_terms(question_text + " " + user_message)
     query = " ".join(
         part.strip()
@@ -316,13 +382,19 @@ def _search_modeling_references(
     if not query:
         return []
 
-    for searcher in (_search_tavily, _search_crossref):
-        try:
-            results = searcher(query, limit=limit)
-            if results:
-                return results
-        except Exception as e:
-            logger.warning(f"模型候选联网检索失败 {searcher.__name__}: {e}")
+    try:
+        raw = _search_openalex(query, limit=limit)
+        return [
+            {
+                "title": str(r.get("title") or ""),
+                "url": str(r.get("url") or ""),
+                "snippet": str(r.get("snippet") or ""),
+                "source": "openalex",
+            }
+            for r in raw
+        ]
+    except Exception as e:
+        logger.warning(f"模型候选文献检索失败: {e}")
     return []
 
 
@@ -1244,7 +1316,12 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
     total_q = len(questions)
     await redis_manager.publish_message(
         safe_task_id,
-        SystemMessage(content=f"ModelerAgent 正在为 {total_q} 个问题并行生成候选模型方案..."),
+        SystemMessage(
+            content=(
+                f"ModelerAgent 正在为 {total_q} 个问题并行生成候选模型方案；"
+                "单问质检失败会降级为可修改的保底方案，不阻塞其他问题。"
+            )
+        ),
     )
 
     # 进度追踪
@@ -1291,7 +1368,12 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
         async with progress_lock:
             progress[q_idx] = "searching"
             await _publish_progress()
-        research = _search_modeling_references(body.title, q["questionText"], limit=3)
+        research = await asyncio.to_thread(
+            _search_modeling_references,
+            body.title,
+            q["questionText"],
+            limit=3,
+        )
 
         async with progress_lock:
             progress[q_idx] = "generating"
@@ -1299,8 +1381,10 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
 
         question_map = {q_idx: q}
         quality_issues: list[str] = []
+        best_candidate: dict[str, Any] | None = None
+        best_issues: list[str] = []
 
-        for attempt in range(3):
+        for attempt in range(MODEL_OPTION_ATTEMPTS):
             if attempt > 0:
                 await redis_manager.publish_message(
                     safe_task_id,
@@ -1334,6 +1418,10 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
                 candidate_list[0]["questionIndex"] = q_idx
                 candidate = candidate_list[0]
                 quality_issues = _validate_model_options_for_questions([candidate], question_map)
+                if candidate.get("options"):
+                    if best_candidate is None or len(quality_issues) < len(best_issues):
+                        best_candidate = candidate
+                        best_issues = list(quality_issues)
                 if not quality_issues:
                     async with progress_lock:
                         progress[q_idx] = "done"
@@ -1342,28 +1430,32 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
             except Exception as e:
                 logger.warning(f"第{q_idx}问候选生成异常: {e}")
 
-        last_issues_text = "；".join(quality_issues) if quality_issues else "未生成有效候选模型"
+        last_issues = best_issues or quality_issues
+        last_issues_text = "；".join(last_issues) if last_issues else "未生成有效候选模型"
 
-        logger.warning(f"第{q_idx}问候选生成失败（3次尝试均未通过质检）：{last_issues_text}")
+        logger.warning(f"第{q_idx}问候选生成未完全通过质检，降级放行：{last_issues_text}")
 
         async with progress_lock:
-            progress[q_idx] = "failed"
+            progress[q_idx] = "done"
             await _publish_progress()
 
+        candidate = (
+            _candidate_with_fallback_fill(best_candidate, q, research, last_issues)
+            if best_candidate
+            else _build_fallback_model_options(q, research, last_issues_text)
+        )
         await redis_manager.publish_message(
             safe_task_id,
             SystemMessage(
                 content=(
-                    f"第 {q_idx} 问模型候选生成失败："
-                    f"3 次自动质检均未通过。原因：{last_issues_text}"
+                    f"第 {q_idx} 问模型候选未完全通过自动质检，"
+                    f"已降级生成可修改方案。质检提示：{last_issues_text}"
                 ),
-                type="error",
+                type="warning",
             ),
         )
 
-        raise RuntimeError(
-            f"第 {q_idx} 问模型候选生成失败：3 次自动质检均未通过。原因：{last_issues_text}"
-        )
+        return candidate
 
     # 每问一个独立协程并行执行
     try:
@@ -1374,21 +1466,35 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
         raise HTTPException(status_code=500, detail=f"动态模型候选生成失败: {e}") from e
 
     normalized: list[dict[str, Any]] = []
-    failed_questions: list[int] = []
+    fallback_questions: list[int] = []
 
     for i, r in enumerate(raw_results):
         q_idx = int(questions[i].get("questionIndex", i + 1))
 
         if isinstance(r, Exception):
-            logger.error(f"第{q_idx}问模型候选生成失败: {r}")
-            failed_questions.append(q_idx)
+            logger.error(f"第{q_idx}问模型候选生成异常，使用保底方案: {r}")
+            fallback_questions.append(q_idx)
+            normalized.append(
+                _build_fallback_model_options(
+                    questions[i],
+                    reason=f"生成异常：{r}",
+                )
+            )
             continue
 
         if r is None:
-            logger.error(f"第{q_idx}问模型候选生成结果为空")
-            failed_questions.append(q_idx)
+            logger.error(f"第{q_idx}问模型候选生成结果为空，使用保底方案")
+            fallback_questions.append(q_idx)
+            normalized.append(
+                _build_fallback_model_options(
+                    questions[i],
+                    reason="生成结果为空",
+                )
+            )
             continue
 
+        if r.get("fallback"):
+            fallback_questions.append(q_idx)
         normalized.append(r)
 
     expected_question_count = len(questions)
@@ -1399,44 +1505,42 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
         - set(int(item.get("questionIndex", 0)) for item in normalized)
     )
 
-    failed_questions = sorted(set(failed_questions + missing_questions))
-
-    if failed_questions:
-        failed_text = "、".join(str(i) for i in failed_questions)
-
-        await redis_manager.publish_message(
-            safe_task_id,
-            SystemMessage(
-                content=(
-                    f"模型候选方案生成未完成：第 {failed_text} 问失败。"
-                    "请修改问题描述后重新生成，或降低自动质检约束。"
-                ),
-                type="error",
-            ),
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"模型候选方案生成未完成：第 {failed_text} 问失败",
-        )
+    for q in questions:
+        q_idx = int(q.get("questionIndex") or 0)
+        if q_idx not in missing_questions:
+            continue
+        logger.error(f"第{q_idx}问模型候选缺失，补入保底方案")
+        fallback_questions.append(q_idx)
+        normalized.append(_build_fallback_model_options(q, reason="并行结果缺失"))
 
     if actual_question_count != expected_question_count:
         await redis_manager.publish_message(
             safe_task_id,
             SystemMessage(
                 content=(
-                    f"模型候选方案生成数量不完整：应生成 {expected_question_count} 问，"
-                    f"实际生成 {actual_question_count} 问。"
+                    f"模型候选方案生成数量自动补齐：应生成 {expected_question_count} 问，"
+                    f"实际直接生成 {actual_question_count} 问，其余已使用保底方案。"
                 ),
-                type="error",
+                type="warning",
             ),
         )
 
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"模型候选方案生成数量不完整：应生成 {expected_question_count} 问，"
-                f"实际生成 {actual_question_count} 问"
+    normalized = sorted(
+        normalized,
+        key=lambda item: int(item.get("questionIndex") or 0),
+    )
+
+    fallback_questions = sorted(set(fallback_questions + missing_questions))
+    if fallback_questions:
+        fallback_text = "、".join(str(i) for i in fallback_questions)
+        await redis_manager.publish_message(
+            safe_task_id,
+            SystemMessage(
+                content=(
+                    f"第 {fallback_text} 问已使用降级保底候选方案，"
+                    "可以先选择继续，也可以在卡片内修改为自定义方案。"
+                ),
+                type="warning",
             ),
         )
 
@@ -1452,7 +1556,11 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
 
     return ModelingOptionsResponse(
         success=True,
-        message="已基于题目和联网检索生成模型候选",
+        message=(
+            "已基于题目和联网检索生成模型候选"
+            if not fallback_questions
+            else "已生成模型候选；部分问题使用可修改的保底方案"
+        ),
         questions=normalized,
     )
 

@@ -1,8 +1,8 @@
 """Selectable wrapper for modeling reference search tools.
 
 The base service provides normalization, scoring and caching helpers. This module
-adds user-controlled source selection so a modeling run can use OpenAlex,
-Crossref, Tavily, any subset of them, or skip reference retrieval entirely.
+adds user-controlled source selection so a modeling run can use OpenAlex or skip
+reference retrieval entirely.
 """
 
 from __future__ import annotations
@@ -15,24 +15,18 @@ from app.services.modeling_reference_service import (
     _persist_reference_pack,
     _read_cache,
     _score,
-    _search_crossref,
     _search_openalex,
-    _search_tavily,
     _write_cache,
     build_academic_queries,
 )
 from app.utils.log_util import logger
 
-VALID_REFERENCE_TOOLS = {"openalex", "crossref", "tavily"}
-DEFAULT_REFERENCE_TOOLS = ["openalex", "crossref"]
+VALID_REFERENCE_TOOLS = {"openalex"}
+DEFAULT_REFERENCE_TOOLS = ["openalex"]
 
 
 def normalize_reference_tools(tools: list[str] | None, enabled: bool = True) -> list[str]:
-    """Normalize user-selected reference tools.
-
-    Tavily remains optional because it needs SEARCH_ENABLED=true and a key. Keeping
-    it out of the default avoids surprising slow web calls on local runs.
-    """
+    """Normalize user-selected reference tools."""
     if not enabled:
         return []
     selected = tools if tools is not None else DEFAULT_REFERENCE_TOOLS
@@ -79,8 +73,6 @@ def search_modeling_references_with_tools(
 
     searchers = {
         "openalex": ("OpenAlex", _search_openalex),
-        "tavily": ("Tavily", _search_tavily),
-        "crossref": ("Crossref", _search_crossref),
     }
     raw_results: list[dict[str, Any]] = []
     per_query_limit = max(4, min(8, limit))
