@@ -23,10 +23,12 @@ const renderMath = (tex: string, displayMode = false) => {
 			displayMode,
 			throwOnError: false,
 			strict: false,
+			// 只输出 HTML，不输出 MathML annotation，避免公式后方显示原始 LaTeX 乱码。
+			output: "html" as any,
 		});
 	} catch (err) {
 		console.error("KaTeX rendering error:", err);
-		return tex;
+		return escapeHtml(tex);
 	}
 };
 
@@ -145,6 +147,14 @@ const visibleImageCaption = (alt: string, src: string) => {
 const isTableCaptionText = (value: string) => /^\s*(?:\*\*)?表\s*\d+(?:\.\d+)?[\s　：:、].+?(?:\*\*)?\s*$/.test(value || "");
 const stripStrong = (value: string) => value.replace(/^\s*\*\*/, "").replace(/\*\*\s*$/, "").trim();
 
+function renderInlineAndDisplayMath(text: string) {
+	return text
+		.replace(/\\\[([\s\S]*?)\\\]/g, (_, tex) => `<div class="math-block">${renderMath(tex.trim(), true)}</div>`)
+		.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => `<div class="math-block">${renderMath(tex.trim(), true)}</div>`)
+		.replace(/\\\((.*?)\\\)/g, (_, tex) => renderMath(tex.trim(), false))
+		.replace(/(?<!\\)\$([^$\n]+?)(?<!\\)\$/g, (_, tex) => renderMath(tex.trim(), false));
+}
+
 const renderer: Partial<RendererObject> = {
 	heading(this: Renderer, token: { depth: number; text: string }) {
 		const tag = `h${Math.min(Math.max(token.depth, 1), 6)}`;
@@ -152,8 +162,8 @@ const renderer: Partial<RendererObject> = {
 	},
 	table(this: Renderer, token: { header: Array<string | { text: string }>; rows: Array<Array<string | { text: string }>> }) {
 		const cellText = (cell: string | { text: string }) => typeof cell === "string" ? cell : (cell.text ?? "");
-		const rows = token.rows.map((row) => `<tr>${row.map((cell) => `<td>${marked.parseInline(cellText(cell))}</td>`).join("")}</tr>`).join("");
-		const head = token.header.map((cell) => `<th>${marked.parseInline(cellText(cell))}</th>`).join("");
+		const rows = token.rows.map((row) => `<tr>${row.map((cell) => `<td>${marked.parseInline(renderInlineAndDisplayMath(cellText(cell)))}</td>`).join("")}</tr>`).join("");
+		const head = token.header.map((cell) => `<th>${marked.parseInline(renderInlineAndDisplayMath(cellText(cell)))}</th>`).join("");
 		return `<div class="markdown-table-wrapper">
 			<table class="markdown-table">
 				<thead><tr>${head}</tr></thead>
@@ -177,8 +187,7 @@ const renderer: Partial<RendererObject> = {
 			return `__IMAGE_PLACEHOLDER_${imageIndex++}__`;
 		});
 
-		text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => `<div class="math-block">${renderMath(tex.trim(), true)}</div>`);
-		text = text.replace(/\\\((.*?)\\\)/g, (_, tex) => renderMath(tex.trim(), false));
+		text = renderInlineAndDisplayMath(text);
 
 		text = text.replace(/__IMAGE_PLACEHOLDER_(\d+)__/g, (_, index) => {
 			const [, alt, src] = images[Number.parseInt(index)];
@@ -240,9 +249,18 @@ const registerMarkdownImageHoverBehavior = () => {
 	});
 };
 
+function cleanDuplicateRawMath(markdown: string) {
+	return markdown
+		// If the model wrote the same display formula twice in two delimiter styles, keep one copy.
+		.replace(/\$\$([\s\S]*?)\$\$\s*\\\[\s*\1\s*\\\]/g, "$$$$$1$$$$")
+		.replace(/\\\[([\s\S]*?)\\\]\s*\$\$\s*\1\s*\$\$/g, "\\[$1\\]")
+		// Remove a pure raw-LaTeX line immediately after a display formula. This line is usually residue from LLM output.
+		.replace(/(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\])\s*\n\s*([A-Za-z_\\][^\n\u4e00-\u9fff]{8,})\s*(?=\n|$)/g, "$1\n");
+}
+
 export const renderMarkdown = async (content: string, options: Record<string, unknown> & { taskId?: string; imageVersion?: string | number } = {}) => {
 	const { taskId, imageVersion, ...markedOptions } = options;
-	const normalized = normalizeMarkdownImageUrls(content, taskId, imageVersion)
+	const normalized = normalizeMarkdownImageUrls(cleanDuplicateRawMath(content), taskId, imageVersion)
 		.replace(/\\\[\s*\n/g, "\\[")
 		.replace(/\n\s*\\\]/g, "\\]")
 		.replace(/([a-zA-Z0-9])_\{/g, "$1\\_{")
