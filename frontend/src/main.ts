@@ -12,6 +12,7 @@ import { installModelingDiscussionSync } from "@/utils/modelingDiscussionSync";
 import { installChatPhaseDividerDomPatch } from "@/utils/chatPhaseDividerDom";
 import { installChatAgentDuplicateDomPatch } from "@/utils/chatAgentDuplicateDom";
 import { installChatChoiceCardDomPatch } from "@/utils/chatChoiceCardDom";
+import { installPaperPreviewDomPatch } from "@/utils/paperPreviewDom";
 
 const pinia = createPinia();
 pinia.use(piniaPluginPersistedstate);
@@ -29,3 +30,4 @@ installModelingDiscussionSync();
 installChatPhaseDividerDomPatch();
 installChatAgentDuplicateDomPatch();
 installChatChoiceCardDomPatch();
+installPaperPreviewDomPatch();
