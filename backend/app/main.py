@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 import os
-from app.routers import modeling_router, ws_router, common_router, files_router, paper_repair_router
+from app.routers import modeling_router, ws_router, common_router, files_router, paper_repair_router, artifact_edit_router
 from app.utils.log_util import logger
 from fastapi.staticfiles import StaticFiles
 from app.utils.cli import get_ascii_banner, center_cli_str
@@ -33,12 +33,10 @@ app = FastAPI(
 app.include_router(modeling_router.router)
 app.include_router(ws_router.router)
 app.include_router(common_router.router)
-# GET /paper 的补全路由必须在 files_router 前注册，避免旧 res.md 不完整时优先命中旧接口。
 app.include_router(paper_repair_router.router)
+app.include_router(artifact_edit_router.router)
 app.include_router(files_router.router)
 
-
-# 跨域 CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:5174"],
@@ -49,7 +47,7 @@ app.add_middleware(
 )
 
 app.mount(
-    "/static",  # 这是访问时的前缀
-    StaticFiles(directory="project/work_dir"),  # 这是本地文件夹路径
+    "/static",
+    StaticFiles(directory="project/work_dir"),
     name="static",
 )
