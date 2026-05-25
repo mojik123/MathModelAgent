@@ -6,13 +6,8 @@ function addStyle() {
 	const style = document.createElement("style");
 	style.id = STYLE_ID;
 	style.textContent = `
-[data-compact-live-progress-hidden="true"] {
-	display: none !important;
-}
-
-[data-chat-duplicate-flow-overview="true"] {
-	display: none !important;
-}
+[data-compact-live-progress-hidden="true"] { display: none !important; }
+[data-chat-duplicate-flow-overview="true"] { display: none !important; }
 
 [data-agent-card] {
 	position: relative !important;
@@ -26,7 +21,6 @@ function addStyle() {
 		inset 0 1px 0 rgba(255, 255, 255, 0.78),
 		inset 0 -1px 0 rgba(255, 255, 255, 0.34) !important;
 }
-
 [data-agent-card]::before {
 	content: "";
 	position: absolute;
@@ -37,45 +31,18 @@ function addStyle() {
 	pointer-events: none;
 	z-index: 0;
 }
+[data-agent-card] > * { position: relative; z-index: 1; }
 
-[data-agent-card] > * {
-	position: relative;
-	z-index: 1;
-}
-
-[data-agent-card="system"] {
-	border-color: rgba(100, 116, 139, 0.22) !important;
-	background: linear-gradient(135deg, rgba(248,250,252,.88), rgba(241,245,249,.72)) !important;
-}
-[data-agent-card="coordinator"] {
-	border-color: rgba(59, 130, 246, 0.24) !important;
-	background: linear-gradient(135deg, rgba(239,246,255,.9), rgba(240,249,255,.72)) !important;
-}
-[data-agent-card="subcoordinator"] {
-	border-color: rgba(14, 165, 233, 0.22) !important;
-	background: linear-gradient(135deg, rgba(240,249,255,.9), rgba(236,254,255,.70)) !important;
-}
-[data-agent-card="modeler"] {
-	border-color: rgba(139, 92, 246, 0.23) !important;
-	background: linear-gradient(135deg, rgba(245,243,255,.92), rgba(250,245,255,.70)) !important;
-}
-[data-agent-card="coder"] {
-	border-color: rgba(20, 184, 166, 0.24) !important;
-	background: linear-gradient(135deg, rgba(240,253,250,.92), rgba(236,253,245,.70)) !important;
-}
-[data-agent-card="writer"] {
-	border-color: rgba(245, 158, 11, 0.24) !important;
-	background: linear-gradient(135deg, rgba(255,251,235,.92), rgba(255,247,237,.70)) !important;
-}
-[data-agent-card="user"] {
-	border-color: rgba(30, 41, 59, 0.35) !important;
-	background: linear-gradient(135deg, rgba(15,23,42,.96), rgba(30,41,59,.92)) !important;
-}
+[data-agent-card="system"] { border-color: rgba(100, 116, 139, 0.22) !important; background: linear-gradient(135deg, rgba(248,250,252,.88), rgba(241,245,249,.72)) !important; }
+[data-agent-card="coordinator"] { border-color: rgba(59, 130, 246, 0.24) !important; background: linear-gradient(135deg, rgba(239,246,255,.9), rgba(240,249,255,.72)) !important; }
+[data-agent-card="subcoordinator"] { border-color: rgba(14, 165, 233, 0.22) !important; background: linear-gradient(135deg, rgba(240,249,255,.9), rgba(236,254,255,.70)) !important; }
+[data-agent-card="modeler"] { border-color: rgba(139, 92, 246, 0.23) !important; background: linear-gradient(135deg, rgba(245,243,255,.92), rgba(250,245,255,.70)) !important; }
+[data-agent-card="coder"] { border-color: rgba(20, 184, 166, 0.24) !important; background: linear-gradient(135deg, rgba(240,253,250,.92), rgba(236,253,245,.70)) !important; }
+[data-agent-card="writer"] { border-color: rgba(245, 158, 11, 0.24) !important; background: linear-gradient(135deg, rgba(255,251,235,.92), rgba(255,247,237,.70)) !important; }
+[data-agent-card="user"] { border-color: rgba(30, 41, 59, 0.35) !important; background: linear-gradient(135deg, rgba(15,23,42,.96), rgba(30,41,59,.92)) !important; }
 
 [data-agent-avatar] {
-	box-shadow:
-		0 10px 24px rgba(15,23,42,.12),
-		inset 0 1px 0 rgba(255,255,255,.45) !important;
+	box-shadow: 0 10px 24px rgba(15,23,42,.12), inset 0 1px 0 rgba(255,255,255,.45) !important;
 }
 [data-agent-avatar="system"] { background: linear-gradient(135deg, #64748b, #94a3b8) !important; }
 [data-agent-avatar="coordinator"] { background: linear-gradient(135deg, #2563eb, #38bdf8) !important; }
@@ -94,26 +61,20 @@ function addStyle() {
 		0 0 0 1px rgba(96, 165, 250, 0.16) inset,
 		inset 0 1px 0 rgba(255,255,255,.82) !important;
 }
-
 [data-running-card="true"]::before {
 	content: "";
 	position: absolute;
 	inset: -40%;
 	background:
 		linear-gradient(115deg,
-			transparent 0%,
-			rgba(96, 165, 250, 0.00) 32%,
-			rgba(96, 165, 250, 0.24) 43%,
-			rgba(45, 212, 191, 0.30) 50%,
-			rgba(168, 85, 247, 0.20) 57%,
-			rgba(96, 165, 250, 0.00) 68%,
-			transparent 100%);
+			transparent 0%, rgba(96, 165, 250, 0.00) 32%,
+			rgba(96, 165, 250, 0.24) 43%, rgba(45, 212, 191, 0.30) 50%,
+			rgba(168, 85, 247, 0.20) 57%, rgba(96, 165, 250, 0.00) 68%, transparent 100%);
 	transform: translateX(-70%) rotate(4deg);
 	animation: agentRunningFlow 2.4s linear infinite;
 	pointer-events: none;
 	z-index: 0;
 }
-
 [data-running-card="true"]::after {
 	content: "运行中";
 	position: absolute;
@@ -126,11 +87,7 @@ function addStyle() {
 	z-index: 1;
 	pointer-events: none;
 }
-
-[data-running-card="true"] > * {
-	position: relative;
-	z-index: 1;
-}
+[data-running-card="true"] > * { position: relative; z-index: 1; }
 
 [data-stale-running-card="true"] {
 	position: relative !important;
@@ -140,12 +97,7 @@ function addStyle() {
 	box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04) !important;
 	opacity: 0.70;
 }
-
-[data-stale-running-card="true"] .animate-spin {
-	animation: none !important;
-	opacity: 0.42;
-}
-
+[data-stale-running-card="true"] .animate-spin { animation: none !important; opacity: 0.42; }
 [data-stale-running-card="true"]::after {
 	content: "已进入后续";
 	position: absolute;
@@ -165,62 +117,41 @@ function addStyle() {
 	document.head.appendChild(style);
 }
 
+function setAttrIfChanged(node: HTMLElement, name: string, value: string | null) {
+	if (value === null) {
+		if (node.hasAttribute(name)) node.removeAttribute(name);
+		return;
+	}
+	if (node.getAttribute(name) !== value) node.setAttribute(name, value);
+}
+
+function textOf(node: HTMLElement) {
+	return (node.textContent || "").replace(/\s+/g, " ").trim();
+}
+
 function isLiveModelingProgress(text: string) {
-	return (
-		/正在检索文献/.test(text) ||
-		/正在生成模型方案/.test(text) ||
-		/正在生成建模方案/.test(text) ||
-		/生成模型方案/.test(text)
-	);
+	return /正在检索文献|正在生成模型方案|正在生成建模方案|生成模型方案/.test(text);
 }
 
 function isImportantCard(text: string) {
-	return (
-		/候选建模方案已生成/.test(text) ||
-		/等待用户确认/.test(text) ||
-		/建模方案已确认/.test(text) ||
-		/问题划分已确认/.test(text) ||
-		/代码手开始求解/.test(text) ||
-		/求解完成/.test(text) ||
-		/写作完成/.test(text) ||
-		/任务执行失败/.test(text) ||
-		/错误/.test(text)
-	);
+	return /候选建模方案已生成|等待用户确认|建模方案已确认|问题划分已确认|代码手开始求解|求解完成|写作完成|任务执行失败|错误/.test(text);
 }
 
 function isTerminalCard(text: string) {
-	return (
-		/已确认/.test(text) ||
-		/已完成/.test(text) ||
-		/完成/.test(text) ||
-		/成功/.test(text) ||
-		/失败/.test(text) ||
-		/错误/.test(text) ||
-		/任务执行失败/.test(text) ||
-		/论文终稿完成/.test(text)
-	);
+	return /已确认|已完成|完成|成功|失败|错误|任务执行失败|论文终稿完成/.test(text);
 }
 
 function isActiveProgressCard(row: HTMLElement) {
-	const text = row.textContent || "";
-	if (!text.trim()) return false;
-	if (isTerminalCard(text)) return false;
-	return (
-		Boolean(row.querySelector(".animate-spin")) ||
-		/正在/.test(text) ||
-		/开始/.test(text) ||
-		/进行中/.test(text) ||
-		/生成中/.test(text) ||
-		/检索文献/.test(text)
-	);
+	const text = textOf(row);
+	if (!text || isTerminalCard(text)) return false;
+	return Boolean(row.querySelector(".animate-spin")) || /正在|开始|进行中|生成中|检索文献/.test(text);
 }
 
 function getTimelineScroll(panel: HTMLElement) {
-	return Array.from(panel.querySelectorAll<HTMLElement>("div"))
-		.find((node) => {
-			const cls = node.getAttribute("class") || "";
-			return cls.includes("overflow-y-auto") && cls.includes("space-y-4");
-		}) || null;
+	return Array.from(panel.querySelectorAll<HTMLElement>("div")).find((node) => {
+		const cls = node.getAttribute("class") || "";
+		return cls.includes("overflow-y-auto") && cls.includes("space-y-4");
+	}) || null;
 }
 
 function closestTimelineRow(node: HTMLElement, scroll: HTMLElement) {
@@ -228,12 +159,7 @@ function closestTimelineRow(node: HTMLElement, scroll: HTMLElement) {
 	while (current && current.parentElement) {
 		const parent = current.parentElement;
 		const cls = current.getAttribute("class") || "";
-		if (
-			parent === scroll &&
-			(cls.includes("justify-start") || cls.includes("justify-center") || cls.includes("justify-end"))
-		) {
-			return current;
-		}
+		if (parent === scroll && (cls.includes("justify-start") || cls.includes("justify-center") || cls.includes("justify-end"))) return current;
 		current = parent;
 	}
 	return null;
@@ -246,64 +172,42 @@ function getTimelineRows(panel: HTMLElement) {
 		.map((node) => closestTimelineRow(node, scroll))
 		.filter((node): node is HTMLElement => Boolean(node))
 		.filter((node, index, arr) => arr.indexOf(node) === index)
-		.filter((node) => (node.textContent || "").trim().length > 0);
+		.filter((node) => textOf(node).length > 0);
 }
 
 function getMessageCard(row: HTMLElement) {
-	const directCards = Array.from(row.children).flatMap((child) =>
-		Array.from(child.querySelectorAll<HTMLElement>("div")),
-	);
-	return (
-		directCards.find((node) => {
-			const cls = node.getAttribute("class") || "";
-			return cls.includes("rounded-2xl") && cls.includes("shadow-sm") && !cls.includes("choice-attachment");
-		}) || null
-	);
+	const directCards = Array.from(row.children).flatMap((child) => Array.from(child.querySelectorAll<HTMLElement>("div")));
+	return directCards.find((node) => {
+		const cls = node.getAttribute("class") || "";
+		return cls.includes("rounded-2xl") && cls.includes("shadow-sm") && !cls.includes("choice-attachment");
+	}) || null;
 }
 
 function getAvatar(row: HTMLElement) {
-	return Array.from(row.querySelectorAll<HTMLElement>("div"))
-		.find((node) => {
-			const cls = node.getAttribute("class") || "";
-			return cls.includes("h-8") && cls.includes("w-8") && cls.includes("rounded-full");
-		}) || null;
+	return Array.from(row.querySelectorAll<HTMLElement>("div")).find((node) => {
+		const cls = node.getAttribute("class") || "";
+		return cls.includes("h-8") && cls.includes("w-8") && cls.includes("rounded-full");
+	}) || null;
 }
 
 function agentKind(row: HTMLElement) {
-	const text = row.textContent || "";
+	const text = textOf(row);
 	if (text.includes("User")) return "user";
 	if (text.includes("CoderAgent")) return "coder";
 	if (text.includes("WriterAgent")) return "writer";
 	if (text.includes("ModelerAgent")) return "modeler";
 	if (text.includes("SubCoordinatorAgent")) return "subcoordinator";
 	if (text.includes("CoordinatorAgent")) return "coordinator";
-	if (text.includes("SystemMonitor")) return "system";
 	return "system";
 }
 
-function resetRuntimeDecorations(panel: HTMLElement) {
-	for (const node of panel.querySelectorAll<HTMLElement>(
-		"[data-running-card], [data-stale-running-card]",
-	)) {
-		node.removeAttribute("data-running-card");
-		node.removeAttribute("data-stale-running-card");
-	}
-}
-
-function clearUnsafeDuplicateHide(panel: HTMLElement) {
-	for (const node of panel.querySelectorAll<HTMLElement>("[data-chat-duplicate-flow-overview]")) {
-		node.removeAttribute("data-chat-duplicate-flow-overview");
-	}
-}
-
 function hideDuplicateChatFlowOverview(panel: HTMLElement) {
-	clearUnsafeDuplicateHide(panel);
 	const candidates = Array.from(panel.querySelectorAll<HTMLElement>("div"));
 	for (const node of candidates) {
-		const text = (node.textContent || "").replace(/\s+/g, " ").trim();
+		const text = textOf(node);
 		const cls = node.getAttribute("class") || "";
-		const parentText = (node.parentElement?.textContent || "").replace(/\s+/g, " ").trim();
-		const isSmallFlowCard =
+		const parentText = textOf(node.parentElement as HTMLElement);
+		const shouldHide =
 			cls.includes("rounded-2xl") &&
 			cls.includes("border") &&
 			cls.includes("shadow-sm") &&
@@ -311,19 +215,69 @@ function hideDuplicateChatFlowOverview(panel: HTMLElement) {
 			text.includes("确认、求解、写作与终稿状态集中显示") &&
 			!parentText.includes("Agent 对话流 当前") &&
 			text.length < 260;
-		if (isSmallFlowCard) {
-			node.setAttribute("data-chat-duplicate-flow-overview", "true");
-		}
+		setAttrIfChanged(node, "data-chat-duplicate-flow-overview", shouldHide ? "true" : null);
 	}
 }
 
 function decorateAgentCards(rows: HTMLElement[]) {
+	const currentCards = new Set<HTMLElement>();
+	const currentAvatars = new Set<HTMLElement>();
 	for (const row of rows) {
 		const kind = agentKind(row);
 		const card = getMessageCard(row);
-		if (card) card.setAttribute("data-agent-card", kind);
+		if (card) {
+			currentCards.add(card);
+			setAttrIfChanged(card, "data-agent-card", kind);
+		}
 		const avatar = getAvatar(row);
-		if (avatar) avatar.setAttribute("data-agent-avatar", kind);
+		if (avatar) {
+			currentAvatars.add(avatar);
+			setAttrIfChanged(avatar, "data-agent-avatar", kind);
+		}
+	}
+	const panel = document.querySelector<HTMLElement>(".glass-left-panel");
+	if (!panel) return;
+	for (const card of panel.querySelectorAll<HTMLElement>("[data-agent-card]")) {
+		if (!currentCards.has(card)) card.removeAttribute("data-agent-card");
+	}
+	for (const avatar of panel.querySelectorAll<HTMLElement>("[data-agent-avatar]")) {
+		if (!currentAvatars.has(avatar)) avatar.removeAttribute("data-agent-avatar");
+	}
+}
+
+function compactLiveProgressRows(rows: HTMLElement[]) {
+	const liveRows = rows.filter((row) => {
+		const text = textOf(row);
+		return isLiveModelingProgress(text) && !isImportantCard(text);
+	});
+	const latestLive = liveRows.at(-1) || null;
+	for (const row of rows) {
+		const shouldHide = liveRows.length > 1 && liveRows.includes(row) && row !== latestLive;
+		setAttrIfChanged(row, "data-compact-live-progress-hidden", shouldHide ? "true" : null);
+	}
+}
+
+function decorateRunningRows(rows: HTMLElement[]) {
+	const visibleActiveRows = rows.filter((row) => row.getAttribute("data-compact-live-progress-hidden") !== "true" && isActiveProgressCard(row));
+	const latestActive = visibleActiveRows.at(-1) || null;
+	const desired = new Map<HTMLElement, "running" | "stale" | "none">();
+	for (const row of rows) {
+		const card = getMessageCard(row);
+		if (!card) continue;
+		if (!visibleActiveRows.includes(row)) desired.set(card, "none");
+		else desired.set(card, row === latestActive ? "running" : "stale");
+	}
+	for (const [card, state] of desired.entries()) {
+		setAttrIfChanged(card, "data-running-card", state === "running" ? "true" : null);
+		setAttrIfChanged(card, "data-stale-running-card", state === "stale" ? "true" : null);
+	}
+	const panel = document.querySelector<HTMLElement>(".glass-left-panel");
+	if (!panel) return;
+	for (const card of panel.querySelectorAll<HTMLElement>("[data-running-card], [data-stale-running-card]")) {
+		if (!desired.has(card)) {
+			card.removeAttribute("data-running-card");
+			card.removeAttribute("data-stale-running-card");
+		}
 	}
 }
 
@@ -331,50 +285,15 @@ function compactLiveProgressCards() {
 	const panel = document.querySelector<HTMLElement>(".glass-left-panel");
 	if (!panel) return;
 	hideDuplicateChatFlowOverview(panel);
-	resetRuntimeDecorations(panel);
-
 	const rows = getTimelineRows(panel);
 	decorateAgentCards(rows);
-	const liveModelingRows = rows.filter((node) => {
-		const text = node.textContent || "";
-		return isLiveModelingProgress(text) && !isImportantCard(text);
-	});
-
-	if (liveModelingRows.length <= 1) {
-		for (const node of liveModelingRows) node.removeAttribute("data-compact-live-progress-hidden");
-	} else {
-		const latest = liveModelingRows[liveModelingRows.length - 1];
-		for (const node of liveModelingRows) {
-			node.setAttribute(
-				"data-compact-live-progress-hidden",
-				node === latest ? "false" : "true",
-			);
-		}
-		latest.removeAttribute("data-compact-live-progress-hidden");
-	}
-
-	const activeRows = rows.filter(
-		(row) => row.getAttribute("data-compact-live-progress-hidden") !== "true" && isActiveProgressCard(row),
-	);
-	if (!activeRows.length) return;
-
-	const latestActive = activeRows[activeRows.length - 1];
-	for (const row of activeRows) {
-		const card = getMessageCard(row);
-		if (!card) continue;
-		if (row === latestActive) {
-			card.setAttribute("data-running-card", "true");
-			card.removeAttribute("data-stale-running-card");
-		} else {
-			card.setAttribute("data-stale-running-card", "true");
-			card.removeAttribute("data-running-card");
-		}
-	}
+	compactLiveProgressRows(rows);
+	decorateRunningRows(rows);
 }
 
 export function installCompactTimelineDomPatch() {
 	if (installed || typeof window === "undefined" || typeof document === "undefined") return;
 	installed = true;
 	addStyle();
-	setInterval(compactLiveProgressCards, 350);
+	setInterval(compactLiveProgressCards, 900);
 }
