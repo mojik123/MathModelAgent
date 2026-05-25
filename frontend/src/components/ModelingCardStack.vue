@@ -6,8 +6,6 @@ import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import ModelingCard from "./ModelingCard.vue";
 
-// ---- Types ----
-
 interface ModelOption {
 	id: string;
 	label: string;
@@ -18,6 +16,7 @@ interface ModelOption {
 	score?: number | null;
 	isRecommended?: boolean;
 	sources?: string[];
+	sourceDetails?: Array<Record<string, unknown>>;
 }
 
 interface ChatMessage {
@@ -38,13 +37,13 @@ interface QuestionCard {
 	confirmed: boolean;
 }
 
-// ---- Props ----
-
 const props = defineProps<{
 	questions: QuestionCard[];
 	genStatus?: Record<number, { status: string; text: string }>;
 	disabled?: boolean;
 	submitting?: boolean;
+	referenceSearchEnabled?: boolean;
+	referenceTools?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -52,15 +51,11 @@ const emit = defineEmits<{
 	confirm: [];
 }>();
 
-// ---- State ----
-
 const activeIndex = ref(props.questions.length > 0 ? 0 : -1);
 const taskStore = useTaskStore();
 const route = useRoute();
 const taskId = computed(() => route.params.task_id as string);
 const sendingQuestionIndex = ref<number | null>(null);
-
-// ---- Computed ----
 
 const allOptionsReady = computed(() =>
 	props.questions.length > 0 && props.questions.every((q) => q.presetOptions.length > 0),
@@ -79,7 +74,6 @@ const hasRecommendedOptions = computed(() =>
 	allOptionsReady.value && props.questions.some((q) => Boolean(getRecommendedOption(q))),
 );
 
-// 同步展开的卡片到 store，供右侧面板使用
 watch(
 	activeIndex,
 	(idx) => {
@@ -100,13 +94,10 @@ watch(
 	{ immediate: true },
 );
 
-// 问题列表异步加载后自动激活第一个问题，右侧面板随即显示模型对比
 watch(
 	() => props.questions.length,
 	(len) => {
-		if (len > 0 && activeIndex.value < 0) {
-			activeIndex.value = 0;
-		}
+		if (len > 0 && activeIndex.value < 0) activeIndex.value = 0;
 	},
 );
 
@@ -127,24 +118,18 @@ watch(
 	{ deep: true },
 );
 
-// ---- Methods ----
+function referenceStatusText() {
+	const tools = props.referenceSearchEnabled ? (props.referenceTools || []) : [];
+	return tools.length ? `参考文献工具：${tools.join("、")}` : "未使用参考文献检索工具";
+}
 
 function handleSelectOption(questionIndex: number, optionId: string) {
 	if (!allOptionsReady.value) return;
-	const question = props.questions.find(
-		(q) => q.questionIndex === questionIndex,
-	);
-	const selectedOption = question?.presetOptions.find(
-		(option) => option.id === optionId,
-	);
+	const question = props.questions.find((q) => q.questionIndex === questionIndex);
+	const selectedOption = question?.presetOptions.find((option) => option.id === optionId);
 	const updated = props.questions.map((q) =>
 		q.questionIndex === questionIndex
-			? {
-					...q,
-					selectedOptionId: optionId,
-					confirmed:
-						optionId === "__custom__" ? Boolean(q.customInput.trim()) : true,
-				}
+			? { ...q, selectedOptionId: optionId, confirmed: optionId === "__custom__" ? Boolean(q.customInput.trim()) : true }
 			: q,
 	);
 	emit("update:questions", updated);
@@ -152,16 +137,8 @@ function handleSelectOption(questionIndex: number, optionId: string) {
 		taskStore.addUserAction(
 			"选择",
 			`第 ${questionIndex} 问模型方案`,
-			`用户选择第 ${questionIndex} 问模型方案：${
-				optionId === "__custom__"
-					? "自定义方案"
-					: (selectedOption?.label ?? optionId)
-			}`,
-			{
-				from: "User",
-				to: "ModelerAgent",
-				label: "提交单问选择",
-			},
+			`用户选择第 ${questionIndex} 问模型方案：${optionId === "__custom__" ? "自定义方案" : (selectedOption?.label ?? optionId)}`,
+			{ from: "User", to: "ModelerAgent", label: "提交单问选择" },
 		);
 	}
 }
@@ -170,12 +147,7 @@ function handleCustomInput(questionIndex: number, value: string) {
 	if (!allOptionsReady.value) return;
 	const updated = props.questions.map((q) =>
 		q.questionIndex === questionIndex
-			? {
-					...q,
-					customInput: value,
-					selectedOptionId: value ? "__custom__" : q.selectedOptionId,
-					confirmed: !!value,
-				}
+			? { ...q, customInput: value, selectedOptionId: value ? "__custom__" : q.selectedOptionId, confirmed: !!value }
 			: q,
 	);
 	emit("update:questions", updated);
@@ -183,17 +155,11 @@ function handleCustomInput(questionIndex: number, value: string) {
 
 function getRecommendedOption(question: QuestionCard) {
 	if (!question.presetOptions.length) return null;
-	const explicit = question.recommendedOptionId
-		? question.presetOptions.find(
-				(option) => option.id === question.recommendedOptionId,
-			)
-		: null;
+	const explicit = question.recommendedOptionId ? question.presetOptions.find((option) => option.id === question.recommendedOptionId) : null;
 	if (explicit) return explicit;
 	const marked = question.presetOptions.find((option) => option.isRecommended);
 	if (marked) return marked;
-	return [...question.presetOptions].sort(
-		(left, right) => (right.score ?? -1) - (left.score ?? -1),
-	)[0];
+	return [...question.presetOptions].sort((left, right) => (right.score ?? -1) - (left.score ?? -1))[0];
 }
 
 function handleApplyRecommended() {
@@ -201,31 +167,19 @@ function handleApplyRecommended() {
 	const applied = props.questions
 		.map((q) => {
 			const recommended = getRecommendedOption(q);
-			return recommended
-				? `第 ${q.questionIndex} 问：${recommended.label}`
-				: "";
+			return recommended ? `第 ${q.questionIndex} 问：${recommended.label}` : "";
 		})
 		.filter(Boolean);
 	const updated = props.questions.map((q) => {
 		const recommended = getRecommendedOption(q);
-		if (!recommended) return q;
-		return {
-			...q,
-			selectedOptionId: recommended.id,
-			confirmed: true,
-		};
+		return recommended ? { ...q, selectedOptionId: recommended.id, confirmed: true } : q;
 	});
 	emit("update:questions", updated);
-	taskStore.addUserAction(
-		"应用",
-		"最优模型方案",
-		`用户一键应用 AI 推荐的最优模型方案：${applied.join("；")}`,
-		{
-			from: "User",
-			to: "ModelerAgent",
-			label: "采纳AI推荐",
-		},
-	);
+	taskStore.addUserAction("应用", "最优模型方案", `用户一键应用 AI 推荐的最优模型方案：${applied.join("；")}`, {
+		from: "User",
+		to: "ModelerAgent",
+		label: "采纳AI推荐",
+	});
 }
 
 function questionPayload(items: QuestionCard[]) {
@@ -234,11 +188,7 @@ function questionPayload(items: QuestionCard[]) {
 		questionTitle: q.questionTitle,
 		questionText: q.questionText,
 		selectedOptionId: q.selectedOptionId,
-		selectedModel:
-			q.selectedOptionId === "__custom__"
-				? q.customInput
-				: (q.presetOptions.find((option) => option.id === q.selectedOptionId)
-						?.label ?? q.selectedOptionId),
+		selectedModel: q.selectedOptionId === "__custom__" ? q.customInput : (q.presetOptions.find((option) => option.id === q.selectedOptionId)?.label ?? q.selectedOptionId),
 		customInput: q.customInput,
 		chatHistory: q.chatHistory,
 		presetOptions: q.presetOptions,
@@ -249,26 +199,14 @@ function questionPayload(items: QuestionCard[]) {
 async function handleSendMessage(questionIndex: number, message: string) {
 	if (sendingQuestionIndex.value != null || props.disabled || !allOptionsReady.value) return;
 	const withUser = props.questions.map((q) =>
-		q.questionIndex === questionIndex
-			? {
-					...q,
-					chatHistory: [
-						...q.chatHistory,
-						{ role: "user" as const, content: message },
-					],
-				}
-			: q,
+		q.questionIndex === questionIndex ? { ...q, chatHistory: [...q.chatHistory, { role: "user" as const, content: message }] } : q,
 	);
 	emit("update:questions", withUser);
 	taskStore.addUserAction(
 		"询问",
 		`第 ${questionIndex} 问建模方案`,
-		`用户在第 ${questionIndex} 问讨论区追问：${message}`,
-		{
-			from: "User",
-			to: "ModelerAgent",
-			label: "补充建模偏好",
-		},
+		`用户在第 ${questionIndex} 问讨论区追问：${message}\n${referenceStatusText()}`,
+		{ from: "User", to: "ModelerAgent", label: "补充建模偏好" },
 	);
 	sendingQuestionIndex.value = questionIndex;
 	try {
@@ -276,46 +214,24 @@ async function handleSendMessage(questionIndex: number, message: string) {
 			question_index: questionIndex,
 			message,
 			questions: questionPayload(withUser),
+			reference_search_enabled: Boolean(props.referenceSearchEnabled),
+			reference_tools: props.referenceSearchEnabled ? (props.referenceTools || []) : [],
 		});
-		// 如果在等待回复期间用户已确认锁定，丢弃迟到的 AI 回复
 		if (props.disabled) return;
 		const withAssistant = withUser.map((q) =>
 			q.questionIndex === questionIndex
-				? {
-						...q,
-						chatHistory: [
-							...q.chatHistory,
-							{
-								role: "assistant" as const,
-								content: res.data.content || res.data.message,
-							},
-						],
-					}
+				? { ...q, chatHistory: [...q.chatHistory, { role: "assistant" as const, content: res.data.content || res.data.message }] }
 				: q,
 		);
 		emit("update:questions", withAssistant);
 	} catch (error) {
-		const detail =
-			typeof error === "object" &&
-			error &&
-			"response" in error &&
-			(error as { response?: { data?: { detail?: string } } }).response?.data
-				?.detail;
+		const detail = typeof error === "object" && error && "response" in error && (error as { response?: { data?: { detail?: string } } }).response?.data?.detail;
 		const withError = withUser.map((q) =>
 			q.questionIndex === questionIndex
-				? {
-						...q,
-						chatHistory: [
-							...q.chatHistory,
-							{
-								role: "assistant" as const,
-								content: detail || "建模讨论暂时失败，请稍后重试。",
-							},
-						],
-					}
+				? { ...q, chatHistory: [...q.chatHistory, { role: "assistant" as const, content: detail || "建模讨论暂时失败，请稍后重试。" }] }
 				: q,
 		);
-	emit("update:questions", withError);
+		emit("update:questions", withError);
 	} finally {
 		sendingQuestionIndex.value = null;
 	}
@@ -328,12 +244,7 @@ async function handleSendMessage(questionIndex: number, message: string) {
 			v-for="(question, idx) in questions"
 			:key="question.questionIndex"
 			class="stack-item"
-			:style="{
-				zIndex:
-					idx === activeIndex
-						? 10
-						: questions.length - Math.abs(idx - activeIndex),
-			}"
+			:style="{ zIndex: idx === activeIndex ? 10 : questions.length - Math.abs(idx - activeIndex) }"
 		>
 			<ModelingCard
 				:question-index="question.questionIndex"
@@ -357,7 +268,6 @@ async function handleSendMessage(questionIndex: number, message: string) {
 			建模候选方案仍在生成中。生成完成前不能应用推荐方案或确认建模思路。
 		</div>
 
-		<!-- 确认按钮：仅在未禁用且全部确认时显示 -->
 		<div v-if="!props.disabled" class="flex justify-end pt-3">
 			<button
 				class="inline-flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
@@ -388,9 +298,7 @@ async function handleSendMessage(questionIndex: number, message: string) {
 <style scoped>
 .stack-item {
 	position: relative;
-	transition:
-		transform 0.35s cubic-bezier(0.4, 0, 0.2, 1),
-		margin 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+	transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), margin 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .confirm-btn-enter-active {
