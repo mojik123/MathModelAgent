@@ -10,7 +10,7 @@ import asyncio
 import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.config.setting import settings
@@ -119,6 +119,47 @@ async def _search_refs_async(
         reference_search_enabled=reference_search_enabled,
         reference_tools=reference_tools,
     )
+
+
+@router.get("/modeling/reference/openalex-test")
+async def openalex_test(
+    query: str = Query("mathematical modeling optimization", min_length=1),
+    limit: int = Query(5, ge=1, le=10),
+):
+    """Test whether OpenAlex search is reachable and returns usable records.
+
+    This endpoint is placed on modeling_reference_router because this router is
+    already registered by existing deployments. It avoids the extra-router
+    registration problem that caused 404 on some local images.
+    """
+    refs = await asyncio.to_thread(
+        search_modeling_references_with_tools,
+        query,
+        query,
+        "",
+        limit=limit,
+        work_dir=None,
+        question_index=1,
+        reference_search_enabled=True,
+        reference_tools=["openalex"],
+    )
+    return {
+        "success": bool(refs),
+        "source": "OpenAlex",
+        "query": query,
+        "count": len(refs),
+        "results": refs,
+        "message": "OpenAlex 可用，已返回论文结果" if refs else "OpenAlex 请求成功但没有返回结果，请换一个 query 测试",
+    }
+
+
+@router.get("/modeling/reference-test/openalex")
+async def openalex_test_alias(
+    query: str = Query("mathematical modeling optimization", min_length=1),
+    limit: int = Query(5, ge=1, le=10),
+):
+    """Alias endpoint for easier manual testing."""
+    return await openalex_test(query=query, limit=limit)
 
 
 @router.post("/modeling/{task_id}/model-options", response_model=ModelingOptionsResponse)
