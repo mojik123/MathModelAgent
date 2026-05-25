@@ -74,7 +74,7 @@ class Settings(BaseSettings):
 
     # 流程阶段控制
     QUESTION_GROUP_TIMEOUT: int = 0
-    WRITER_ATTEMPT_TIMEOUT: int = 900
+    WRITER_ATTEMPT_TIMEOUT: int | None = None
 
     # 产物检查分级
     ARTIFACT_STRICT_FATAL: bool = False

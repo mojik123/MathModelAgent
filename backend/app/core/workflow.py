@@ -1282,7 +1282,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 self.task_id,
                 SystemMessage(content=f"[组#{group_idx}] 论文手开始写 {key} 部分"),
             )
-            writer_timeout = int(getattr(settings, "WRITER_ATTEMPT_TIMEOUT", 900))
+            writer_timeout = int(getattr(settings, "WRITER_ATTEMPT_TIMEOUT", None) or 0) or None
             try:
                 writer_response = await asyncio.wait_for(
                     group_writer.run(
