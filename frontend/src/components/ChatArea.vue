@@ -105,6 +105,13 @@ function messageText(m: Message) {
 }
 
 const allMessageText = computed(() => props.messages.map(messageText).join("\n"));
+const hasStreamingMessage = computed(() => props.messages.some((m) => (m as any).stream_state === "streaming"));
+const streamingSignature = computed(() =>
+	props.messages
+		.filter((m) => (m as any).stream_state === "streaming")
+		.map((m) => `${m.id}:${(m.content ?? "").length}`)
+		.join("|"),
+);
 
 const questionConfirmed = computed(() =>
 	props.messages.some((m) => {
@@ -152,6 +159,11 @@ function stripMarkdown(content: string) {
 function brief(content?: string | null, max = 180) {
 	const s = stripMarkdown(content ?? "");
 	return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+function tailBrief(content?: string | null, max = 520) {
+	const s = stripMarkdown(content ?? "");
+	return s.length > max ? `…${s.slice(-max)}` : s;
 }
 
 function detectQuestionIndex(text: string, msg?: any): number | null {
@@ -298,7 +310,20 @@ function agentEvent(msg: Message): TimelineEvent | null {
 	const actor = actorFromMessage(msg, content);
 	const q = detectQuestionIndex(content, msg);
 	const isStreaming = (msg as any).stream_state === "streaming";
-	return { id: msg.id, side: "left", actor, role: roleMap[actor] ?? "Agent", type: "raw", status: isStreaming ? "running" : "done", title: isStreaming ? "正在思考与生成" : "输出结果摘要", detail: brief(content, 260), brief: content.length > 400 ? brief(content, 180) : undefined, timeLabel: timeLabel(msg.created_at), questionIndex: q, badges: q ? [`Q${q}`] : [] };
+	return {
+		id: msg.id,
+		side: "left",
+		actor,
+		role: roleMap[actor] ?? "Agent",
+		type: "raw",
+		status: isStreaming ? "running" : "done",
+		title: isStreaming ? "正在思考与生成" : "输出结果摘要",
+		detail: isStreaming ? tailBrief(content, 720) : brief(content, 260),
+		brief: content.length > 400 ? (isStreaming ? tailBrief(content, 240) : brief(content, 180)) : undefined,
+		timeLabel: timeLabel(msg.created_at),
+		questionIndex: q,
+		badges: q ? [`Q${q}`] : [],
+	};
 }
 
 function toolEvent(msg: ToolMessage): TimelineEvent | null {
@@ -618,11 +643,21 @@ function groupSubStatusClass(status?: TimelineEvent["status"]) {
 	return "bg-white/70 text-slate-600 border-slate-100";
 }
 
+function scrollStreamingDetailsToBottom() {
+	nextTick(() => {
+		const el = scrollRef.value;
+		if (!el) return;
+		for (const node of el.querySelectorAll<HTMLElement>("[data-streaming-detail='true']")) {
+			node.scrollTop = node.scrollHeight;
+		}
+	});
+}
+
 function scrollToBottom(force = false) {
 	const el = scrollRef.value;
 	if (!el) return;
 	if (!force && userScrolledUp.value) return;
-	nextTick(() => el.scrollTo({ top: el.scrollHeight, behavior: "smooth" }));
+	nextTick(() => el.scrollTo({ top: el.scrollHeight, behavior: hasStreamingMessage.value ? "auto" : "smooth" }));
 }
 
 function onScroll() {
@@ -632,6 +667,15 @@ function onScroll() {
 }
 
 watch(() => props.messages.length, () => scrollToBottom(), { flush: "post" });
+watch(streamingSignature, () => {
+	if (!streamingSignature.value) return;
+	scrollToBottom(true);
+	scrollStreamingDetailsToBottom();
+}, { flush: "post" });
+watch(displayEvents, () => {
+	if (!hasStreamingMessage.value) return;
+	scrollStreamingDetailsToBottom();
+}, { flush: "post" });
 </script>
 
 <template>
@@ -685,7 +729,7 @@ watch(() => props.messages.length, () => scrollToBottom(), { flush: "post" });
 							<span class="shrink-0 text-[10px] opacity-45">{{ ev.timeLabel }}</span>
 						</div>
 
-						<p v-if="ev.detail" class="mt-2 whitespace-pre-wrap text-xs leading-relaxed opacity-80">{{ ev.detail }}</p>
+						<p v-if="ev.detail" class="mt-2 whitespace-pre-wrap text-xs leading-relaxed opacity-80" :class="{ 'streaming-detail': ev.status === 'running' && ev.type === 'raw' }" :data-streaming-detail="ev.status === 'running' && ev.type === 'raw' ? 'true' : undefined">{{ ev.detail }}</p>
 						<p v-if="ev.progressText" class="mt-2 rounded-xl border border-current/10 bg-white/45 px-2.5 py-1.5 text-xs opacity-90">{{ ev.progressText }}</p>
 
 						<div v-if="ev.groupEvents?.length" class="mt-3 rounded-2xl border border-slate-200/70 bg-white/55 p-2 shadow-inner">
@@ -699,7 +743,7 @@ watch(() => props.messages.length, () => scrollToBottom(), { flush: "post" });
 										<span class="min-w-0 truncate font-semibold">{{ sub.actor }} · {{ sub.title }}</span>
 										<span class="shrink-0 opacity-60">{{ sub.timeLabel }}</span>
 									</div>
-									<div v-if="sub.detail" class="mt-0.5 line-clamp-2 opacity-75">{{ sub.detail }}</div>
+									<div v-if="sub.detail" class="mt-0.5 opacity-75" :class="sub.status === 'running' ? 'streaming-detail whitespace-pre-wrap' : 'line-clamp-2'" :data-streaming-detail="sub.status === 'running' ? 'true' : undefined">{{ sub.detail }}</div>
 								</div>
 							</div>
 						</div>
@@ -797,5 +841,24 @@ watch(() => props.messages.length, () => scrollToBottom(), { flush: "post" });
 		linear-gradient(135deg, rgba(255, 255, 255, 0.88), rgba(241, 245, 249, 0.74)) !important;
 	backdrop-filter: blur(18px) saturate(1.15);
 	-webkit-backdrop-filter: blur(18px) saturate(1.15);
+}
+
+.streaming-detail {
+	max-height: 8.5rem;
+	overflow-y: auto;
+	padding-right: 0.25rem;
+	scrollbar-width: thin;
+}
+
+.streaming-detail::before {
+	content: "实时尾部";
+	display: inline-flex;
+	margin-right: 0.35rem;
+	border-radius: 999px;
+	background: rgba(59, 130, 246, 0.08);
+	padding: 0.12rem 0.42rem;
+	font-size: 0.62rem;
+	font-weight: 700;
+	color: rgba(37, 99, 235, 0.78);
 }
 </style>
