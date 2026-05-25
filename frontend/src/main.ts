@@ -10,6 +10,7 @@ import { installChatArtifactLinkDomPatch } from "@/utils/chatArtifactLinkDom";
 import { installImageGalleryTitleDomPatch } from "@/utils/imageGalleryTitleDom";
 import { installModelingDiscussionSync } from "@/utils/modelingDiscussionSync";
 import { installChatPhaseDividerDomPatch } from "@/utils/chatPhaseDividerDom";
+import { installChatAgentDuplicateDomPatch } from "@/utils/chatAgentDuplicateDom";
 
 const pinia = createPinia();
 pinia.use(piniaPluginPersistedstate);
@@ -25,3 +26,4 @@ installChatArtifactLinkDomPatch();
 installImageGalleryTitleDomPatch();
 installModelingDiscussionSync();
 installChatPhaseDividerDomPatch();
+installChatAgentDuplicateDomPatch();
