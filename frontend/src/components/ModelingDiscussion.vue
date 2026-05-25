@@ -60,12 +60,6 @@ const confirmError = ref("");
 const optionsLoading = ref(false);
 const optionsError = ref("");
 const referenceSearchEnabled = ref(true);
-const selectedReferenceTools = ref<string[]>(["openalex", "crossref"]);
-const referenceToolOptions = [
-	{ id: "openalex", label: "OpenAlex", desc: "学术论文与摘要" },
-	{ id: "crossref", label: "Crossref", desc: "DOI 与出版信息" },
-	{ id: "tavily", label: "Tavily", desc: "网页检索，需配置 Key" },
-];
 let optionsRequestSeq = 0;
 let optionsAttemptedSignature = "";
 let progressStartIndex = 0;
@@ -77,8 +71,8 @@ function startProgressAnimation() {
 
 function stopProgressAnimation() {}
 
-const activeReferenceTools = computed(() => referenceSearchEnabled.value ? selectedReferenceTools.value : []);
-const referenceStatusText = computed(() => activeReferenceTools.value.length ? `参考文献检索：${activeReferenceTools.value.join("、")}` : "参考文献检索：关闭");
+const activeReferenceTools = computed(() => referenceSearchEnabled.value ? ["openalex"] : []);
+const referenceStatusText = computed(() => referenceSearchEnabled.value ? "参考文献检索：OpenAlex" : "参考文献检索：关闭");
 
 function getReferenceStorageKey() {
 	return `modeling-reference-tools:${taskId}`;
@@ -88,7 +82,7 @@ function persistReferencePreference() {
 	if (typeof window === "undefined") return;
 	window.localStorage.setItem(getReferenceStorageKey(), JSON.stringify({
 		enabled: referenceSearchEnabled.value,
-		tools: selectedReferenceTools.value,
+		tools: ["openalex"],
 	}));
 }
 
@@ -99,30 +93,15 @@ function restoreReferencePreference() {
 		if (!raw) return;
 		const parsed = JSON.parse(raw);
 		referenceSearchEnabled.value = parsed.enabled !== false;
-		selectedReferenceTools.value = Array.isArray(parsed.tools)
-			? parsed.tools.filter((item: unknown) => ["openalex", "crossref", "tavily"].includes(String(item)))
-			: ["openalex", "crossref"];
-		if (selectedReferenceTools.value.length === 0) selectedReferenceTools.value = ["openalex", "crossref"];
 	} catch {
 		// ignore broken local storage
 	}
 }
 restoreReferencePreference();
 
-function toggleReferenceTool(tool: string) {
-	if (optionsLoading.value || props.locked) return;
-	const current = new Set(selectedReferenceTools.value);
-	if (current.has(tool)) current.delete(tool);
-	else current.add(tool);
-	selectedReferenceTools.value = Array.from(current);
-	persistReferencePreference();
-	optionsAttemptedSignature = "";
-}
-
 function toggleReferenceSearch() {
 	if (optionsLoading.value || props.locked) return;
 	referenceSearchEnabled.value = !referenceSearchEnabled.value;
-	if (referenceSearchEnabled.value && selectedReferenceTools.value.length === 0) selectedReferenceTools.value = ["openalex", "crossref"];
 	persistReferencePreference();
 	optionsAttemptedSignature = "";
 }
@@ -137,13 +116,14 @@ const modelOptionsProgressText = computed(() => {
 			c.includes("已完成") ||
 			c.includes("模型候选方案生成完成") ||
 			c.includes("并行检索与生成") ||
-			c.includes("参考文献检索")
+			c.includes("参考文献检索") ||
+			c.includes("OpenAlex")
 		) return c;
 	}
 	return `ModelerAgent 正在筛选候选模型 · ${referenceStatusText.value}`;
 });
 
-const optionsEstimatedSec = computed(() => Math.max(questionsList.value.length * (activeReferenceTools.value.length ? 60 : 35), 30));
+const optionsEstimatedSec = computed(() => Math.max(questionsList.value.length * (referenceSearchEnabled.value ? 55 : 35), 30));
 
 type GenStatus = "waiting" | "searching" | "generating" | "retrying" | "done";
 const questionGenStatus = computed<Record<number, { status: GenStatus; text: string }>>(() => {
@@ -156,7 +136,7 @@ const questionGenStatus = computed<Record<number, { status: GenStatus; text: str
 		if (!match) continue;
 		const idx = parseInt(match[1]);
 		if (!result[idx]) continue;
-		if (c.includes("检索")) result[idx] = { status: "searching", text: "正在检索文献..." };
+		if (c.includes("检索")) result[idx] = { status: "searching", text: "正在检索 OpenAlex..." };
 		if (c.includes("生成")) result[idx] = { status: "generating", text: "正在生成候选模型..." };
 		if (c.includes("质量未达标") || c.includes("重新生成")) result[idx] = { status: "retrying", text: "质量检查未通过，重新生成中..." };
 		if (c.includes("候选方案生成完成")) result[idx] = { status: "done", text: "生成完毕" };
@@ -292,10 +272,6 @@ async function loadDynamicModelOptions(forceRefresh = false) {
 		if (optionsAttemptedSignature === signature) return;
 	}
 	if (optionsLoading.value) return;
-	if (referenceSearchEnabled.value && activeReferenceTools.value.length === 0) {
-		optionsError.value = "已开启参考文献检索，请至少选择一个检索工具，或关闭参考文献检索。";
-		return;
-	}
 	progressStartIndex = taskStore.messages.length;
 	if (!coordinatorData.value || questionsList.value.length === 0) return;
 	optionsAttemptedSignature = signature;
@@ -416,16 +392,14 @@ watch(() => props.expanded, (expanded) => {
 			<div v-if="!props.locked" class="mx-4 mt-2 rounded-xl border border-blue-100 bg-white/55 p-2.5 text-xs text-slate-700">
 				<div class="flex flex-wrap items-center justify-between gap-2">
 					<button type="button" class="rounded-lg border px-2.5 py-1 font-semibold transition-colors" :class="referenceSearchEnabled ? 'border-blue-300 bg-blue-50 text-blue-700' : 'border-slate-200 bg-slate-50 text-slate-500'" :disabled="optionsLoading" @click.stop="toggleReferenceSearch">
-						{{ referenceSearchEnabled ? '使用参考文献检索' : '不使用参考文献检索' }}
+						{{ referenceSearchEnabled ? '使用 OpenAlex 检索' : '不使用参考文献检索' }}
 					</button>
 					<span class="text-[11px] text-slate-500">{{ referenceStatusText }}</span>
 				</div>
-				<div v-if="referenceSearchEnabled" class="mt-2 flex flex-wrap gap-1.5">
-					<button v-for="tool in referenceToolOptions" :key="tool.id" type="button" class="rounded-full border px-2.5 py-1 text-[11px] transition-colors" :class="activeReferenceTools.includes(tool.id) ? 'border-blue-300 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white/60 text-slate-500'" :disabled="optionsLoading" :title="tool.desc" @click.stop="toggleReferenceTool(tool.id)">
-						{{ tool.label }}
-					</button>
-					<button type="button" class="rounded-full border border-blue-200 bg-white/70 px-2.5 py-1 text-[11px] font-medium text-blue-700 disabled:opacity-50" :disabled="optionsLoading || activeReferenceTools.length === 0" @click.stop="handleRetryOptions">
-						按当前工具重新生成
+				<div v-if="referenceSearchEnabled" class="mt-2 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+					<span>当前只使用 OpenAlex 一个数据源检索论文题名、年份、DOI、摘要和概念标签。</span>
+					<button type="button" class="rounded-full border border-blue-200 bg-white/70 px-2.5 py-1 font-medium text-blue-700 disabled:opacity-50" :disabled="optionsLoading" @click.stop="handleRetryOptions">
+						用 OpenAlex 重新生成
 					</button>
 				</div>
 				<div v-else class="mt-2 flex items-center justify-between gap-2 text-[11px] text-slate-500">
@@ -474,7 +448,7 @@ watch(() => props.expanded, (expanded) => {
 			</div>
 
 			<div class="border-t border-white/10 px-4 py-2 text-center text-[10px] text-slate-400">
-				候选模型由 ModelerAgent 结合题目与所选检索工具动态筛选 · 也可输入自定义思路
+				候选模型由 ModelerAgent 结合题目与 OpenAlex 检索动态筛选 · 也可输入自定义思路
 			</div>
 		</template>
 	</div>
