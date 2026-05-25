@@ -27,6 +27,16 @@ function targetIcon() {
 	return active.value?.targetType === "image" ? ImageIcon : FileText;
 }
 
+function refreshRightPanelAfterEdit(type: "image" | "text") {
+	window.dispatchEvent(new CustomEvent("artifact-edit-updated", { detail: { type } }));
+	setTimeout(() => {
+		const refreshButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+			.filter((button) => (button.textContent || "").includes("刷新"));
+		if (type === "image") refreshButtons.at(-1)?.click();
+		else refreshButtons[0]?.click();
+	}, 600);
+}
+
 async function send() {
 	const ctx = active.value;
 	const instruction = input.value.trim();
@@ -59,6 +69,7 @@ async function send() {
 	);
 
 	try {
+		const currentSession = artifactEditStore.sessions.find((s) => s.sessionId === ctx.sessionId) || ctx;
 		const response = await sendArtifactEditMessage({
 			task_id: ctx.taskId,
 			target_type: ctx.targetType,
@@ -68,7 +79,7 @@ async function send() {
 			description: ctx.description,
 			selected_text: ctx.excerpt || ctx.targetLabel,
 			context: ctx.description || ctx.excerpt,
-			conversation_history: ctx.messages,
+			conversation_history: currentSession.messages,
 		});
 		const data = response.data as any;
 		const ok = Boolean(data?.success) && data?.status !== "failed";
@@ -98,7 +109,7 @@ async function send() {
 		if (ok) {
 			taskStore.addAgentAction(
 				ctx.targetType === "image" ? AgentType.CODER : AgentType.WRITER,
-				ctx.targetType === "image" ? "返回" : "返回",
+				"返回",
 				`${targetTypeLabel()}修改结果`,
 				resultText || `${targetTypeLabel()}修改完成：${ctx.targetLabel}`,
 				{
@@ -108,6 +119,7 @@ async function send() {
 				},
 			);
 			emit("updated", ctx.targetType);
+			refreshRightPanelAfterEdit(ctx.targetType);
 		} else {
 			taskStore.addSystemAction(
 				"失败",
@@ -143,17 +155,19 @@ async function send() {
 </script>
 
 <template>
-	<div v-if="active" class="border-t border-slate-200 bg-white/85 p-3 backdrop-blur">
-		<div class="mb-2 flex items-start justify-between gap-3 rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+	<div v-if="active" class="artifact-edit-glass-bar shrink-0 border-t border-white/35 p-3">
+		<div class="mb-2 flex items-start justify-between gap-3 rounded-2xl border border-blue-200/65 bg-white/45 px-3 py-2 text-xs text-blue-900 shadow-sm backdrop-blur-xl">
 			<div class="flex min-w-0 items-start gap-2">
-				<component :is="targetIcon()" class="mt-0.5 h-4 w-4 shrink-0" />
+				<div class="mt-0.5 rounded-xl bg-blue-600/10 p-1.5 text-blue-700">
+					<component :is="targetIcon()" class="h-4 w-4 shrink-0" />
+				</div>
 				<div class="min-w-0">
 					<div class="font-semibold">当前修改对象：{{ active.targetLabel }}</div>
-					<div class="mt-0.5 truncate opacity-80">{{ targetTypeLabel() }} · {{ active.targetPath }}</div>
-					<div v-if="active.excerpt" class="mt-1 line-clamp-2 text-blue-700/75">{{ active.excerpt }}</div>
+					<div class="mt-0.5 truncate text-blue-700/75">{{ targetTypeLabel() }} · {{ active.targetPath }}</div>
+					<div v-if="active.excerpt" class="mt-1 line-clamp-2 text-blue-700/65">{{ active.excerpt }}</div>
 				</div>
 			</div>
-			<Button variant="ghost" size="icon" class="h-7 w-7 shrink-0 text-blue-700" @click="artifactEditStore.clearActive()">
+			<Button variant="ghost" size="icon" class="h-7 w-7 shrink-0 text-blue-700 hover:bg-blue-100/70" @click="artifactEditStore.clearActive()">
 				<X class="h-4 w-4" />
 			</Button>
 		</div>
@@ -161,12 +175,12 @@ async function send() {
 			<Textarea
 				v-model="input"
 				rows="2"
-				class="min-h-[58px] flex-1 resize-none text-sm"
+				class="min-h-[58px] flex-1 resize-none rounded-2xl border-white/60 bg-white/65 text-sm shadow-sm backdrop-blur-xl focus-visible:ring-blue-300"
 				:disabled="sending"
 				:placeholder="active.targetType === 'image' ? '直接输入修图要求，例如：把标题改短、调大坐标轴字体、改配色...' : '直接输入文字修改要求，例如：压缩成两句话、改得更学术、去掉口语化...'"
 				@keydown.enter.exact.prevent="send"
 			/>
-			<Button class="self-end" :disabled="sending || !input.trim()" @click="send">
+			<Button class="self-end rounded-2xl bg-blue-600 shadow-sm hover:bg-blue-700" :disabled="sending || !input.trim()" @click="send">
 				<RefreshCw v-if="sending" class="mr-1 h-4 w-4 animate-spin" />
 				<Send v-else class="mr-1 h-4 w-4" />
 				{{ sending ? "修改中" : "发送" }}
@@ -174,3 +188,14 @@ async function send() {
 		</div>
 	</div>
 </template>
+
+<style scoped>
+.artifact-edit-glass-bar {
+	position: relative;
+	background:
+		radial-gradient(circle at 12% 0%, rgba(96, 165, 250, 0.18), transparent 38%),
+		linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(239, 246, 255, 0.52));
+	backdrop-filter: blur(18px) saturate(1.18);
+	-webkit-backdrop-filter: blur(18px) saturate(1.18);
+}
+</style>
