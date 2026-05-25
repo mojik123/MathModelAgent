@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from app.models.user_output import clean_final_paper_markdown
+from app.utils.artifact_edits import apply_artifact_patches_to_markdown
 from app.utils.common_utils import get_work_dir
 from app.utils.log_util import logger
 
@@ -109,6 +110,14 @@ def _score(text: str, q_count: int) -> int:
     return len(text or "") + sum(5000 for token in tokens if token in (text or ""))
 
 
+def _apply_patches(text: str, work_dir: str) -> str:
+    try:
+        return apply_artifact_patches_to_markdown(text, work_dir)
+    except Exception as exc:
+        logger.warning(f"apply artifact edit patches failed: {exc}")
+        return text
+
+
 @router.get("/paper")
 async def get_paper(task_id: str):
     work_dir = get_work_dir(task_id)
@@ -119,9 +128,17 @@ async def get_paper(task_id: str):
     res = cp.get("user_output_res") if isinstance(cp, dict) else {}
     q_count = _ques_count(cp, res if isinstance(res, dict) else {})
     if rebuilt and _score(rebuilt, q_count) > _score(current, q_count):
+        current = _apply_patches(rebuilt, work_dir)
         try:
-            md_path.write_text(rebuilt, encoding="utf-8")
+            md_path.write_text(current, encoding="utf-8")
         except Exception as exc:
             logger.warning(f"write repaired paper failed {task_id}: {exc}")
-        current = rebuilt
+    else:
+        patched_current = _apply_patches(current, work_dir)
+        if patched_current != current:
+            current = patched_current
+            try:
+                md_path.write_text(current, encoding="utf-8")
+            except Exception as exc:
+                logger.warning(f"write patched paper failed {task_id}: {exc}")
     return {"content": current}
