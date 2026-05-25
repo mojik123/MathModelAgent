@@ -78,20 +78,7 @@ class ModelerAgent(Agent):
         if not response.tool_calls:
             return
 
-        assistant_msg: dict = {"role": "assistant", "content": response.content or ""}
-        if response.reasoning_content:
-            assistant_msg["reasoning_content"] = response.reasoning_content
-        assistant_msg["tool_calls"] = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {"name": tc.name, "arguments": tc.arguments},
-            }
-            for tc in response.tool_calls
-            if tc.name == "search_papers"
-        ]
-        if assistant_msg["tool_calls"]:
-            await self.append_chat_history(assistant_msg)
+        # assistant 消息已由 Agent._chat() 追加到 chat_history，此处不再重复追加
 
         for tool_call in response.tool_calls:
             if tool_call.name != "search_papers":
