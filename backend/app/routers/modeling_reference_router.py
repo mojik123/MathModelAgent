@@ -17,10 +17,12 @@ from app.config.setting import settings
 from app.core.llm.llm import LLM, simple_chat
 from app.routers import modeling_router as legacy
 from app.schemas.response import SystemMessage
-from app.services.modeling_reference_service import (
-    format_references_for_prompt,
-    search_modeling_references,
+from app.services.modeling_reference_selector import (
+    DEFAULT_REFERENCE_TOOLS,
+    normalize_reference_tools,
+    search_modeling_references_with_tools,
 )
+from app.services.modeling_reference_service import format_references_for_prompt
 from app.services.redis_manager import redis_manager
 from app.utils.common_utils import ensure_safe_task_id, get_work_dir
 from app.utils.log_util import logger
@@ -33,6 +35,8 @@ class ModelingOptionsRequest(BaseModel):
     background: str = ""
     questions: list[dict]
     force_refresh: bool = False
+    reference_search_enabled: bool = True
+    reference_tools: list[str] | None = None
 
 
 class ModelingOptionsResponse(BaseModel):
@@ -45,6 +49,8 @@ class ModelingDiscussionChatRequest(BaseModel):
     question_index: int
     message: str
     questions: list[dict]
+    reference_search_enabled: bool = True
+    reference_tools: list[str] | None = None
 
 
 class ModelingDiscussionChatResponse(BaseModel):
@@ -85,6 +91,12 @@ def _sanitize_candidate_sources(candidate: dict[str, Any], references: list[dict
     return candidate
 
 
+def _reference_status(enabled_tools: list[str]) -> str:
+    if not enabled_tools:
+        return "未使用参考文献检索工具"
+    return "使用参考文献检索工具：" + "、".join(enabled_tools)
+
+
 async def _search_refs_async(
     *,
     title: str,
@@ -93,26 +105,34 @@ async def _search_refs_async(
     question_index: int,
     user_message: str = "",
     limit: int = 8,
+    reference_search_enabled: bool = True,
+    reference_tools: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     return await asyncio.to_thread(
-        search_modeling_references,
+        search_modeling_references_with_tools,
         title,
         question_text,
         user_message,
         limit=limit,
         work_dir=work_dir,
         question_index=question_index,
+        reference_search_enabled=reference_search_enabled,
+        reference_tools=reference_tools,
     )
 
 
 @router.post("/modeling/{task_id}/model-options", response_model=ModelingOptionsResponse)
 async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
-    """Generate model candidates with OpenAlex + Tavily + Crossref references."""
+    """Generate model candidates with user-selected reference retrieval tools."""
     try:
         safe_task_id = ensure_safe_task_id(task_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="非法任务ID") from exc
 
+    enabled_tools = normalize_reference_tools(
+        body.reference_tools if body.reference_tools is not None else DEFAULT_REFERENCE_TOOLS,
+        body.reference_search_enabled,
+    )
     questions = [
         {
             "questionIndex": _question_index(q, idx + 1),
@@ -126,7 +146,11 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
     if not questions:
         raise HTTPException(status_code=400, detail="缺少问题列表，无法生成模型候选")
 
-    cache_key = legacy._model_options_cache_key(body.title, body.background, questions)
+    cache_key = legacy._model_options_cache_key(
+        body.title,
+        body.background,
+        questions + [{"questionIndex": 0, "questionText": f"reference:{','.join(enabled_tools) or 'off'}"}],
+    )
     if not body.force_refresh:
         cached_questions = legacy._load_model_options_cache(safe_task_id, cache_key)
         if cached_questions:
@@ -140,7 +164,7 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
     work_dir = get_work_dir(safe_task_id)
     await redis_manager.publish_message(
         safe_task_id,
-        SystemMessage(content=f"ModelerAgent 正在为 {total_q} 个问题并行检索文献并生成候选模型方案..."),
+        SystemMessage(content=f"ModelerAgent 正在为 {total_q} 个问题并行生成候选模型方案；{_reference_status(enabled_tools)}。"),
     )
 
     progress: dict[int, str] = {}
@@ -177,16 +201,20 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
             max_tokens=settings.MODELER_MAX_TOKENS,
         )
 
-        async with progress_lock:
-            progress[q_idx] = "searching"
-            await _publish_progress()
-        references = await _search_refs_async(
-            title=body.title,
-            question_text=q_text,
-            work_dir=work_dir,
-            question_index=q_idx,
-            limit=10,
-        )
+        references: list[dict[str, Any]] = []
+        if enabled_tools:
+            async with progress_lock:
+                progress[q_idx] = "searching"
+                await _publish_progress()
+            references = await _search_refs_async(
+                title=body.title,
+                question_text=q_text,
+                work_dir=work_dir,
+                question_index=q_idx,
+                limit=10,
+                reference_search_enabled=True,
+                reference_tools=enabled_tools,
+            )
 
         async with progress_lock:
             progress[q_idx] = "generating"
@@ -195,12 +223,18 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
         question_map = {q_idx: q}
         quality_issues: list[str] = []
         refs_prompt = format_references_for_prompt(references, max_items=6)
+        reference_rule = (
+            "3. sources 只能填写下方【已验证文献 sources】中的 source_id，不允许编造 DOI、作者、年份或 source_id。\n"
+            "4. 每个候选尽量关联 1-2 条 sources；如果检索依据不足，sources 可为空，但 reason 中要说明“该方案主要基于题面数据结构与建模经验”。\n"
+            if enabled_tools
+            else "3. 本次用户选择不使用参考文献检索工具，sources 必须输出空数组；reason 只基于题面目标、数据结构和建模经验说明。\n"
+        )
 
         for attempt in range(3):
             if attempt > 0:
                 await redis_manager.publish_message(
                     safe_task_id,
-                    SystemMessage(content=f"第 {q_idx} 问自动质检未通过（第{attempt}次），正在结合文献依据重试...", type="warning"),
+                    SystemMessage(content=f"第 {q_idx} 问自动质检未通过（第{attempt}次），正在重试...", type="warning"),
                 )
             feedback_text = "\n".join(f"- {item}" for item in quality_issues)
             prompt = f"""
@@ -209,9 +243,7 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
 【输出硬性要求】
 1. 生成 3-4 个候选模型，有且仅有一个 isRecommended=true。
 2. 每个候选包含 id、label、description、pros、cons、reason、score、sources。
-3. sources 只能填写下方【已验证文献 sources】中的 source_id，不允许编造 DOI、作者、年份或 source_id。
-4. 每个候选尽量关联 1-2 条 sources；如果检索依据不足，sources 可为空，但 reason 中要说明“该方案主要基于题面数据结构与建模经验”。
-5. researchSummary 要概括检索到的可用依据，不能写成泛泛的“查阅文献”。
+{reference_rule}5. researchSummary 要概括本次依据来源；没有检索时说明“未启用文献检索，依据来自题面与建模经验”。
 6. 禁止改写题目场景、禁止泛化理由、候选必须互有区分度。
 7. 输出纯 JSON，不要 Markdown。
 
@@ -219,7 +251,7 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
 {feedback_text or "无"}
 
 【JSON 结构】
-{{"questions":[{{"questionIndex":{q_idx},"researchSummary":"...","recommendedOptionId":"...","options":[{{"id":"...","label":"...","description":"...","pros":"...","cons":"...","reason":"...","score":92,"isRecommended":true,"sources":["Q{q_idx}-S1"]}}]}}]}}
+{{"questions":[{{"questionIndex":{q_idx},"researchSummary":"...","recommendedOptionId":"...","options":[{{"id":"...","label":"...","description":"...","pros":"...","cons":"...","reason":"...","score":92,"isRecommended":true,"sources":[]}}]}}]}}
 
 【题目标题】
 {body.title}
@@ -230,6 +262,9 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
 【当前问题】
 {json.dumps(q, ensure_ascii=False, indent=2)}
 
+【参考文献检索状态】
+{_reference_status(enabled_tools)}
+
 【已验证文献 sources】
 {refs_prompt}
 """
@@ -239,7 +274,7 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
                     [
                         {
                             "role": "system",
-                            "content": "你是数学建模竞赛的模型选优专家。必须围绕题面、数据结构和已验证文献依据给出模型候选；禁止编造来源。",
+                            "content": "你是数学建模竞赛的模型选优专家。必须围绕题面和数据结构给出模型候选；启用文献检索时只能引用已验证来源，未启用时禁止编造来源。",
                         },
                         {"role": "user", "content": prompt},
                     ],
@@ -250,6 +285,8 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
                     continue
                 candidate = candidate_list[0]
                 candidate["questionIndex"] = q_idx
+                candidate["referenceSearchEnabled"] = bool(enabled_tools)
+                candidate["referenceTools"] = enabled_tools
                 candidate = _sanitize_candidate_sources(candidate, references)
                 quality_issues = legacy._validate_model_options_for_questions([candidate], question_map)
                 if not quality_issues:
@@ -293,36 +330,44 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
         safe_task_id,
         SystemMessage(content=f"模型候选方案生成完成，共 {len(questions)} 问，请在各卡片中选择建模方案", type="success"),
     )
-    return ModelingOptionsResponse(success=True, message="已基于题面、学术检索和来源校验生成模型候选", questions=normalized)
+    return ModelingOptionsResponse(success=True, message="已按用户选择的文献检索工具生成模型候选", questions=normalized)
 
 
 @router.post("/modeling/{task_id}/discussion-chat", response_model=ModelingDiscussionChatResponse)
 async def modeling_discussion_chat(task_id: str, body: ModelingDiscussionChatRequest):
-    """Card-level model discussion with async reference retrieval."""
+    """Card-level model discussion with optional reference retrieval."""
     try:
         safe_task_id = ensure_safe_task_id(task_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="非法任务ID") from exc
 
+    enabled_tools = normalize_reference_tools(
+        body.reference_tools if body.reference_tools is not None else DEFAULT_REFERENCE_TOOLS,
+        body.reference_search_enabled,
+    )
     selected_question = next(
         (q for q in body.questions if int(q.get("questionIndex", -1)) == body.question_index),
         None,
     )
     title = str(selected_question.get("questionTitle") or "") if selected_question else ""
     q_text = str(selected_question.get("questionText") or "") if selected_question else ""
-    references = await _search_refs_async(
-        title=title,
-        question_text=q_text,
-        user_message=body.message,
-        work_dir=get_work_dir(safe_task_id),
-        question_index=body.question_index,
-        limit=8,
-    )
+    references: list[dict[str, Any]] = []
+    if enabled_tools:
+        references = await _search_refs_async(
+            title=title,
+            question_text=q_text,
+            user_message=body.message,
+            work_dir=get_work_dir(safe_task_id),
+            question_index=body.question_index,
+            limit=8,
+            reference_search_enabled=True,
+            reference_tools=enabled_tools,
+        )
 
     shared_context = json.dumps(body.questions, ensure_ascii=False, indent=2)
     user_prompt = f"""
 你是建模方案讨论助手。用户会逐问选择模型，所有问题卡片共用同一个上下文。
-请结合全部卡片的已选模型、自定义方案、对话历史和已验证文献摘要，回答当前问题卡片的追问。
+请结合全部卡片的已选模型、自定义方案、对话历史和参考文献检索状态，回答当前问题卡片的追问。
 不要直接启动正式建模，只给出可供用户选择/修正的建议；如果更合适的模型不在候选卡片中，请明确建议用户通过“自定义方案”填写。
 
 【当前讨论的问题】第 {body.question_index} 问
@@ -330,6 +375,9 @@ async def modeling_discussion_chat(task_id: str, body: ModelingDiscussionChatReq
 
 【全部问题卡片共享上下文】
 {shared_context}
+
+【参考文献检索状态】
+{_reference_status(enabled_tools)}
 
 【本问已验证文献摘要】
 {format_references_for_prompt(references, max_items=6)}
@@ -350,7 +398,7 @@ async def modeling_discussion_chat(task_id: str, body: ModelingDiscussionChatReq
             [
                 {
                     "role": "system",
-                    "content": "你是数学建模竞赛中的建模方案讨论助手。回答要简洁、具体、可执行；必须围绕题目数据和目标做模型比选，不要编造来源。",
+                    "content": "你是数学建模竞赛中的建模方案讨论助手。回答要简洁、具体、可执行；启用检索时只引用已验证来源，未启用时禁止编造来源。",
                 },
                 {"role": "user", "content": user_prompt},
             ],
