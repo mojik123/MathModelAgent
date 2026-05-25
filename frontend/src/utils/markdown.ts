@@ -34,7 +34,7 @@ const renderMath = (tex: string, displayMode = false) => {
 };
 
 export const resolveTaskImageUrl = (src: string, taskId?: string) => {
-	const raw = (src || "").trim().replace(/^['"]|['"]$/g, "");
+	const raw = (src || "").trim().replace(/^['\"]|['\"]$/g, "");
 	if (!raw) return raw;
 	if (/^(https?:|data:|blob:)/i.test(raw)) return raw;
 
@@ -42,8 +42,7 @@ export const resolveTaskImageUrl = (src: string, taskId?: string) => {
 	const suffix = suffixMatch?.[0] ?? "";
 	const pathPart = suffix ? raw.slice(0, -suffix.length) : raw;
 	const normalized = pathPart.replace(/\\/g, "/");
-	const currentTaskId =
-		taskId || window.localStorage.getItem("currentTaskId") || "";
+	const currentTaskId = taskId || window.localStorage.getItem("currentTaskId") || "";
 	if (!currentTaskId) return raw;
 
 	const staticMatch = normalized.match(/(?:^|\/)static\/+(.+)$/);
@@ -58,15 +57,8 @@ export const resolveTaskImageUrl = (src: string, taskId?: string) => {
 };
 
 const withImageVersion = (src: string, imageVersion?: string | number) => {
-	if (
-		imageVersion === undefined ||
-		imageVersion === null ||
-		imageVersion === ""
-	) {
-		return src;
-	}
+	if (imageVersion === undefined || imageVersion === null || imageVersion === "") return src;
 	if (/^(data:|blob:)/i.test(src)) return src;
-
 	const hashIndex = src.indexOf("#");
 	const base = hashIndex >= 0 ? src.slice(0, hashIndex) : src;
 	const hash = hashIndex >= 0 ? src.slice(hashIndex) : "";
@@ -92,7 +84,6 @@ const openMarkdownImagePreview = (src: string, alt: string) => {
 		"padding:24px",
 		"box-sizing:border-box",
 	].join(";");
-
 	const close = () => overlay.remove();
 	overlay.addEventListener("click", (event) => {
 		if (event.target === overlay) close();
@@ -158,8 +149,7 @@ export const normalizeMarkdownImageUrls = (
 			`!\\[(.*?)\\]\\((.*?\\.(?:${IMAGE_EXTENSION_RE_FRAGMENT})(?:[?#][^)]+)?)\\)`,
 			"gi",
 		),
-		(_, alt, src) =>
-			`![${alt}](${withImageVersion(resolveTaskImageUrl(src, taskId), imageVersion)})`,
+		(_, alt, src) => `![${alt}](${withImageVersion(resolveTaskImageUrl(src, taskId), imageVersion)})`,
 	);
 
 const escapeHtml = (value: string) =>
@@ -169,6 +159,46 @@ const escapeHtml = (value: string) =>
 		.replace(/>/g, "&gt;")
 		.replace(/\"/g, "&quot;")
 		.replace(/'/g, "&#39;");
+
+const hasChinese = (value: string) => /[\u4e00-\u9fff]/.test(value || "");
+
+const looksLikeFilename = (value: string) => {
+	const s = (value || "").trim().replace(/^`|`$/g, "");
+	if (!s) return true;
+	if (new RegExp(`\\.(?:${IMAGE_EXTENSION_RE_FRAGMENT})(?:[?#].*)?$`, "i").test(s)) return true;
+	if (s.includes("/") || s.includes("\\\\")) return true;
+	if (!hasChinese(s) && /[A-Za-z]/.test(s) && /[_-]/.test(s)) return true;
+	return false;
+};
+
+const chineseCaptionFromSrc = (src: string) => {
+	const clean = decodeURIComponent((src || "").split(/[?#]/)[0]);
+	const base = clean.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
+	const lower = base.toLowerCase();
+	const words: string[] = [];
+	const add = (word: string) => {
+		if (!words.includes(word)) words.push(word);
+	};
+	if (/profit|revenue|收益|利润/.test(lower)) add("利润收益");
+	if (/cost|成本/.test(lower)) add("成本");
+	if (/crop|作物/.test(lower)) add("作物");
+	if (/area|面积/.test(lower)) add("面积");
+	if (/yield|产量/.test(lower)) add("产量");
+	if (/sales|sale|销量|销售/.test(lower)) add("销量");
+	if (/price|价格/.test(lower)) add("价格");
+	if (/heatmap|热力/.test(lower)) add("热力图");
+	if (/sensitivity|灵敏/.test(lower)) add("灵敏度分析");
+	if (/comparison|compare|对比/.test(lower)) add("对比");
+	if (/timeline|trend|趋势/.test(lower)) add("趋势");
+	if (/distribution|分布/.test(lower)) add("分布");
+	return words.length ? `${words.join("与")}图` : "结果图";
+};
+
+const visibleImageCaption = (alt: string, src: string) => {
+	const raw = (alt || "").trim();
+	if (!raw || looksLikeFilename(raw)) return chineseCaptionFromSrc(src);
+	return raw;
+};
 
 const renderer: Partial<RendererObject> = {
 	heading(this: Renderer, token: { depth: number; text: string }) {
@@ -185,14 +215,9 @@ const renderer: Partial<RendererObject> = {
 		const cellText = (cell: string | { text: string }) =>
 			typeof cell === "string" ? cell : (cell.text ?? "");
 		const rows = token.rows
-			.map(
-				(row) =>
-					`<tr>${row.map((cell) => `<td>${marked.parseInline(cellText(cell))}</td>`).join("")}</tr>`,
-			)
+			.map((row) => `<tr>${row.map((cell) => `<td>${marked.parseInline(cellText(cell))}</td>`).join("")}</tr>`)
 			.join("");
-		const head = token.header
-			.map((cell) => `<th>${marked.parseInline(cellText(cell))}</th>`)
-			.join("");
+		const head = token.header.map((cell) => `<th>${marked.parseInline(cellText(cell))}</th>`).join("");
 		return `<div class="markdown-table-wrapper">
 			<table class="markdown-table">
 				<thead><tr>${head}</tr></thead>
@@ -202,7 +227,6 @@ const renderer: Partial<RendererObject> = {
 	},
 	paragraph(this: Renderer, token: { text: string }) {
 		let text = token.text;
-
 		const imagePattern = /!\[(.*?)\]\((.*?)\)/g;
 		const images: Array<[string, string, string]> = [];
 		let imageIndex = 0;
@@ -211,20 +235,18 @@ const renderer: Partial<RendererObject> = {
 			return `__IMAGE_PLACEHOLDER_${imageIndex++}__`;
 		});
 
-		text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => {
-			return `<div class="math-block">${renderMath(tex.trim(), true)}</div>`;
-		});
-
-		text = text.replace(/\\\((.*?)\\\)/g, (_, tex) =>
-			renderMath(tex.trim(), false),
-		);
+		text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => `<div class="math-block">${renderMath(tex.trim(), true)}</div>`);
+		text = text.replace(/\\\((.*?)\\\)/g, (_, tex) => renderMath(tex.trim(), false));
 
 		text = text.replace(/__IMAGE_PLACEHOLDER_(\d+)__/g, (_, index) => {
 			const [, alt, src] = images[Number.parseInt(index)];
-			// 直接使用 alt text 作为图标题（WriterAgent 已包含 "图X" 编号）
 			const rawAlt = (alt || "图片").trim() || "图片";
-			const safeAlt = escapeHtml(rawAlt);
+			const caption = visibleImageCaption(rawAlt, src);
+			const safeAlt = escapeHtml(caption || rawAlt || "图片");
 			const safeSrc = escapeHtml(src);
+			const captionHtml = caption
+				? `<figcaption style="margin-top:0.5rem;text-align:center;font-size:0.95rem;font-weight:600;">${escapeHtml(caption)}</figcaption>`
+				: "";
 			return `
 				<figure class="markdown-figure" style="margin:1.25rem 0;text-align:center;">
 					<span class="markdown-image-wrapper" style="position:relative;display:inline-block;max-width:100%;">
@@ -238,7 +260,7 @@ const renderer: Partial<RendererObject> = {
 							style="position:absolute;left:10px;bottom:10px;opacity:0;pointer-events:none;width:32px;height:32px;border:none;border-radius:999px;background:rgba(0,0,0,0.62);color:#fff;cursor:pointer;transition:opacity 0.2s ease;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,0.22);"
 						>⌕</button>
 					</span>
-					<figcaption style="margin-top:0.5rem;text-align:center;font-size:0.95rem;font-weight:600;">${safeAlt}</figcaption>
+					${captionHtml}
 				</figure>`;
 		});
 
@@ -251,44 +273,31 @@ marked.use({ renderer });
 const registerMarkdownImageHoverBehavior = () => {
 	if (imagePreviewListenerRegistered || typeof document === "undefined") return;
 	imagePreviewListenerRegistered = true;
-
 	document.addEventListener("mouseover", (event) => {
 		const target = event.target as HTMLElement | null;
-		const wrapper = target?.closest?.(
-			".markdown-image-wrapper",
-		) as HTMLElement | null;
+		const wrapper = target?.closest?.(".markdown-image-wrapper") as HTMLElement | null;
 		if (!wrapper) return;
-		const btn = wrapper.querySelector(
-			".markdown-image-zoom-btn",
-		) as HTMLElement | null;
+		const btn = wrapper.querySelector(".markdown-image-zoom-btn") as HTMLElement | null;
 		if (btn) {
 			btn.style.opacity = "1";
 			btn.style.pointerEvents = "auto";
 		}
 	});
-
 	document.addEventListener("mouseout", (event) => {
 		const target = event.target as HTMLElement | null;
-		const wrapper = target?.closest?.(
-			".markdown-image-wrapper",
-		) as HTMLElement | null;
+		const wrapper = target?.closest?.(".markdown-image-wrapper") as HTMLElement | null;
 		if (!wrapper) return;
 		const related = event.relatedTarget as HTMLElement | null;
 		if (related && wrapper.contains(related)) return;
-		const btn = wrapper.querySelector(
-			".markdown-image-zoom-btn",
-		) as HTMLElement | null;
+		const btn = wrapper.querySelector(".markdown-image-zoom-btn") as HTMLElement | null;
 		if (btn) {
 			btn.style.opacity = "0";
 			btn.style.pointerEvents = "none";
 		}
 	});
-
 	document.addEventListener("click", (event) => {
 		const target = event.target as HTMLElement | null;
-		const btn = target?.closest?.(
-			".markdown-image-zoom-btn",
-		) as HTMLButtonElement | null;
+		const btn = target?.closest?.(".markdown-image-zoom-btn") as HTMLButtonElement | null;
 		if (!btn) return;
 		event.preventDefault();
 		event.stopPropagation();
@@ -308,15 +317,13 @@ export const renderMarkdown = async (
 	const { taskId, imageVersion, ...markedOptions } = options;
 	const normalized = normalizeMarkdownImageUrls(content, taskId, imageVersion)
 		.replace(/\\\[\s*\n/g, "\\[")
-		.replace(/\n\s*\\\]/g, "\\]").replace(/([a-zA-Z0-9])_\{/g, "$1\\_{")
-			// protect number range tilde from strikethrough
-			.replace(/(\d)~(\d)/g, "$1\\~$2")
+		.replace(/\n\s*\\\]/g, "\\]")
+		.replace(/([a-zA-Z0-9])_\{/g, "$1\\_{")
+		.replace(/(\d)~(\d)/g, "$1\\~$2");
 	registerMarkdownImageHoverBehavior();
 	return marked.parse(normalized, { ...defaultOptions, ...markedOptions });
 };
 
-export const getMarkdownLines = (content: string) => {
-	return content.split("\n").length;
-};
+export const getMarkdownLines = (content: string) => content.split("\n").length;
 
 export { marked };
