@@ -231,9 +231,15 @@ class UserOutput:
             json.dump(self.res, f, ensure_ascii=False, indent=4)
 
         res_path = os.path.join(self.work_dir, "res.md")
+        text_to_save = (
+            clean_final_paper_markdown(final_text)
+            if final_text
+            else self.get_result_to_save()
+        )
+        try:
+            from app.utils.artifact_edits import apply_artifact_patches_to_markdown
+            text_to_save = apply_artifact_patches_to_markdown(text_to_save, self.work_dir)
+        except Exception as exc:
+            print(f"[artifact_edits] apply patches failed: {exc}")
         with open(res_path, "w", encoding="utf-8") as f:
-            f.write(
-                clean_final_paper_markdown(final_text)
-                if final_text
-                else self.get_result_to_save()
-            )
+            f.write(text_to_save)
