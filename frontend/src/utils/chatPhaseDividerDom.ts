@@ -1,7 +1,9 @@
 const STYLE_ID = "chat-phase-divider-style";
 const DIVIDER_ATTR = "data-chat-phase-divider";
 const HIDDEN_ATTR = "data-chat-phase-hidden";
+const EDGE_ATTR = "data-chat-phase-edge-marker";
 let installed = false;
+let scrollListenerBoundTo: HTMLElement | null = null;
 
 const PHASES = [
 	{
@@ -25,6 +27,7 @@ const PHASES = [
 ] as const;
 
 type PhaseKey = (typeof PHASES)[number]["key"];
+type EdgePosition = "top" | "bottom";
 
 function addStyle() {
 	if (document.getElementById(STYLE_ID)) return;
@@ -114,6 +117,85 @@ function addStyle() {
 .chat-phase-divider[data-phase-warning="true"] .chat-phase-divider-title {
 	color: #92400e;
 }
+
+.chat-phase-edge-marker {
+	position: fixed;
+	z-index: 60;
+	display: none;
+	align-items: center;
+	justify-content: center;
+	border: 0;
+	background: transparent;
+	padding: 0;
+	pointer-events: none;
+}
+
+.chat-phase-edge-marker-inner {
+	display: inline-flex;
+	max-width: 100%;
+	align-items: center;
+	gap: 8px;
+	border: 1px solid rgba(191, 219, 254, .95);
+	border-radius: 999px;
+	background:
+		radial-gradient(circle at 14% 0%, rgba(255,255,255,.96), transparent 34%),
+		linear-gradient(135deg, rgba(239,246,255,.94), rgba(255,255,255,.78));
+	box-shadow: 0 12px 34px rgba(37, 99, 235, .13), inset 0 1px 0 rgba(255,255,255,.86);
+	padding: 6px 12px;
+	font-size: 11px;
+	font-weight: 800;
+	color: #1e3a8a;
+	backdrop-filter: blur(16px) saturate(1.16);
+	-webkit-backdrop-filter: blur(16px) saturate(1.16);
+	pointer-events: auto;
+	cursor: pointer;
+}
+
+.chat-phase-edge-marker-inner:hover {
+	transform: translateY(-1px);
+	box-shadow: 0 16px 40px rgba(37, 99, 235, .18), inset 0 1px 0 rgba(255,255,255,.9);
+}
+
+.chat-phase-edge-marker[data-edge="bottom"] .chat-phase-edge-marker-inner:hover {
+	transform: translateY(1px);
+}
+
+.chat-phase-edge-marker-icon {
+	display: inline-flex;
+	height: 18px;
+	width: 18px;
+	align-items: center;
+	justify-content: center;
+	border-radius: 999px;
+	background: rgba(37, 99, 235, .1);
+	color: #2563eb;
+	font-size: 10px;
+}
+
+.chat-phase-edge-marker-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.chat-phase-edge-marker-meta {
+	white-space: nowrap;
+	color: rgba(71, 85, 105, .72);
+	font-weight: 700;
+}
+
+.chat-phase-edge-marker[data-phase-warning="true"] .chat-phase-edge-marker-inner {
+	border-color: rgba(252, 211, 77, .95);
+	background: linear-gradient(135deg, rgba(255,251,235,.94), rgba(255,255,255,.80));
+	box-shadow: 0 12px 34px rgba(245, 158, 11, .15), inset 0 1px 0 rgba(255,255,255,.86);
+	color: #92400e;
+}
+
+.chat-phase-edge-marker[data-phase-warning="true"] .chat-phase-edge-marker-icon {
+	background: rgba(245, 158, 11, .12);
+	color: #b45309;
+}
 `;
 	document.head.appendChild(style);
 }
@@ -138,6 +220,7 @@ function getRows(scroll: HTMLElement) {
 	return Array.from(scroll.children)
 		.filter((node): node is HTMLElement => node instanceof HTMLElement)
 		.filter((node) => !node.hasAttribute(DIVIDER_ATTR))
+		.filter((node) => !node.hasAttribute(EDGE_ATTR))
 		.filter((node) => textOf(node).length > 0);
 }
 
@@ -177,6 +260,8 @@ function updateDivider(node: HTMLElement, phase: PhaseKey, label: string, rows: 
 	const warning = rows.some((row) => /失败|错误|改错|后台判别|需关注|停止/.test(textOf(row)));
 	node.dataset.phaseExpanded = expanded ? "true" : "false";
 	node.dataset.phaseWarning = warning ? "true" : "false";
+	node.dataset.phaseLabel = label;
+	node.dataset.phaseCount = String(rows.length);
 	node.innerHTML = `
 		<span class="chat-phase-divider-inner">
 			<span class="chat-phase-divider-icon">${expanded ? "⌃" : "⌄"}</span>
@@ -201,11 +286,122 @@ function removeUnusedDividers(scroll: HTMLElement, used: Set<string>) {
 	}
 }
 
+function ensureEdgeMarker(edge: EdgePosition) {
+	let marker = document.querySelector<HTMLElement>(`[${EDGE_ATTR}="${edge}"]`);
+	if (!marker) {
+		marker = document.createElement("button");
+		marker.type = "button";
+		marker.className = "chat-phase-edge-marker";
+		marker.setAttribute(EDGE_ATTR, edge);
+		marker.dataset.edge = edge;
+		marker.addEventListener("click", () => {
+			const phase = marker?.dataset.targetPhase;
+			if (!phase) return;
+			const panel = getPanel();
+			const scroll = panel ? getScroll(panel) : null;
+			const divider = scroll?.querySelector<HTMLElement>(`[${DIVIDER_ATTR}="${phase}"]`);
+			divider?.scrollIntoView({ block: "center", behavior: "smooth" });
+			setTimeout(updateEdgeMarkers, 260);
+		});
+		document.body.appendChild(marker);
+	}
+	return marker;
+}
+
+function hideEdgeMarker(edge: EdgePosition) {
+	const marker = document.querySelector<HTMLElement>(`[${EDGE_ATTR}="${edge}"]`);
+	if (marker) marker.style.display = "none";
+}
+
+function hideAllEdgeMarkers() {
+	hideEdgeMarker("top");
+	hideEdgeMarker("bottom");
+}
+
+function positionEdgeMarker(marker: HTMLElement, scroll: HTMLElement, edge: EdgePosition) {
+	const rect = scroll.getBoundingClientRect();
+	marker.style.left = `${Math.max(0, rect.left + 12)}px`;
+	marker.style.width = `${Math.max(120, rect.width - 24)}px`;
+	marker.style.top = edge === "top" ? `${rect.top + 8}px` : "auto";
+	marker.style.bottom = edge === "bottom" ? `${Math.max(8, window.innerHeight - rect.bottom + 8)}px` : "auto";
+}
+
+function showEdgeMarker(edge: EdgePosition, divider: HTMLElement, scroll: HTMLElement) {
+	const marker = ensureEdgeMarker(edge);
+	const phase = divider.getAttribute(DIVIDER_ATTR) || "";
+	const label = divider.dataset.phaseLabel || "阶段";
+	const count = divider.dataset.phaseCount || "0";
+	const expanded = divider.dataset.phaseExpanded === "true";
+	const warning = divider.dataset.phaseWarning === "true";
+	marker.dataset.targetPhase = phase;
+	marker.dataset.phaseWarning = warning ? "true" : "false";
+	marker.style.display = "flex";
+	positionEdgeMarker(marker, scroll, edge);
+	marker.innerHTML = `
+		<span class="chat-phase-edge-marker-inner">
+			<span class="chat-phase-edge-marker-icon">${edge === "top" ? "↑" : "↓"}</span>
+			<span class="chat-phase-edge-marker-title">已完成：${label}</span>
+			<span class="chat-phase-edge-marker-meta">${count} 条 · ${expanded ? "已展开" : "已折叠"} · 点击跳转</span>
+		</span>
+	`;
+}
+
+function updateEdgeMarkers() {
+	const panel = getPanel();
+	if (!panel) {
+		hideAllEdgeMarkers();
+		return;
+	}
+	const scroll = getScroll(panel);
+	if (!scroll) {
+		hideAllEdgeMarkers();
+		return;
+	}
+	const dividers = Array.from(scroll.querySelectorAll<HTMLElement>(`[${DIVIDER_ATTR}]`));
+	if (!dividers.length) {
+		hideAllEdgeMarkers();
+		return;
+	}
+	const scrollRect = scroll.getBoundingClientRect();
+	const topLimit = scrollRect.top + 8;
+	const bottomLimit = scrollRect.bottom - 8;
+	const above = dividers
+		.map((divider) => ({ divider, rect: divider.getBoundingClientRect() }))
+		.filter((item) => item.rect.bottom < topLimit)
+		.sort((a, b) => b.rect.bottom - a.rect.bottom)[0]?.divider;
+	const below = dividers
+		.map((divider) => ({ divider, rect: divider.getBoundingClientRect() }))
+		.filter((item) => item.rect.top > bottomLimit)
+		.sort((a, b) => a.rect.top - b.rect.top)[0]?.divider;
+
+	if (above) showEdgeMarker("top", above, scroll);
+	else hideEdgeMarker("top");
+
+	if (below) showEdgeMarker("bottom", below, scroll);
+	else hideEdgeMarker("bottom");
+}
+
+function bindScrollListener(scroll: HTMLElement) {
+	if (scrollListenerBoundTo === scroll) return;
+	if (scrollListenerBoundTo) {
+		scrollListenerBoundTo.removeEventListener("scroll", updateEdgeMarkers);
+	}
+	scrollListenerBoundTo = scroll;
+	scroll.addEventListener("scroll", updateEdgeMarkers, { passive: true });
+}
+
 function applyPhaseDividers() {
 	const panel = getPanel();
-	if (!panel) return;
+	if (!panel) {
+		hideAllEdgeMarkers();
+		return;
+	}
 	const scroll = getScroll(panel);
-	if (!scroll) return;
+	if (!scroll) {
+		hideAllEdgeMarkers();
+		return;
+	}
+	bindScrollListener(scroll);
 	const allText = textOf(panel);
 	const rows = getRows(scroll);
 	const used = new Set<string>();
@@ -228,6 +424,7 @@ function applyPhaseDividers() {
 	}
 
 	removeUnusedDividers(scroll, used);
+	updateEdgeMarkers();
 }
 
 export function installChatPhaseDividerDomPatch() {
@@ -235,6 +432,7 @@ export function installChatPhaseDividerDomPatch() {
 	installed = true;
 	addStyle();
 	setInterval(applyPhaseDividers, 900);
+	window.addEventListener("resize", updateEdgeMarkers);
 	window.addEventListener("storage", (event) => {
 		if (event.key?.startsWith("chat-phase-divider:")) applyPhaseDividers();
 	});
