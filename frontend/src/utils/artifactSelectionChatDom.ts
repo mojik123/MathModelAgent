@@ -5,6 +5,7 @@ let installed = false;
 let lastImageSignature = "";
 let lastTextSignature = "";
 let lastEmitTime = 0;
+const lastImageEmitAt = new Map<string, number>();
 
 function addStyle() {
 	if (document.getElementById(STYLE_ID)) return;
@@ -39,6 +40,23 @@ function isTextRevisionPanel(panel: HTMLElement) {
 	return /AI\s*文字修改/.test(textOf(panel));
 }
 
+function currentSelectedPaperImage() {
+	const img =
+		document.querySelector<HTMLImageElement>(".paper-preview img.image-selected") ||
+		document.querySelector<HTMLImageElement>(".paper-preview img.image-hovered") ||
+		document.querySelector<HTMLImageElement>(".markdown-image-wrapper img.image-selected") ||
+		document.querySelector<HTMLImageElement>(".markdown-image-wrapper img.image-hovered");
+	if (!img) return null;
+	const src = img.src || img.getAttribute("src") || "";
+	const filename = filenameFromSrc(src);
+	if (!filename) return null;
+	return {
+		filename,
+		alt: img.alt || "",
+		src,
+	};
+}
+
 function extractImageInfo(panel: HTMLElement) {
 	const img = panel.querySelector<HTMLImageElement>("img");
 	const src = img?.src || img?.getAttribute("src") || "";
@@ -68,16 +86,29 @@ function shouldThrottle(signature: string) {
 	return false;
 }
 
-function emitImageSelection(panel: HTMLElement) {
-	const info = extractImageInfo(panel);
-	const signature = `image:${info.filename}:${info.alt}:${info.codeLabel}`;
-	if (shouldThrottle(signature)) return;
-	lastImageSignature = signature;
-	panel.dataset.selectionChatSynced = "image";
+function shouldThrottleImage(filename: string, windowMs = 3500) {
+	const now = Date.now();
+	const last = lastImageEmitAt.get(filename) || 0;
+	if (now - last < windowMs) return true;
+	lastImageEmitAt.set(filename, now);
+	return false;
+}
+
+function emitImageSelectionDetail(info: {
+	filename: string;
+	alt?: string;
+	codeFound?: boolean;
+	codeLabel?: string;
+	codePending?: boolean;
+}) {
+	if (!info.filename || info.filename === "未识别图片") return;
+	if (shouldThrottleImage(info.filename)) return;
 	const taskStore = useTaskStore();
-	const codeText = info.codeFound
-		? `已找到生成代码${info.codeLabel ? `（${info.codeLabel}）` : ""}`
-		: "未找到生成代码，后续会优先基于现有图片或上下文修订";
+	const codeText = info.codePending
+		? "正在读取生成代码信息"
+		: info.codeFound
+			? `已找到生成代码${info.codeLabel ? `（${info.codeLabel}）` : ""}`
+			: "未找到生成代码，后续会优先基于现有图片或上下文修订";
 	const titleText = info.alt && info.alt !== info.filename ? `\n图题：${info.alt}` : "";
 	taskStore.addUserAction(
 		"选择",
@@ -89,6 +120,32 @@ function emitImageSelection(panel: HTMLElement) {
 			label: "选择图片待修改",
 		},
 	);
+}
+
+function emitImageSelection(panel: HTMLElement) {
+	const info = extractImageInfo(panel);
+	const signature = `image:${info.filename}:${info.alt}:${info.codeLabel}`;
+	if (shouldThrottle(signature)) return;
+	lastImageSignature = signature;
+	panel.dataset.selectionChatSynced = "image";
+	emitImageSelectionDetail(info);
+}
+
+function emitImageButtonClickSelection(event: Event) {
+	const target = event.target as HTMLElement | null;
+	const button = target?.closest?.(".action-btn-overlay button") as HTMLElement | null;
+	if (!button) return;
+	if (!/AI\s*修图/.test(textOf(button))) return;
+	const img = currentSelectedPaperImage();
+	if (!img) return;
+	emitImageSelectionDetail({
+		filename: img.filename,
+		alt: img.alt,
+		codePending: true,
+	});
+	// 面板渲染和代码元数据加载是异步的，稍后再尝试补充一次更准确的代码状态。
+	setTimeout(syncExpandedRevisionPanel, 450);
+	setTimeout(syncExpandedRevisionPanel, 1200);
 }
 
 function emitTextSelection(panel: HTMLElement) {
@@ -128,5 +185,6 @@ export function installArtifactSelectionChatDomPatch() {
 	if (installed || typeof window === "undefined" || typeof document === "undefined") return;
 	installed = true;
 	addStyle();
+	document.addEventListener("click", emitImageButtonClickSelection, true);
 	setInterval(syncExpandedRevisionPanel, 600);
 }
