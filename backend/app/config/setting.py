@@ -92,7 +92,6 @@ class Settings(BaseSettings):
     DEEPSEEK_BASE_URL: Optional[str] = None
     OPENALEX_EMAIL: Optional[str] = None
     OPENALEX_API_KEY: Optional[str] = None
-    SCHOLAR_SOURCES: str = "openalex,crossref"
 
     # Web Search 配置（Tavily API）
     TAVILY_API_KEY: Optional[str] = None

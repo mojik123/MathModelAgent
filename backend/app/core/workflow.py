@@ -13,8 +13,6 @@ from app.core.agents import WriterAgent, CoderAgent, CoordinatorAgent, ModelerAg
 from app.schemas.request import Problem
 from app.schemas.response import SystemMessage, ProgressMessage, SubCoordinatorMessage
 from app.tools.openalex_scholar import OpenAlexScholar
-from app.tools.crossref_scholar import CrossrefScholar
-from app.tools.scholar_aggregator import ScholarAggregator
 from app.utils.log_util import logger
 from app.utils.common_utils import create_work_dir, get_config_template
 from app.models.user_output import UserOutput, clean_final_paper_markdown
@@ -144,36 +142,6 @@ class MathModelWorkFlow(WorkFlow):
             agent_index=agent_index,
         )
 
-    def _create_scholar(self) -> ScholarAggregator | OpenAlexScholar | None:
-        """根据 SCHOLAR_SOURCES 配置创建文献检索客户端（支持多源聚合）。
-
-        Returns:
-            聚合器实例、单一 OpenAlex 客户端，或 None（未配置邮箱时）。
-        """
-        sources_str = getattr(settings, "SCHOLAR_SOURCES", "openalex,crossref")
-        sources = [s.strip().lower() for s in sources_str.split(",") if s.strip()]
-
-        # 若未配置邮箱，建模手使用 None（降级跳过文献检索）
-        if not settings.OPENALEX_EMAIL and "openalex" in sources:
-            sources.remove("openalex")
-
-        clients = []
-        for src in sources:
-            if src == "openalex":
-                clients.append(OpenAlexScholar(
-                    task_id=self.task_id,
-                    email=settings.OPENALEX_EMAIL,
-                    api_key=settings.OPENALEX_API_KEY,
-                ))
-            elif src == "crossref":
-                clients.append(CrossrefScholar(task_id=self.task_id))
-
-        if len(clients) == 0:
-            return None
-        if len(clients) == 1:
-            return clients[0]
-        return ScholarAggregator(*clients)
-
     def _create_writer_agent(
         self,
         problem: Problem,
@@ -194,7 +162,11 @@ class MathModelWorkFlow(WorkFlow):
             agent_index=agent_index,
         )
         assert settings.OPENALEX_EMAIL is not None, "OPENALEX_EMAIL 未配置"
-        scholar = self._create_scholar()
+        scholar = OpenAlexScholar(
+            task_id=self.task_id,
+            email=settings.OPENALEX_EMAIL,
+            api_key=settings.OPENALEX_API_KEY,
+        )
         return WriterAgent(
             task_id=problem.task_id,
             model=writer_llm,
@@ -845,7 +817,13 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
         # ── 阶段 2：全局建模手生成整体方案 ───────────────────────────────────
         # 为建模手创建文献检索客户端
-        modeler_scholar = self._create_scholar() if settings.OPENALEX_EMAIL else None
+        modeler_scholar = None
+        if settings.OPENALEX_EMAIL:
+            modeler_scholar = OpenAlexScholar(
+                task_id=self.task_id,
+                email=settings.OPENALEX_EMAIL,
+                api_key=settings.OPENALEX_API_KEY,
+            )
         modeler_agent = ModelerAgent(
             self.task_id, modeler_llm,
             context_window=settings.MODELER_CONTEXT_WINDOW,
