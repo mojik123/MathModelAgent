@@ -105,6 +105,10 @@ function addStyle() {
 	font-weight: 600;
 }
 
+.chat-phase-divider[data-phase-expanded="true"] {
+	margin-bottom: 8px;
+}
+
 .chat-phase-divider[data-phase-warning="true"] .chat-phase-divider-inner {
 	border-color: rgba(252, 211, 77, .95);
 	background: linear-gradient(135deg, rgba(255,251,235,.96), rgba(255,255,255,.82));
@@ -444,12 +448,14 @@ function applyPhaseDividers() {
 		if (!phase.complete(allText)) continue;
 		const phaseRows = rows.filter((row) => phase.match(textOf(row)));
 		if (!phaseRows.length) continue;
-		const lastRow = phaseRows[phaseRows.length - 1];
+		const firstRow = phaseRows[0];
 		const divider = ensureDivider(scroll, phase.key);
 		updateDivider(divider, phase.key, phase.label, phaseRows);
 		used.add(phase.key);
-		if (lastRow.nextSibling !== divider) {
-			scroll.insertBefore(divider, lastRow.nextSibling);
+		// Anchor the fold control at the original start of the phase block.
+		// The divider must not follow later messages or drift to the end of the hidden block.
+		if (divider.nextSibling !== firstRow) {
+			scroll.insertBefore(divider, firstRow);
 		}
 		const expanded = isExpanded(phase.key);
 		for (const row of phaseRows) setRowHidden(row, !expanded);
