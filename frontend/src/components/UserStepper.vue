@@ -20,7 +20,7 @@ import { FileUp } from "lucide-vue-next";
 import { Rocket } from "lucide-vue-next";
 import { ref } from "vue";
 import { useRouter } from "vue-router";
-import type FileConfirmDialog from "./FileConfirmDialog.vue";
+import FileConfirmDialog from "./FileConfirmDialog.vue";
 
 // ---- Reactive State ----
 
