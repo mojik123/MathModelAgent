@@ -62,7 +62,12 @@ const sendingQuestionIndex = ref<number | null>(null);
 
 // ---- Computed ----
 
+const allOptionsReady = computed(() =>
+	props.questions.length > 0 && props.questions.every((q) => q.presetOptions.length > 0),
+);
+
 const allConfirmed = computed(() =>
+	allOptionsReady.value &&
 	props.questions.every(
 		(q) =>
 			Boolean(q.selectedOptionId) &&
@@ -71,7 +76,7 @@ const allConfirmed = computed(() =>
 );
 
 const hasRecommendedOptions = computed(() =>
-	props.questions.some((q) => Boolean(getRecommendedOption(q))),
+	allOptionsReady.value && props.questions.some((q) => Boolean(getRecommendedOption(q))),
 );
 
 // 同步展开的卡片到 store，供右侧面板使用
@@ -125,6 +130,7 @@ watch(
 // ---- Methods ----
 
 function handleSelectOption(questionIndex: number, optionId: string) {
+	if (!allOptionsReady.value) return;
 	const question = props.questions.find(
 		(q) => q.questionIndex === questionIndex,
 	);
@@ -161,6 +167,7 @@ function handleSelectOption(questionIndex: number, optionId: string) {
 }
 
 function handleCustomInput(questionIndex: number, value: string) {
+	if (!allOptionsReady.value) return;
 	const updated = props.questions.map((q) =>
 		q.questionIndex === questionIndex
 			? {
@@ -190,7 +197,7 @@ function getRecommendedOption(question: QuestionCard) {
 }
 
 function handleApplyRecommended() {
-	if (props.disabled || !hasRecommendedOptions.value) return;
+	if (props.disabled || !hasRecommendedOptions.value || !allOptionsReady.value) return;
 	const applied = props.questions
 		.map((q) => {
 			const recommended = getRecommendedOption(q);
@@ -240,7 +247,7 @@ function questionPayload(items: QuestionCard[]) {
 }
 
 async function handleSendMessage(questionIndex: number, message: string) {
-	if (sendingQuestionIndex.value != null || props.disabled) return;
+	if (sendingQuestionIndex.value != null || props.disabled || !allOptionsReady.value) return;
 	const withUser = props.questions.map((q) =>
 		q.questionIndex === questionIndex
 			? {
@@ -308,7 +315,7 @@ async function handleSendMessage(questionIndex: number, message: string) {
 					}
 				: q,
 		);
-		emit("update:questions", withError);
+	emit("update:questions", withError);
 	} finally {
 		sendingQuestionIndex.value = null;
 	}
@@ -338,7 +345,7 @@ async function handleSendMessage(questionIndex: number, message: string) {
 				:selected-option-id="question.selectedOptionId"
 				:custom-input="question.customInput"
 				:chat-history="question.chatHistory"
-				:disabled="props.disabled || sendingQuestionIndex === question.questionIndex"
+				:disabled="props.disabled || sendingQuestionIndex === question.questionIndex || !allOptionsReady"
 				@select-option="(optId: string) => handleSelectOption(question.questionIndex, optId)"
 				@update:custom-input="(val: string) => handleCustomInput(question.questionIndex, val)"
 				@send-message="(msg: string) => handleSendMessage(question.questionIndex, msg)"
@@ -346,23 +353,27 @@ async function handleSendMessage(questionIndex: number, message: string) {
 			/>
 		</div>
 
+		<div v-if="!allOptionsReady && !props.disabled" class="rounded-xl border border-blue-200 bg-blue-50/80 px-3 py-2 text-xs text-blue-700">
+			建模候选方案仍在生成中。生成完成前不能应用推荐方案或确认建模思路。
+		</div>
+
 		<!-- 确认按钮：仅在未禁用且全部确认时显示 -->
 		<div v-if="!props.disabled" class="flex justify-end pt-3">
 			<button
 				class="inline-flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
-				:disabled="!hasRecommendedOptions || sendingQuestionIndex !== null"
+				:disabled="!hasRecommendedOptions || !allOptionsReady || sendingQuestionIndex !== null"
 				@click="handleApplyRecommended"
 			>
 				<Sparkles class="h-4 w-4" />
-				应用最优模型
+				{{ allOptionsReady ? "应用最优模型" : "等待方案生成" }}
 			</button>
 		</div>
 
 		<Transition name="confirm-btn">
-			<div v-if="allConfirmed && !props.disabled" class="flex justify-end pt-3">
+			<div v-if="allConfirmed && allOptionsReady && !props.disabled" class="flex justify-end pt-3">
 				<button
-					class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_4px_20px_rgba(59,130,246,0.35)] transition-all duration-300 hover:shadow-[0_6px_28px_rgba(59,130,246,0.5)] hover:scale-105 active:scale-100"
-					:disabled="props.submitting"
+					class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_4px_20px_rgba(59,130,246,0.35)] transition-all duration-300 hover:shadow-[0_6px_28px_rgba(59,130,246,0.5)] hover:scale-105 active:scale-100 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:scale-100"
+					:disabled="props.submitting || !allOptionsReady"
 					@click="emit('confirm')"
 				>
 					<CheckCircle2 class="h-4 w-4" />
