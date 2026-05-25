@@ -66,7 +66,8 @@ class UserOutput:
         return self.res
 
     @staticmethod
-    def _clip(text: str, max_len: int = 900) -> str:
+    def _clip(text: str, max_len: int = 2500) -> str:
+        """截断文本到指定长度，保留更多建模细节供后续章节使用。"""
         text = re.sub(r"\s+", " ", text or "").strip()
         if len(text) <= max_len:
             return text

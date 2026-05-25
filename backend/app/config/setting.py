@@ -56,7 +56,8 @@ class Settings(BaseSettings):
     WRITER_MAX_TOKENS: Optional[int] = None
     WRITER_CONTEXT_WINDOW: int = 128000
     WRITER_PARALLELISM: int = 3
-    QUESTION_PARALLELISM: int = 4
+    # 0 means run all question groups in parallel; set >0 to cap concurrency.
+    QUESTION_PARALLELISM: int = 0
 
     # Coder 执行配置
     CODE_EXECUTION_TIMEOUT: int = 300
@@ -69,7 +70,7 @@ class Settings(BaseSettings):
     # 速度与阻塞控制
     IMAGE_DESCRIPTION_ENABLED: bool = False
     IMAGE_DESCRIPTION_BACKGROUND: bool = True
-    WRITER_IMAGE_REPAIR_ENABLED: bool = False
+    WRITER_IMAGE_REPAIR_ENABLED: bool = True
 
     # 流程阶段控制
     QUESTION_GROUP_TIMEOUT: int = 0

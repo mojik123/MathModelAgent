@@ -37,6 +37,8 @@ class Flows:
             if key.startswith("ques") and key != "ques_count"
         }
         solutions = modeler_response.questions_solution
+        # 保存建模方案供后续 Writer 使用
+        self._modeler_solutions = solutions
         ques_flow = {
             key: {
                 "coder_prompt": f"""
@@ -179,6 +181,10 @@ class Flows:
         questions_quesx_keys = self.get_questions_quesx_keys()
         bgc = str(self.questions.get("background") or "")
 
+        # 获取建模手的方案（在 get_solution_flows 时已保存）
+        modeler_solutions = getattr(self, "_modeler_solutions", {})
+        modeler_solution_text = modeler_solutions.get(key, "")
+
         _SUBQUES_SCOPE_CONSTRAINT = """
 
 【并行写作作用域约束 — 必须严格遵守】
@@ -199,21 +205,76 @@ class Flows:
 不要在节首写问题重述、不要写本节以外的模型假设、不要写本节以外的问题分析。
 """
 
-        quesx_writer_prompt = {
-            key: f"""
-                    问题背景{bgc},不需要编写代码,代码手得到的结果{coder_response},{code_output},按照如下模板撰写：{config_template[key]}{_SUBQUES_SCOPE_CONSTRAINT}
-                """
-            for key in questions_quesx_keys
-        }
+        _WRITING_DEPTH_INSTRUCTION = """
+
+【写作深度要求 — 必须严格遵守】
+1. **完整呈现建模过程**：必须详细描述模型的数学公式推导、约束条件设定、目标函数构建，不能只给结论不给过程。
+2. **充分利用代码结果**：代码手产出的所有数值结果、表格数据、优化指标都必须在论文中体现，不能遗漏关键数据。
+3. **图片全部插入并解读**：可用图片列表中的每张图片都必须插入到最相关的段落后，并配 3-5 行中文分析解读（说明趋势、原因、结论支撑）。
+4. **模型与结果对应**：每个模型的求解结果必须与模型建立部分对应，说明求解方法、参数设置、迭代过程或算法步骤。
+5. **数据驱动结论**：所有结论必须有数据支撑，引用具体数值、百分比、指标变化量，避免空泛描述。
+"""
+
+        quesx_writer_prompt = {}
+        for qkey in questions_quesx_keys:
+            q_solution = modeler_solutions.get(qkey, "")
+            q_question = str(self.questions.get(qkey, ""))
+            modeler_section = ""
+            if q_solution:
+                modeler_section = f"\n\n【建模手的数学建模方案】\n{q_solution}\n请在论文中充分体现上述建模方案的数学原理、模型选择理由和方法论。\n"
+
+            quesx_writer_prompt[qkey] = f"""
+问题背景：{bgc}
+
+原始问题：{q_question}
+{modeler_section}
+不需要编写代码。代码手得到的结果如下：
+{coder_response}
+
+代码手的执行输出：
+{code_output}
+
+按照如下模板撰写：{config_template[qkey]}
+{_SUBQUES_SCOPE_CONSTRAINT}
+{_WRITING_DEPTH_INSTRUCTION}
+"""
+
+        modeler_eda_solution = modeler_solutions.get("eda", "")
+        eda_modeler_section = ""
+        if modeler_eda_solution:
+            eda_modeler_section = f"\n\n【建模手的 EDA 方案】\n{modeler_eda_solution}\n"
+
+        modeler_sa_solution = modeler_solutions.get("sensitivity_analysis", "")
+        sa_modeler_section = ""
+        if modeler_sa_solution:
+            sa_modeler_section = f"\n\n【建模手的灵敏度分析方案】\n{modeler_sa_solution}\n请在论文中体现分析方法的选择理由和数学原理。\n"
 
         writer_prompt = {
             "eda": f"""
-                    问题背景{bgc},不需要编写代码,代码手得到的结果{coder_response},{code_output},按照如下模板撰写：{config_template["eda"]}
-                """,
+问题背景：{bgc}
+{eda_modeler_section}
+不需要编写代码。代码手得到的结果如下：
+{coder_response}
+
+代码手的执行输出：
+{code_output}
+
+按照如下模板撰写：{config_template["eda"]}
+{_WRITING_DEPTH_INSTRUCTION}
+""",
             **quesx_writer_prompt,
             "sensitivity_analysis": f"""
-                    问题背景{bgc},不需要编写代码,代码手得到的结果{coder_response},{code_output},按照如下模板撰写：{config_template["sensitivity_analysis"]}
-                """,
+问题背景：{bgc}
+{sa_modeler_section}
+不需要编写代码。代码手得到的结果如下：
+{coder_response}
+
+代码手的执行输出：
+{code_output}
+
+按照如下模板撰写：{config_template["sensitivity_analysis"]}
+{_WRITING_DEPTH_INSTRUCTION}
+""",
         }
 
         if key in writer_prompt:
