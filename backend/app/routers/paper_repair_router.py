@@ -1,4 +1,11 @@
-"""Repair GET /paper by rebuilding preview from workflow checkpoints when res.md is incomplete."""
+"""Safe GET /paper preview and final-paper repair.
+
+Design rule:
+- `res.md` is the final output file and must not be overwritten by partial checkpoints.
+- While the workflow is still running, this route returns a generated preview from completed
+  sections only, with a clear "generating" banner.
+- Only after checkpoint.completed=True may this route repair/write `res.md`.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +24,17 @@ router = APIRouter()
 
 BASE_SEQ = ["firstPage", "toc", "RepeatQues", "analysisQues", "modelAssumption", "symbol", "eda"]
 TAIL_SEQ = ["sensitivity_analysis", "judge"]
+SECTION_LABELS = {
+    "firstPage": "标题、摘要、关键词",
+    "toc": "目录",
+    "RepeatQues": "问题重述",
+    "analysisQues": "问题分析",
+    "modelAssumption": "模型假设",
+    "symbol": "符号说明和数据预处理",
+    "eda": "描述性统计 / EDA",
+    "sensitivity_analysis": "模型分析与检验",
+    "judge": "模型评价、改进与推广",
+}
 
 
 def _read_text(path: Path) -> str:
@@ -27,6 +45,13 @@ def _read_text(path: Path) -> str:
     except Exception as exc:
         logger.warning(f"read paper failed {path}: {exc}")
         return ""
+
+
+def _write_text(path: Path, text: str) -> None:
+    try:
+        path.write_text(text, encoding="utf-8")
+    except Exception as exc:
+        logger.warning(f"write paper failed {path}: {exc}")
 
 
 def _checkpoint(work_dir: str) -> dict[str, Any]:
@@ -58,6 +83,16 @@ def _ques_count(checkpoint: dict[str, Any], res: dict[str, Any]) -> int:
     return max(nums) if nums else 0
 
 
+def _expected_seq(q_count: int) -> list[str]:
+    return [*BASE_SEQ, *[f"ques{i}" for i in range(1, q_count + 1)], *TAIL_SEQ]
+
+
+def _section_label(key: str) -> str:
+    if key.startswith("ques") and key[4:].isdigit():
+        return f"问题{int(key[4:])}模型建立与求解"
+    return SECTION_LABELS.get(key, key)
+
+
 def _toc(q_count: int) -> str:
     lines = ["## 目录", "", "一、问题重述", "1.1 问题背景", "1.2 问题重述", "", "二、问题分析"]
     for i in range(1, q_count + 1):
@@ -69,45 +104,56 @@ def _toc(q_count: int) -> str:
     return "\n".join(lines)
 
 
-def _judge() -> str:
-    return """# 七、模型的评价、改进与推广
-
-## 7.1 模型评价
-
-本文模型将地块类型、种植季次、重茬限制、豆类轮作要求和市场销售约束统一纳入优化框架，能够支撑多年度种植策略制定。问题一给出稳定参数下的基准优化方案，问题二进一步考虑产量、价格、成本和销售量的不确定性，问题三纳入作物替代性、互补性和市场相关性，使方案更贴近实际农业经营。
-
-## 7.2 模型改进
-
-后续可引入更长时间序列的真实销售数据校准市场参数，并进一步加入劳动力、机械调度、灌溉能力和运输半径等约束。模型也可扩展为滚动优化框架，在每年获得新数据后动态更新下一年度种植方案。
-
-## 7.3 推广应用
-
-该框架可推广到其他多地块、多作物、多季次农业生产区域。只需替换地块面积、作物适宜性、亩产成本和市场需求等基础数据，即可形成面向不同地区的种植策略优化工具。"""
+def _available_sections(res: dict[str, Any], q_count: int) -> list[str]:
+    available: list[str] = []
+    for key in _expected_seq(q_count):
+        if key == "toc":
+            # TOC can be deterministically previewed once the task has been parsed.
+            available.append(key)
+            continue
+        if _content(res.get(key)):
+            available.append(key)
+    return available
 
 
-def _rebuilt(work_dir: str) -> str:
+def _missing_sections(res: dict[str, Any], q_count: int) -> list[str]:
+    missing: list[str] = []
+    for key in _expected_seq(q_count):
+        if key == "toc":
+            continue
+        if not _content(res.get(key)):
+            missing.append(key)
+    return missing
+
+
+def _assemble_from_checkpoint(
+    work_dir: str,
+    *,
+    include_toc: bool = True,
+) -> tuple[str, list[str], list[str]]:
     cp = _checkpoint(work_dir)
     res = cp.get("user_output_res")
     if not isinstance(res, dict) or not res:
-        return ""
+        return "", [], []
+
     q_count = _ques_count(cp, res)
-    seq = [*BASE_SEQ, *[f"ques{i}" for i in range(1, q_count + 1)], *TAIL_SEQ]
+    seq = _expected_seq(q_count)
     parts: list[str] = []
+    included: list[str] = []
     for key in seq:
         text = _content(res.get(key))
-        if not text and key == "toc":
+        if not text and key == "toc" and include_toc:
             text = _toc(q_count)
-        if not text and key == "judge":
-            text = _judge()
+        # Important: do NOT synthesize judge, assumptions, question sections, etc.
+        # Fake sections made incomplete papers look complete and polluted res.md.
         if text:
+            included.append(key)
             parts.append(text)
-    return clean_final_paper_markdown("\n\n".join(parts)) if parts else ""
 
+    if not parts:
+        return "", [], _missing_sections(res, q_count)
 
-def _score(text: str, q_count: int) -> int:
-    tokens = ["一、问题重述", "二、问题分析", "三、模型假设", "四、符号说明", "五、模型的建立与求解", "六、模型", "七、模型"]
-    tokens += [f"5.{i}" for i in range(1, max(q_count, 1) + 1)]
-    return len(text or "") + sum(5000 for token in tokens if token in (text or ""))
+    return clean_final_paper_markdown("\n\n".join(parts)), included, _missing_sections(res, q_count)
 
 
 def _apply_patches(text: str, work_dir: str) -> str:
@@ -118,27 +164,79 @@ def _apply_patches(text: str, work_dir: str) -> str:
         return text
 
 
+def _is_complete_checkpoint(checkpoint: dict[str, Any]) -> bool:
+    return bool(checkpoint.get("completed"))
+
+
+def _status_banner(included: list[str], missing: list[str]) -> str:
+    included_labels = "、".join(_section_label(k) for k in included[:12]) or "暂无"
+    missing_labels = "、".join(_section_label(k) for k in missing[:12]) or "暂无"
+    if len(missing) > 12:
+        missing_labels += f" 等 {len(missing)} 项"
+    return (
+        "> **当前为生成中预览，不是最终论文。**\n"
+        f"> 已生成章节：{included_labels}。\n"
+        f"> 待生成章节：{missing_labels}。\n\n"
+    )
+
+
+def _final_candidate_from_checkpoint(checkpoint: dict[str, Any]) -> str:
+    final = checkpoint.get("final_paper_review")
+    return final if isinstance(final, str) and final.strip() else ""
+
+
 @router.get("/paper")
 async def get_paper(task_id: str):
     work_dir = get_work_dir(task_id)
     md_path = Path(work_dir) / "res.md"
-    current = _read_text(md_path)
-    rebuilt = _rebuilt(work_dir)
     cp = _checkpoint(work_dir)
-    res = cp.get("user_output_res") if isinstance(cp, dict) else {}
-    q_count = _ques_count(cp, res if isinstance(res, dict) else {})
-    if rebuilt and _score(rebuilt, q_count) > _score(current, q_count):
-        current = _apply_patches(rebuilt, work_dir)
-        try:
-            md_path.write_text(current, encoding="utf-8")
-        except Exception as exc:
-            logger.warning(f"write repaired paper failed {task_id}: {exc}")
-    else:
-        patched_current = _apply_patches(current, work_dir)
-        if patched_current != current:
-            current = patched_current
-            try:
-                md_path.write_text(current, encoding="utf-8")
-            except Exception as exc:
-                logger.warning(f"write patched paper failed {task_id}: {exc}")
-    return {"content": current}
+    completed = _is_complete_checkpoint(cp)
+
+    # Final mode: only completed workflows are allowed to repair/write res.md.
+    if completed:
+        current = _read_text(md_path)
+        final_from_checkpoint = _final_candidate_from_checkpoint(cp)
+        rebuilt, included, missing = _assemble_from_checkpoint(work_dir)
+        candidate = final_from_checkpoint or current or rebuilt
+        candidate = _apply_patches(candidate, work_dir)
+        if candidate and candidate != current:
+            _write_text(md_path, candidate)
+        return {
+            "content": candidate,
+            "complete": True,
+            "preview": False,
+            "included_sections": included,
+            "missing_sections": missing,
+        }
+
+    # Running / incomplete mode: return preview only. Never write res.md here.
+    preview, included, missing = _assemble_from_checkpoint(work_dir)
+    if preview:
+        preview = _apply_patches(preview, work_dir)
+        return {
+            "content": _status_banner(included, missing) + preview,
+            "complete": False,
+            "preview": True,
+            "included_sections": included,
+            "missing_sections": missing,
+        }
+
+    # If no checkpoint section has been produced yet, keep current res.md read-only.
+    # This preserves old finished files without letting partial repair pollute them.
+    current = _read_text(md_path)
+    if current:
+        return {
+            "content": _status_banner([], []) + current,
+            "complete": False,
+            "preview": True,
+            "included_sections": [],
+            "missing_sections": [],
+        }
+
+    return {
+        "content": "> **当前论文还未生成。**\n\n请等待 EDA、各问题求解和写作阶段完成后再查看完整论文。\n",
+        "complete": False,
+        "preview": True,
+        "included_sections": [],
+        "missing_sections": [],
+    }
