@@ -52,6 +52,10 @@ interface TimelineEvent {
 	choiceKind?: "question" | "modeling";
 	progressText?: string;
 	debugCount?: number;
+	isGroup?: boolean;
+	groupPhase?: "question" | "writing";
+	groupEvents?: TimelineEvent[];
+	groupActors?: string[];
 }
 
 interface FlowStep {
@@ -371,6 +375,117 @@ const timelineEvents = computed(() => {
 	return out;
 });
 
+function isRevisionEvent(ev: TimelineEvent) {
+	const text = `${ev.title}\n${ev.detail ?? ""}`;
+	return /图片修订|文本修订|AI 修改|修订启动|修订完成/.test(text);
+}
+
+function groupKeyOf(ev: TimelineEvent) {
+	if (ev.type === "choice" || ev.side !== "left" || isRevisionEvent(ev)) return "";
+	if (ev.questionIndex && ["SubCoordinatorAgent", "CoderAgent", "WriterAgent"].includes(ev.actor)) {
+		return `question-${ev.questionIndex}`;
+	}
+	if (!ev.questionIndex && ev.actor === "WriterAgent" && /并行写作|论文手开始写|论文手完成/.test(`${ev.title}\n${ev.detail ?? ""}`) && !/终稿|整体检查/.test(`${ev.title}\n${ev.detail ?? ""}`)) {
+		return "writing-parallel";
+	}
+	return "";
+}
+
+function groupStatus(events: TimelineEvent[]): TimelineEvent["status"] {
+	if (events.some((ev) => ev.status === "error")) return "error";
+	if (events.some((ev) => ev.status === "warning")) return "warning";
+	const latest = events[events.length - 1];
+	if (latest?.status === "running" || latest?.status === "waiting") return latest.status;
+	return events.length && events.every((ev) => ev.status === "done") ? "done" : latest?.status ?? "running";
+}
+
+function groupTitle(group: TimelineEvent) {
+	const events = group.groupEvents ?? [];
+	const latest = events[events.length - 1];
+	if (group.groupPhase === "writing") {
+		if (group.status === "done") return "并行写作组 · 已完成";
+		if (group.status === "warning") return "并行写作组 · 需关注";
+		if (group.status === "error") return "并行写作组 · 已停止";
+		return "并行写作组 · 写作中";
+	}
+	const q = group.questionIndex;
+	if (group.status === "error") return `子问题组 ${q} · 已停止`;
+	if (group.status === "warning") {
+		if (/重写|备用/.test(latest?.title ?? "")) return `子问题组 ${q} · 重写中`;
+		if (/判别/.test(latest?.title ?? "")) return `子问题组 ${q} · 后台判别中`;
+		return `子问题组 ${q} · 改错中`;
+	}
+	if (latest?.actor === "WriterAgent") {
+		return latest.status === "done" ? `子问题组 ${q} · 写作完成` : `子问题组 ${q} · 写作中`;
+	}
+	if (/求解完成|子问题组 \d+ 完成/.test(latest?.title ?? "")) return `子问题组 ${q} · 求解完成`;
+	if (group.status === "done") return `子问题组 ${q} · 已完成`;
+	return `子问题组 ${q} · 求解中`;
+}
+
+function pushUnique<T>(source: T[] | undefined, values: T[]) {
+	return Array.from(new Set([...(source ?? []), ...values]));
+}
+
+function makeGroupEvent(key: string, ev: TimelineEvent): TimelineEvent {
+	const isWriting = key === "writing-parallel";
+	const group: TimelineEvent = {
+		id: `group-${key}`,
+		side: "left",
+		actor: isWriting ? "WriterAgent" : "SubCoordinatorAgent",
+		role: isWriting ? "并行写作" : "子问题组",
+		type: "stage",
+		status: ev.status,
+		title: "",
+		detail: "",
+		timeLabel: ev.timeLabel,
+		questionIndex: ev.questionIndex,
+		badges: isWriting ? ["写作组"] : ev.questionIndex ? [`Q${ev.questionIndex}`, "子问题组"] : ["子问题组"],
+		artifacts: [],
+		debugCount: 0,
+		isGroup: true,
+		groupPhase: isWriting ? "writing" : "question",
+		groupEvents: [],
+		groupActors: [],
+	};
+	return group;
+}
+
+function updateGroup(group: TimelineEvent, ev: TimelineEvent) {
+	group.groupEvents = [...(group.groupEvents ?? []), ev];
+	group.groupActors = pushUnique(group.groupActors, [ev.actor]);
+	group.badges = pushUnique(group.badges, ev.badges ?? []);
+	group.artifacts = pushUnique(group.artifacts, ev.artifacts ?? []);
+	group.debugCount = (group.debugCount ?? 0) + (ev.debugCount ?? 0);
+	group.timeLabel = ev.timeLabel || group.timeLabel;
+	group.status = groupStatus(group.groupEvents);
+	group.title = groupTitle(group);
+	const latest = group.groupEvents[group.groupEvents.length - 1];
+	const actors = group.groupActors.map((actor) => roleMap[actor] ?? actor).join(" / ");
+	group.detail = `${actors || group.role} 正在协同推进；当前步骤：${latest.title}`;
+	if (group.debugCount) group.progressText = `累计 ${group.debugCount} 次改错 / 重试记录`;
+}
+
+const displayEvents = computed(() => {
+	const out: TimelineEvent[] = [];
+	const groups = new Map<string, TimelineEvent>();
+	for (const ev of timelineEvents.value) {
+		const key = groupKeyOf(ev);
+		if (!key) {
+			out.push(ev);
+			continue;
+		}
+		let group = groups.get(key);
+		if (!group) {
+			group = makeGroupEvent(key, ev);
+			groups.set(key, group);
+			out.push(group);
+		}
+		updateGroup(group, ev);
+	}
+	return out;
+});
+
 const hasQuestionWait = computed(() => allMessageText.value.includes("等待用户确认问题划分"));
 const hasModelingWait = computed(() => allMessageText.value.includes("等待用户确认各问建模方案"));
 const hasSolvingStarted = computed(() => /代码手开始求解|子问题组#\d+.*启动|开始求解/.test(allMessageText.value));
@@ -451,11 +566,11 @@ const questionStatuses = computed<QuestionStatus[]>(() => {
 	return Array.from(map.values()).sort((a, b) => a.index - b.index).slice(0, 8);
 });
 
-const currentStage = computed(() => [...timelineEvents.value].reverse().find((e) => e.status === "running" || e.status === "warning" || e.status === "waiting")?.title ?? (props.taskStatus === "completed" ? "任务已完成" : "等待开始"));
+const currentStage = computed(() => [...displayEvents.value].reverse().find((e) => e.status === "running" || e.status === "warning" || e.status === "waiting")?.title ?? (props.taskStatus === "completed" ? "任务已完成" : "等待开始"));
 const progressSummary = computed(() => {
-	const total = timelineEvents.value.length;
-	const done = timelineEvents.value.filter((e) => e.status === "done").length;
-	const warnings = timelineEvents.value.filter((e) => e.status === "warning" || e.status === "error").length;
+	const total = displayEvents.value.length;
+	const done = displayEvents.value.filter((e) => e.status === "done").length;
+	const warnings = displayEvents.value.filter((e) => e.status === "warning" || e.status === "error").length;
 	return { total, done, warnings };
 });
 
@@ -494,6 +609,13 @@ function questionStatusClass(status: QuestionStatusType) {
 	if (status === "failed") return "border-red-300 bg-red-100 text-red-800";
 	if (status === "plotting") return "border-cyan-200 bg-cyan-50 text-cyan-700";
 	return "border-slate-200 bg-slate-50 text-slate-400";
+}
+
+function groupSubStatusClass(status?: TimelineEvent["status"]) {
+	if (status === "done") return "bg-blue-50 text-blue-700 border-blue-100";
+	if (status === "warning") return "bg-amber-50 text-amber-700 border-amber-100";
+	if (status === "error") return "bg-red-50 text-red-700 border-red-100";
+	return "bg-white/70 text-slate-600 border-slate-100";
 }
 
 function scrollToBottom(force = false) {
@@ -546,15 +668,15 @@ watch(() => props.messages.length, () => scrollToBottom(), { flush: "post" });
 		</div>
 
 		<div ref="scrollRef" class="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5" @scroll="onScroll">
-			<div v-if="timelineEvents.length === 0" class="flex h-full items-center justify-center text-sm text-slate-400">任务消息会以对话流形式显示在这里。</div>
+			<div v-if="displayEvents.length === 0" class="flex h-full items-center justify-center text-sm text-slate-400">任务消息会以对话流形式显示在这里。</div>
 
-			<div v-for="ev in timelineEvents" :key="ev.id" class="flex" :class="{ 'justify-end': ev.side === 'right', 'justify-center': ev.side === 'center', 'justify-start': ev.side === 'left' }">
+			<div v-for="ev in displayEvents" :key="ev.id" class="flex" :class="{ 'justify-end': ev.side === 'right', 'justify-center': ev.side === 'center', 'justify-start': ev.side === 'left' }">
 				<div v-if="ev.side === 'center'" class="max-w-[90%] rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-500 shadow-sm">{{ ev.title }} <span v-if="ev.progressText" class="ml-1 font-mono text-blue-600">{{ ev.progressText }}</span></div>
 
 				<div v-else class="flex max-w-[96%] gap-2" :class="{ 'flex-row-reverse': ev.side === 'right' }">
 					<div class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-sm" :class="{ 'bg-blue-600 text-white': ev.side === 'left' && ev.status !== 'warning' && ev.status !== 'error', 'bg-amber-500 text-white': ev.status === 'warning', 'bg-red-500 text-white': ev.status === 'error', 'bg-slate-900 text-white': ev.side === 'right' }"><component :is="actorIcon(ev.actor)" class="h-4 w-4" /></div>
 
-					<div class="min-w-0 rounded-2xl border px-3.5 py-3 shadow-sm" :class="{ 'rounded-tl-md border-slate-200 bg-white text-slate-800': ev.side === 'left' && ev.status !== 'warning' && ev.status !== 'error', 'rounded-tr-md border-slate-800 bg-slate-900 text-white': ev.side === 'right', 'rounded-tl-md border-amber-200 bg-amber-50 text-amber-950': ev.status === 'warning', 'rounded-tl-md border-red-200 bg-red-50 text-red-950': ev.status === 'error' }">
+					<div class="min-w-0 rounded-2xl border px-3.5 py-3 shadow-sm" :class="{ 'rounded-tl-md border-slate-200 bg-white text-slate-800': ev.side === 'left' && ev.status !== 'warning' && ev.status !== 'error', 'rounded-tr-md border-slate-800 bg-slate-900 text-white': ev.side === 'right', 'rounded-tl-md border-amber-200 bg-amber-50 text-amber-950': ev.status === 'warning', 'rounded-tl-md border-red-200 bg-red-50 text-red-950': ev.status === 'error', 'subproblem-group-card': ev.isGroup }">
 						<div class="flex items-start justify-between gap-3">
 							<div class="min-w-0">
 								<div class="flex flex-wrap items-center gap-1.5"><span class="text-[11px] font-semibold opacity-70">{{ ev.actor }}</span><span class="text-[10px] opacity-45">{{ ev.role }}</span><span v-for="badge in ev.badges" :key="badge" class="rounded-full border px-1.5 py-0.5 text-[10px] opacity-80">{{ badge }}</span></div>
@@ -565,6 +687,22 @@ watch(() => props.messages.length, () => scrollToBottom(), { flush: "post" });
 
 						<p v-if="ev.detail" class="mt-2 whitespace-pre-wrap text-xs leading-relaxed opacity-80">{{ ev.detail }}</p>
 						<p v-if="ev.progressText" class="mt-2 rounded-xl border border-current/10 bg-white/45 px-2.5 py-1.5 text-xs opacity-90">{{ ev.progressText }}</p>
+
+						<div v-if="ev.groupEvents?.length" class="mt-3 rounded-2xl border border-slate-200/70 bg-white/55 p-2 shadow-inner">
+							<div class="mb-2 flex items-center justify-between gap-2">
+								<span class="text-[11px] font-bold text-slate-600">组内进度</span>
+								<span class="text-[10px] text-slate-400">{{ ev.groupEvents.length }} 条更新合并显示</span>
+							</div>
+							<div class="space-y-1.5">
+								<div v-for="sub in ev.groupEvents.slice(-7)" :key="sub.id" class="rounded-xl border px-2.5 py-1.5 text-[11px]" :class="groupSubStatusClass(sub.status)">
+									<div class="flex items-center justify-between gap-2">
+										<span class="min-w-0 truncate font-semibold">{{ sub.actor }} · {{ sub.title }}</span>
+										<span class="shrink-0 opacity-60">{{ sub.timeLabel }}</span>
+									</div>
+									<div v-if="sub.detail" class="mt-0.5 line-clamp-2 opacity-75">{{ sub.detail }}</div>
+								</div>
+							</div>
+						</div>
 
 						<div v-if="ev.type === 'choice'" class="choice-attachment mt-3 overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-800 shadow-sm">
 							<div class="flex items-start justify-between gap-3 border-b border-slate-100 bg-slate-50 px-3 py-2">
@@ -650,5 +788,14 @@ watch(() => props.messages.length, () => scrollToBottom(), { flush: "post" });
 .choice-attachment .question-discussion,
 .choice-attachment .modeling-discussion {
 	background: transparent !important;
+}
+
+.subproblem-group-card {
+	min-width: min(620px, 100%);
+	background:
+		radial-gradient(circle at 14% 0%, rgba(255, 255, 255, 0.82), transparent 38%),
+		linear-gradient(135deg, rgba(255, 255, 255, 0.88), rgba(241, 245, 249, 0.74)) !important;
+	backdrop-filter: blur(18px) saturate(1.15);
+	-webkit-backdrop-filter: blur(18px) saturate(1.15);
 }
 </style>
