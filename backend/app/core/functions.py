@@ -41,6 +41,25 @@ coder_tools = [
     },
 ]
 
+modeler_tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_papers",
+            "description": "Search for academic papers to find supporting literature for the chosen modeling approach. Use this to find classic papers, application cases, and theoretical foundations for the selected models.",
+            "strict": True,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query, e.g. 'XGBoost prediction', 'TOPSIS evaluation method'"}
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
 writer_tools = [
     {
         "type": "function",

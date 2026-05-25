@@ -4,7 +4,9 @@ import asyncio
 from app.core.agents.agent import Agent
 from app.core.llm.llm import LLM
 from app.core.prompts import MODELER_PROMPT
+from app.core.functions import modeler_tools
 from app.schemas.A2A import CoordinatorToModeler, ModelerToCoder
+from app.tools.openalex_scholar import OpenAlexScholar
 from app.utils.log_util import logger
 from app.services.redis_manager import redis_manager
 from app.schemas.response import SystemMessage
@@ -62,9 +64,69 @@ class ModelerAgent(Agent):
         model: LLM,
         context_window: int = 128000,
         cancel_event: asyncio.Event | None = None,
+        scholar: OpenAlexScholar | None = None,
     ) -> None:
         super().__init__(task_id, model, context_window, cancel_event=cancel_event)
         self.system_prompt = MODELER_PROMPT
+        self.scholar = scholar
+
+    async def _handle_tool_calls(self, response) -> None:
+        """处理建模手的工具调用（search_papers）。
+
+        搜索文献后将结果注入对话历史，让建模手在后续输出中引用。
+        """
+        if not response.tool_calls:
+            return
+
+        assistant_msg: dict = {"role": "assistant", "content": response.content or ""}
+        if response.reasoning_content:
+            assistant_msg["reasoning_content"] = response.reasoning_content
+        assistant_msg["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {"name": tc.name, "arguments": tc.arguments},
+            }
+            for tc in response.tool_calls
+            if tc.name == "search_papers"
+        ]
+        if assistant_msg["tool_calls"]:
+            await self.append_chat_history(assistant_msg)
+
+        for tool_call in response.tool_calls:
+            if tool_call.name != "search_papers":
+                logger.warning(f"建模手忽略未知工具调用: {tool_call.name}")
+                continue
+
+            logger.info("建模手调用工具: search_papers")
+            await redis_manager.publish_message(
+                self.task_id,
+                SystemMessage(content="建模手正在检索相关学术文献..."),
+            )
+
+            try:
+                query = json.loads(tool_call.arguments)["query"]
+            except Exception:
+                query = str(tool_call.arguments or "").strip() or "mathematical modeling"
+
+            try:
+                assert self.scholar is not None, "scholar 未初始化"
+                papers = await self.scholar.search_papers(query)
+                papers_str = self.scholar.papers_to_str(papers)
+                logger.info(f"建模手文献搜索结果\n{papers_str}")
+            except Exception as e:
+                error_msg = f"文献搜索失败: {str(e)}"
+                logger.warning(error_msg)
+                papers_str = f"文献搜索失败: {str(e)}。请继续制定建模方案，可基于领域知识引用经典文献。"
+
+            await self.append_chat_history(
+                {
+                    "role": "tool",
+                    "content": papers_str,
+                    "tool_call_id": tool_call.id,
+                    "name": "search_papers",
+                }
+            )
 
     async def run(
         self,
@@ -98,13 +160,44 @@ class ModelerAgent(Agent):
             self.task_id,
             SystemMessage(content="建模手正在分析问题、选择模型和制定方案..."),
         )
+
+        # 第一轮：允许工具调用（搜索文献）
+        tools = modeler_tools if self.scholar else None
+        max_tool_rounds = 3  # 最多允许 3 轮工具调用
+
         while True:
             response = await self._chat(
                 stream=True,
                 history=self.chat_history,
+                tools=tools,
+                tool_choice="auto" if tools else None,
                 agent_name=self.__class__.__name__,
             )
 
+            # 处理工具调用（文献检索）
+            if response.tool_calls and tools and max_tool_rounds > 0:
+                max_tool_rounds -= 1
+                await self._handle_tool_calls(response)
+                # 工具调用后要求继续输出最终 JSON 方案
+                if max_tool_rounds <= 0:
+                    # 最后一轮后禁用工具，强制输出 JSON
+                    tools = None
+                    await self.append_chat_history(
+                        {
+                            "role": "user",
+                            "content": "文献检索已完成。请不要再调用工具，直接输出最终的 JSON 格式建模方案。在方案中引用检索到的文献。",
+                        }
+                    )
+                else:
+                    await self.append_chat_history(
+                        {
+                            "role": "user",
+                            "content": "文献检索结果已返回。你可以继续搜索其他问题的相关文献，或者直接输出最终 JSON 格式建模方案。",
+                        }
+                    )
+                continue
+
+            # 尝试解析 JSON 方案
             json_str = response.content or ""
             questions_solution = repair_json(json_str)
             if questions_solution:
@@ -115,7 +208,8 @@ class ModelerAgent(Agent):
                 )
                 return ModelerToCoder(questions_solution=questions_solution)
 
-            # JSON 解析失败，不设上限——直到输出合法方案为止（靠 cancel_event 停止）
+            # JSON 解析失败，禁用工具重试
+            tools = None
             attempt += 1
             logger.warning(f"JSON 解析失败 (第{attempt}次)，请求模型重新生成")
             await redis_manager.publish_message(
@@ -129,6 +223,6 @@ class ModelerAgent(Agent):
             await self.append_chat_history(
                 {
                     "role": "user",
-                    "content": "你返回的JSON格式有误，请严格按照JSON格式重新输出，注意字符串值内的双引号必须转义为\\\"，不要包含未转义的特殊字符。",
+                    "content": "你返回的JSON格式有误，请严格按照JSON格式重新输出，注意字符串值内的双引号必须转义为\\\"，不要包含未转义的特殊字符。不要再调用任何工具。",
                 }
             )

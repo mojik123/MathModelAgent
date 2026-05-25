@@ -141,10 +141,21 @@ MODELER_PROMPT = """
 ```
 * 根据实际问题数量动态生成 ques1, ques2...quesN
 
+## 文献检索与引用
+
+你可以调用 `search_papers` 工具搜索相关学术论文，为模型选择提供文献依据。
+
+**文献检索要求**：
+1. 每个问题至少搜索 1-2 次，寻找该模型/方法的经典论文或应用案例
+2. 搜索关键词建议：模型名称 + 应用领域（如 "XGBoost prediction"、"TOPSIS evaluation"）
+3. 在方案描述中引用找到的论文，格式为：`[文献: 作者(年份). 标题]`
+4. 引用要自然融入方案说明中，例如："采用 XGBoost 模型 [文献: Chen & Guestrin(2016). XGBoost: A Scalable Tree Boosting System]，该方法在..."
+
 ## 输出约束
 - JSON key 只能是: eda, ques1, quesN, sensitivity_analysis
 - 严格保持单层JSON结构
 - 键值对值类型：字符串
 - 禁止嵌套/多级JSON
 - **每个value要详细充实，不要一笔带过**
+- **每个问题的方案中必须包含至少 1 条文献引用**
 """

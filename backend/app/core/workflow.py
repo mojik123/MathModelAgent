@@ -816,10 +816,19 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         await self._check_cancelled()
 
         # ── 阶段 2：全局建模手生成整体方案 ───────────────────────────────────
+        # 为建模手创建文献检索客户端
+        modeler_scholar = None
+        if settings.OPENALEX_EMAIL:
+            modeler_scholar = OpenAlexScholar(
+                task_id=self.task_id,
+                email=settings.OPENALEX_EMAIL,
+                api_key=settings.OPENALEX_API_KEY,
+            )
         modeler_agent = ModelerAgent(
             self.task_id, modeler_llm,
             context_window=settings.MODELER_CONTEXT_WINDOW,
             cancel_event=self.cancel_event,
+            scholar=modeler_scholar,
         )
 
         if checkpoint.get("modeler"):
@@ -883,13 +892,14 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
         solution_flows = flows.get_solution_flows(self.questions, modeler_response)
 
-        # 并发控制：QUESTION_PARALLELISM 限制同时运行的子问题组数
-        question_parallelism = max(
-            1,
-            min(
-                self.ques_count or 1,
-                int(getattr(settings, "QUESTION_PARALLELISM", self.ques_count or 1)),
-            ),
+        # 并发控制：QUESTION_PARALLELISM <= 0 表示所有子问题组一起并行。
+        configured_question_parallelism = int(
+            getattr(settings, "QUESTION_PARALLELISM", 0) or 0
+        )
+        question_parallelism = (
+            self.ques_count or 1
+            if configured_question_parallelism <= 0
+            else max(1, min(self.ques_count or 1, configured_question_parallelism))
         )
 
         question_semaphore = asyncio.Semaphore(question_parallelism)
