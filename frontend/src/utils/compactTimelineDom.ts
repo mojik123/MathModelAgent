@@ -39,7 +39,35 @@ function addStyle() {
 [data-agent-card="modeler"] { border-color: rgba(139, 92, 246, 0.23) !important; background: linear-gradient(135deg, rgba(245,243,255,.92), rgba(250,245,255,.70)) !important; }
 [data-agent-card="coder"] { border-color: rgba(20, 184, 166, 0.24) !important; background: linear-gradient(135deg, rgba(240,253,250,.92), rgba(236,253,245,.70)) !important; }
 [data-agent-card="writer"] { border-color: rgba(245, 158, 11, 0.24) !important; background: linear-gradient(135deg, rgba(255,251,235,.92), rgba(255,247,237,.70)) !important; }
-[data-agent-card="user"] { border-color: rgba(30, 41, 59, 0.35) !important; background: linear-gradient(135deg, rgba(15,23,42,.96), rgba(30,41,59,.92)) !important; }
+[data-agent-card="user"] {
+	border-color: rgba(125, 211, 252, 0.24) !important;
+	background:
+		radial-gradient(circle at 18% 0%, rgba(59, 130, 246, 0.28), transparent 30%),
+		linear-gradient(135deg, rgba(15,23,42,.97), rgba(30,41,59,.93)) !important;
+	box-shadow:
+		0 14px 32px rgba(15, 23, 42, 0.18),
+		0 0 0 1px rgba(125, 211, 252, 0.10) inset,
+		inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
+}
+[data-agent-card="user"]::before {
+	content: "";
+	position: absolute;
+	inset: -45%;
+	background:
+		linear-gradient(118deg,
+			transparent 0%,
+			rgba(255,255,255,0.00) 30%,
+			rgba(125,211,252,0.16) 41%,
+			rgba(255,255,255,0.22) 48%,
+			rgba(96,165,250,0.14) 56%,
+			rgba(255,255,255,0.00) 68%,
+			transparent 100%),
+		radial-gradient(circle at 24% 18%, rgba(255,255,255,.16), transparent 26%);
+	transform: translateX(-64%) rotate(4deg);
+	animation: userMessageLiquidFlow 4.8s linear infinite;
+	pointer-events: none;
+	z-index: 0;
+}
 
 [data-agent-avatar] {
 	box-shadow: 0 10px 24px rgba(15,23,42,.12), inset 0 1px 0 rgba(255,255,255,.45) !important;
@@ -112,6 +140,10 @@ function addStyle() {
 @keyframes agentRunningFlow {
 	0% { transform: translateX(-72%) rotate(4deg); }
 	100% { transform: translateX(72%) rotate(4deg); }
+}
+@keyframes userMessageLiquidFlow {
+	0% { transform: translateX(-64%) rotate(4deg); }
+	100% { transform: translateX(64%) rotate(4deg); }
 }
 `;
 	document.head.appendChild(style);
