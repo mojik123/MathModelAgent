@@ -8,6 +8,7 @@ const STYLE_ID = "artifact-edit-chat-style";
 let installed = false;
 let inputValue = "";
 let sending = false;
+let lastTextActivateAt = 0;
 
 function short(text: string, max = 160) {
 	const s = (text || "").replace(/\s+/g, " ").trim();
@@ -88,6 +89,7 @@ function addStyle() {
 .artifact-edit-chat-send{border:0;background:#2563eb;color:white;border-radius:1rem;padding:.55rem .8rem;font-size:13px;font-weight:700;min-height:38px;}
 .artifact-edit-chat-send:disabled{background:#94a3b8;cursor:not-allowed;}
 .artifact-edit-reference-flash{animation:artifactEditFlash 1.2s ease-out 1;}
+.paper-preview [data-artifact-edit-selected="true"]{outline:2px solid rgba(37,99,235,.35);background:rgba(219,234,254,.42);border-radius:.35rem;}
 @keyframes artifactEditFlash{0%{box-shadow:0 0 0 0 rgba(37,99,235,.45)}100%{box-shadow:0 0 0 14px rgba(37,99,235,0)}}
 `;
 	document.head.appendChild(style);
@@ -137,7 +139,6 @@ function renderInput(force = false) {
 		return;
 	}
 	root.dataset.renderKey = renderKey;
-	const typeLabel = ctx.targetType === "image" ? "图片" : "文字";
 	const icon = ctx.targetType === "image" ? "图片" : "文字";
 	const placeholder = ctx.targetType === "image"
 		? "直接输入修图要求，例如：把标题改短、调大坐标轴字体、改配色..."
@@ -400,6 +401,47 @@ function interceptImageGalleryButton(event: MouseEvent) {
 	return true;
 }
 
+function textFromSelectionOrSentence(target: HTMLElement | null) {
+	const root = target?.closest(".paper-preview") as HTMLElement | null;
+	if (!root) return { selectedText: "", context: "" };
+	const nativeSelected = window.getSelection()?.toString()?.trim() || "";
+	if (nativeSelected.length >= 2) {
+		return { selectedText: nativeSelected, context: root.textContent?.slice(0, 2400) || nativeSelected };
+	}
+	const sentence = target?.closest("[data-sentence]") as HTMLElement | null;
+	const sentenceText = sentence?.textContent?.trim() || "";
+	if (sentenceText.length >= 2) {
+		const siblings = Array.from(root.querySelectorAll<HTMLElement>("[data-sentence]"));
+		const idx = siblings.indexOf(sentence);
+		const context = siblings
+			.slice(Math.max(0, idx - 4), Math.min(siblings.length, idx + 5))
+			.map((el) => el.textContent?.trim() || "")
+			.filter(Boolean)
+			.join("");
+		return { selectedText: sentenceText, context };
+	}
+	return { selectedText: "", context: "" };
+}
+
+function fallbackActivateTextSelection(event: MouseEvent) {
+	const target = event.target as HTMLElement | null;
+	if (!target?.closest(".paper-preview")) return;
+	if (target.closest("button, a, img, .revision-overlay, .action-btn-overlay")) return;
+	const now = Date.now();
+	if (now - lastTextActivateAt < 450) return;
+	setTimeout(() => {
+		const { selectedText, context } = textFromSelectionOrSentence(target);
+		if (!selectedText) return;
+		lastTextActivateAt = Date.now();
+		for (const el of document.querySelectorAll<HTMLElement>(".paper-preview [data-artifact-edit-selected='true']")) {
+			el.removeAttribute("data-artifact-edit-selected");
+		}
+		const sentence = target.closest("[data-sentence]") as HTMLElement | null;
+		sentence?.setAttribute("data-artifact-edit-selected", "true");
+		activateTextFromData({ selectedText, context, label: "论文选中文本" });
+	}, 40);
+}
+
 function interceptWriterActionButton(event: MouseEvent) {
 	const target = event.target as HTMLElement | null;
 	const button = target?.closest("button") as HTMLButtonElement | null;
@@ -439,6 +481,7 @@ function installClickCapture() {
 		},
 		true,
 	);
+	document.addEventListener("mouseup", fallbackActivateTextSelection, false);
 }
 
 export function installArtifactEditChatDomPatch() {
