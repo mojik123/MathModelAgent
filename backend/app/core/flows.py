@@ -13,11 +13,6 @@ class Flows:
         self.questions: dict[str, str | int] = questions
 
     def set_flows(self, ques_count: int):
-        """根据问题数量设置流程节点。
-
-        Args:
-            ques_count: 问题数量。
-        """
         ques_str = [f"ques{i}" for i in range(1, ques_count + 1)]
         seq = [
             "firstPage",
@@ -36,15 +31,6 @@ class Flows:
     def get_solution_flows(
         self, questions: dict[str, str | int], modeler_response: ModelerToCoder
     ):
-        """生成求解阶段的流程配置。
-
-        Args:
-            questions: 包含各问题描述的字典。
-            modeler_response: 建模手的响应，包含各问题的解决方案。
-
-        Returns:
-            求解流程配置字典，键为任务名，值包含 coder_prompt 等信息。
-        """
         questions_quesx = {
             key: value
             for key, value in questions.items()
@@ -100,18 +86,9 @@ class Flows:
     def get_write_flows(
         self, user_output: UserOutput, config_template: dict, bg_ques_all: str
     ):
-        """生成写作阶段的流程配置。
-
-        Args:
-            user_output: 用户输出对象，包含已求解的结果。
-            config_template: 论文模板配置。
-            bg_ques_all: 问题背景和题目信息。
-
-        Returns:
-            写作流程配置字典，键为章节名，值为写作提示。
-        """
+        """生成写作阶段的流程配置。"""
         model_build_solve = user_output.get_model_build_solve()
-        # 替换模板中的占位符
+
         def fill_template(key: str) -> str:
             tpl = config_template.get(key, "")
             return tpl.replace("{问题}", model_build_solve).replace("{模型的建立与求解}", model_build_solve).replace("{题目}", bg_ques_all)
@@ -151,6 +128,17 @@ class Flows:
 不要写"以下是"等解释性文字。
 """
 
+        symbol_specific_prompt = f"""
+结合模型变量和求解摘要{model_build_solve}，按照模板撰写符号说明：{fill_template('symbol')}
+
+【符号说明强制要求】
+1. 只生成最重要的 10 个符号，不能超过 10 行。
+2. 优先选择贯穿多个模型或决定约束/目标函数的核心符号；临时变量、中间绘图变量、程序变量和只出现一次的辅助量不要写入符号表。
+3. 符号表标题使用普通文字“表X 符号说明”，不要加粗，不要使用 **表X**。
+4. 表格标题在预览和导出中应居中显示，字体与正文一致，不额外加粗。
+5. 表格列建议为“符号、含义、单位/取值说明”。
+"""
+
         flows = {
             "firstPage": contract_prompt(
                 "firstPage",
@@ -172,10 +160,7 @@ class Flows:
                 "modelAssumption",
                 f"结合建模方案和求解摘要{model_build_solve}，按照模板撰写模型假设：{fill_template('modelAssumption')}",
             ),
-            "symbol": contract_prompt(
-                "symbol",
-                f"结合模型变量和求解摘要{model_build_solve}，按照模板撰写符号说明：{fill_template('symbol')}",
-            ),
+            "symbol": contract_prompt("symbol", symbol_specific_prompt),
             "judge": contract_prompt(
                 "judge",
                 f"结合模型求解摘要{model_build_solve}，按照模板撰写模型评价、改进与推广：{fill_template('judge')}",
@@ -190,21 +175,10 @@ class Flows:
         code_interpreter: BaseCodeInterpreter,
         config_template: dict,
     ) -> str:
-        """根据不同的key生成对应的writer_prompt
-
-        Args:
-            key: 任务类型
-            coder_response: 代码执行结果
-
-        Returns:
-            str: 生成的writer_prompt
-        """
         code_output = code_interpreter.get_code_output(key)
-
         questions_quesx_keys = self.get_questions_quesx_keys()
         bgc = str(self.questions.get("background") or "")
 
-        # 并行子问题写作约束提示：每组 WriterAgent 只负责本问，禁止重复全局章节
         _SUBQUES_SCOPE_CONSTRAINT = """
 
 【并行写作作用域约束 — 必须严格遵守】
@@ -244,31 +218,19 @@ class Flows:
 
         if key in writer_prompt:
             return writer_prompt[key]
-        else:
-            raise ValueError(f"未知的任务类型: {key}")
+        raise ValueError(f"未知的任务类型: {key}")
 
     def get_questions_quesx_keys(self) -> list[str]:
-        """获取问题1,2...的键"""
         return list(self.get_questions_quesx().keys())
 
     def get_questions_quesx(self) -> dict[str, str | int]:
-        """获取问题1,2,3...的键值对"""
-        questions_quesx = {
+        return {
             key: value
             for key, value in self.questions.items()
             if key.startswith("ques") and key != "ques_count"
         }
-        return questions_quesx
 
     def get_seq(self, ques_count: int) -> dict[str, str]:
-        """获取论文章节顺序。
-
-        Args:
-            ques_count: 问题数量。
-
-        Returns:
-            以章节名为键的有序字典。
-        """
         ques_str = [f"ques{i}" for i in range(1, ques_count + 1)]
         seq = [
             "firstPage",
