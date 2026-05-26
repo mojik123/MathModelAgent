@@ -61,7 +61,8 @@ async def set_task_state(
         payload["started_at"] = started_at
     if status in TERMINAL_STATUSES:
         payload["finished_at"] = now
-    elif previous.get("finished_at"):
+    elif previous.get("finished_at") and status != "running":
+        # 仅在非运行状态下保留 finished_at，running 状态应清除
         payload["finished_at"] = previous["finished_at"]
 
     next_progress = progress if progress is not None else previous.get("progress")
