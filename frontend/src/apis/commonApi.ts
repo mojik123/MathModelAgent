@@ -75,7 +75,10 @@ export function getWriterSeque() {
 }
 
 export function getTaskMessages(task_id: string) {
-	return request.get<Message[]>("/messages", { params: { task_id } });
+	return request.get<Message[]>("/messages", {
+		params: { task_id },
+		timeout: 30000,
+	});
 }
 
 export function getTaskHistory() {
@@ -87,11 +90,15 @@ export function deleteTaskHistory(task_id: string) {
 }
 
 export function startTask(task_id: string) {
-	return request.post<{ success: boolean; status: string; message: string }>(`/modeling/${task_id}/start`);
+	return request.post<{ success: boolean; status: string; message: string }>(
+		`/modeling/${task_id}/start`,
+	);
 }
 
 export function getTaskState(task_id: string) {
-	return request.get<TaskRuntimeState>(`/modeling/${task_id}/state`);
+	return request.get<TaskRuntimeState>(`/modeling/${task_id}/state`, {
+		timeout: 30000,
+	});
 }
 
 export function getTaskDiagnostics(task_id: string) {
@@ -99,23 +106,35 @@ export function getTaskDiagnostics(task_id: string) {
 }
 
 export function openFolderAPI(task_id: string) {
-	return request.get<{ message: string }>("/open_folder", { params: { task_id } });
+	return request.get<{ message: string }>("/open_folder", {
+		params: { task_id },
+	});
 }
 
 export function exampleAPI(example_id: string, source: string) {
-	return request.post<{ task_id: string; status: string }>("/example", { example_id, source });
+	return request.post<{ task_id: string; status: string }>("/example", {
+		example_id,
+		source,
+	});
 }
 
 export function getServiceStatus() {
 	return request.get<{
 		backend: { status: string; message: string };
 		redis: { status: string; message: string };
-		active_tasks?: { status: string; message: string; count: number; ids: string[] };
+		active_tasks?: {
+			status: string;
+			message: string;
+			count: number;
+			ids: string[];
+		};
 	}>("/status");
 }
 
 export function cancelTask(task_id: string) {
-	return request.post<{ success: boolean; message: string }>(`/modeling/${task_id}/cancel`);
+	return request.post<{ success: boolean; message: string }>(
+		`/modeling/${task_id}/cancel`,
+	);
 }
 
 export function confirmModeling(
@@ -126,7 +145,10 @@ export function confirmModeling(
 		chatHistory: Array<{ role: string; content: string }>;
 	}>,
 ) {
-	return request.post<{ success: boolean; message: string }>(`/modeling/${task_id}/confirm-modeling`, { selections });
+	return request.post<{ success: boolean; message: string }>(
+		`/modeling/${task_id}/confirm-modeling`,
+		{ selections },
+	);
 }
 
 export function modelingDiscussionChat(
@@ -170,7 +192,9 @@ export function generateModelingOptions(
 }
 
 export function getOriginalProblem(task_id: string) {
-	return request.get<{ task_id: string; ques_all: string; files?: string[] }>(`/modeling/${task_id}/problem`);
+	return request.get<{ task_id: string; ques_all: string; files?: string[] }>(
+		`/modeling/${task_id}/problem`,
+	);
 }
 
 export function confirmQuestions(
@@ -182,7 +206,10 @@ export function confirmQuestions(
 		chatHistory?: Array<{ role: string; content: string }>;
 	}>,
 ) {
-	return request.post<{ success: boolean; message: string }>(`/modeling/${task_id}/confirm-questions`, { questions });
+	return request.post<{ success: boolean; message: string }>(
+		`/modeling/${task_id}/confirm-questions`,
+		{ questions },
+	);
 }
 
 export function questionDiscussionChat(
@@ -193,7 +220,11 @@ export function questionDiscussionChat(
 		original_problem?: string;
 	},
 ) {
-	return request.post<{ success: boolean; message: string; content: string }>(`/modeling/${task_id}/question-discussion-chat`, payload, { timeout: 600000 });
+	return request.post<{ success: boolean; message: string; content: string }>(
+		`/modeling/${task_id}/question-discussion-chat`,
+		payload,
+		{ timeout: 600000 },
+	);
 }
 
 export function regenerateQuestions(
