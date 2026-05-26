@@ -173,5 +173,11 @@ class UserOutput:
             text_to_save = clean_chinese_paper_markdown(text_to_save)
         except Exception as exc:
             print(f"[artifact_edits] apply patches failed: {exc}")
+        # 修正仅用 basename 引用的图片路径，确保持久化后路径包含子目录
+        try:
+            from app.utils.common_utils import normalize_markdown_image_paths
+            text_to_save = normalize_markdown_image_paths(text_to_save, self.work_dir)
+        except Exception as exc:
+            print(f"[normalize_image_paths] failed: {exc}")
         with open(res_path, "w", encoding="utf-8") as f:
             f.write(text_to_save)

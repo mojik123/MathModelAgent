@@ -60,6 +60,7 @@ def create_work_dir(task_id: str) -> str:
         os.makedirs(work_dir, exist_ok=True)
         # 复制字体文件到工作目录，确保图表中文正常显示
         _copy_fonts_to_work_dir(work_dir)
+        _copy_cumcm_class_to_work_dir(work_dir)
         return work_dir
     except Exception as e:
         # 捕获并记录创建目录时的异常
@@ -71,6 +72,15 @@ def create_work_dir(task_id: str) -> str:
 _FONTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "fonts")
 _CONFIG_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "config"))
 _CUMCM_PANDOC_TEMPLATE = os.path.join(_CONFIG_DIR, "cumcm_pandoc_template.tex")
+_CUMCM_CLASS_FILENAME = "cumcmthesis.cls"
+_CUMCM_CLASS_CANDIDATES = [
+    Path("/third_party/CUMCMThesis") / _CUMCM_CLASS_FILENAME,
+    Path(__file__).resolve().parents[3]
+    / "third_party"
+    / "CUMCMThesis"
+    / _CUMCM_CLASS_FILENAME,
+    Path(_CONFIG_DIR) / _CUMCM_CLASS_FILENAME,
+]
 
 
 def _copy_fonts_to_work_dir(work_dir: str) -> None:
@@ -94,6 +104,41 @@ def _copy_fonts_to_work_dir(work_dir: str) -> None:
             logger.debug(f"复制字体: {filename} -> {work_dir}")
         except Exception as e:
             logger.warning(f"复制字体 {filename} 失败: {e}")
+
+
+def _copy_cumcm_class_to_work_dir(work_dir: str) -> None:
+    """Make the CUMCM LaTeX class discoverable for xelatex."""
+    target = Path(work_dir) / _CUMCM_CLASS_FILENAME
+    if target.exists() and "\\RequirePackage{ulem}" not in target.read_text(
+        encoding="utf-8", errors="ignore"
+    ):
+        return
+
+    for source in _CUMCM_CLASS_CANDIDATES:
+        if source.exists():
+            try:
+                content = source.read_text(encoding="utf-8", errors="ignore")
+                content = content.replace(
+                    "\\RequirePackage{ulem}",
+                    "\n".join(
+                        [
+                            "% ulem.sty is not available in all slim TeX runtimes.",
+                            "\\providecommand{\\ULthickness}{0.4pt}",
+                            "\\newlength{\\ULdepth}",
+                            "\\providecommand{\\uline}[1]{\\underline{#1}}",
+                        ]
+                    ),
+                )
+                target.write_text(content, encoding="utf-8")
+                logger.debug(f"复制 CUMCM LaTeX 类文件: {source} -> {target}")
+                return
+            except Exception as exc:
+                logger.warning(f"复制 CUMCM LaTeX 类文件失败 {source} -> {target}: {exc}")
+
+    logger.warning(
+        "未找到 cumcmthesis.cls，PDF 编译可能失败；已检查："
+        + "、".join(str(path) for path in _CUMCM_CLASS_CANDIDATES)
+    )
 
 
 def get_work_dir(task_id: str) -> str:
@@ -195,16 +240,111 @@ def get_current_files(folder_path: str, type: str = "all") -> list[str]:
     return []
 
 
+def _build_image_basename_map(work_dir: str) -> dict[str, str]:
+    """构建 basename → 相对路径 的映射，用于修正仅含基名的图片引用。
+
+    Args:
+        work_dir: 任务工作目录绝对/相对路径。
+
+    Returns:
+        小写 basename 到相对路径的映射，如 ``{"fig1.png": "5.1_xxx/fig1.png"}``。
+    """
+    mapping: dict[str, str] = {}
+    root = Path(work_dir)
+    if not root.is_dir():
+        return mapping
+    for p in root.rglob("*"):
+        if p.is_file() and is_image_file(p.name):
+            rel = p.relative_to(root).as_posix()
+            key = p.name.lower()
+            # 子目录中的图片优先（basename 冲突时保留第一个）
+            if key not in mapping or "/" in rel:
+                mapping[key] = rel
+    return mapping
+
+
+def resolve_image_path(work_dir: str, filename: str) -> str:
+    """将图片文件名解析为相对于 work_dir 的实际路径。
+
+    如果给定路径已直接存在，原样返回；否则在子目录中查找同名文件。
+
+    Args:
+        work_dir: 任务工作目录。
+        filename: 图片文件名（可能是 basename 或包含子目录的相对路径）。
+
+    Returns:
+        解析后的相对路径。
+    """
+    normalized = filename.replace("\\", "/")
+    if os.path.isfile(os.path.join(work_dir, normalized)):
+        return normalized
+    # 在子目录中按 basename 查找
+    basename = os.path.basename(normalized).lower()
+    root = Path(work_dir)
+    for p in root.rglob("*"):
+        if p.is_file() and p.name.lower() == basename:
+            return p.relative_to(root).as_posix()
+    return normalized
+
+
+def normalize_markdown_image_paths(content: str, work_dir: str) -> str:
+    """修正 Markdown 中仅用 basename 引用的图片路径，补全子目录前缀。
+
+    Args:
+        content: Markdown 文本。
+        work_dir: 任务工作目录。
+
+    Returns:
+        图片路径已修正的 Markdown 文本。
+    """
+    basename_map = _build_image_basename_map(work_dir)
+
+    def _fix(match: re.Match) -> str:
+        alt = match.group(1)
+        src = match.group(2)
+        normalized = src.replace("\\", "/")
+        # 已包含子目录的路径不修正
+        if "/" in normalized:
+            return match.group(0)
+        key = os.path.basename(normalized).lower()
+        resolved = basename_map.get(key, normalized)
+        if resolved != normalized:
+            return f"![{alt}]({resolved})"
+        return match.group(0)
+
+    return re.sub(
+        rf"!\[(.*?)\]\((.*?\.{IMAGE_EXTENSION_RE_FRAGMENT})\)",
+        _fix,
+        content,
+    )
+
+
 def transform_link(task_id: str, content: str):
     """将 Markdown 中的图片链接转换为静态资源 URL。
+
+    同时将仅用 basename 引用的图片路径修正为包含子目录的完整相对路径，
+    确保静态文件服务可以正确定位图片。
 
     Args:
         task_id: 任务 ID，用于构建 URL 路径。
         content: 包含图片链接的 Markdown 文本。
     """
+    work_dir = get_work_dir(task_id)
+    basename_map = _build_image_basename_map(work_dir)
+
+    def _replace(match: re.Match) -> str:
+        alt = match.group(1)
+        src = match.group(2)
+        normalized = src.replace("\\", "/")
+        # 如果是 basename 且在子目录中有对应文件，替换为完整路径
+        if "/" not in normalized:
+            key = os.path.basename(normalized).lower()
+            normalized = basename_map.get(key, normalized)
+        return f"![{alt}]({settings.SERVER_HOST}/static/{task_id}/{normalized})"
+
     content = re.sub(
         rf"!\[(.*?)\]\((.*?\.{IMAGE_EXTENSION_RE_FRAGMENT})\)",
-        lambda match: f"![{match.group(1)}]({settings.SERVER_HOST}/static/{task_id}/{match.group(2)})",
+        _replace,
         content,
     )
     return content
@@ -248,6 +388,7 @@ def md_2_tex(task_id: str) -> str:
         生成的 .tex 文件路径。
     """
     work_dir = get_work_dir(task_id)
+    _copy_cumcm_class_to_work_dir(work_dir)
     md_path = os.path.join(work_dir, "res.md")
     tex_path = os.path.join(work_dir, "res.tex")
     title = _extract_markdown_title(md_path)
@@ -267,7 +408,7 @@ def md_2_tex(task_id: str) -> str:
         source_file=pandoc_md_path,
         to="latex",
         outputfile=tex_path,
-        format="markdown+tex_math_dollars",
+        format="markdown+tex_math_dollars+tex_math_single_backslash",
         extra_args=extra_args,
     )
     print(f"转换完成: {tex_path}")
@@ -280,7 +421,16 @@ def _write_cumcm_markdown_source(md_path: str, work_dir: str) -> str:
     source_path = os.path.join(work_dir, "res_cumcm_source.md")
     try:
         with open(md_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+            source_text = f.read()
+
+        try:
+            from app.utils.paper_cleaner import clean_chinese_paper_markdown
+
+            source_text = clean_chinese_paper_markdown(source_text)
+        except Exception as exc:
+            logger.warning(f"清洗 CUMCM Markdown 中间文件失败: {exc}")
+
+        lines = source_text.splitlines(keepends=True)
 
         output_lines: list[str] = []
         removed_title = False
@@ -319,6 +469,7 @@ def tex_2_pdf(task_id: str) -> str:
         RuntimeError: LaTeX 环境缺失或编译失败，错误信息包含具体原因。
     """
     work_dir = os.path.abspath(get_work_dir(task_id))
+    _copy_cumcm_class_to_work_dir(work_dir)
     tex_path = os.path.join(work_dir, "res.tex")
     pdf_path = os.path.join(work_dir, "res.pdf")
 
@@ -328,11 +479,6 @@ def tex_2_pdf(task_id: str) -> str:
     if shutil.which("xelatex") is None:
         raise RuntimeError(
             "未检测到 xelatex，请安装 TeX Live 并确保 xelatex 在 PATH 中"
-        )
-
-    if shutil.which("pandoc") is None:
-        raise RuntimeError(
-            "未检测到 pandoc，请安装 pandoc 并确保在 PATH 中"
         )
 
     cmd = [

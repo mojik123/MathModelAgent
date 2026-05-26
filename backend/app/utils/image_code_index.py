@@ -321,38 +321,88 @@ def rebuild_image_code_index_from_notebook(work_dir: str) -> dict[str, Any]:
 
 
 def get_image_code_entry(work_dir: str, filename: str) -> dict[str, Any] | None:
+    """查找图片对应的代码条目。
+
+    查找策略（按优先级）：
+    1. 索引文件 `.image_code_index.json`（Coder 运行时写入）
+    2. 同名 `.py` 配对文件
+    3. 从 notebook 反向扫描 savefig 调用
+    """
     image_path = _resolve_image_path(work_dir, filename)
     if not image_path:
         return None
 
-    paired_code_path = image_path.with_suffix(".py")
-    if not paired_code_path.exists():
-        return None
-
-    code = paired_code_path.read_text(encoding="utf-8", errors="ignore")
     image_key = _rel_to_work_dir(work_dir, image_path)
 
-    try:
-        section = str(image_path.parent.resolve().relative_to(_work_root(work_dir))).replace("\\", "/")
-    except ValueError:
-        section = ""
-    if section == ".":
-        section = ""
+    # 策略 1：从索引文件查找（最常见的命中路径）
+    index = load_image_code_index(work_dir)
+    image_map = index.get("images", {})
+    # 尝试多种 key 格式匹配（完整相对路径、basename、normalize 后的 key）
+    entry = (
+        image_map.get(image_key)
+        or image_map.get(normalize_image_key(filename))
+        or image_map.get(image_path.name)
+    )
+    if entry and str(entry.get("code") or "").strip():
+        _ensure_entry_metadata(entry)
+        return entry
 
-    metadata = build_image_description(image_key, code, section)
+    # 策略 2：同名 .py 配对文件
+    paired_code_path = image_path.with_suffix(".py")
+    if paired_code_path.exists():
+        code = paired_code_path.read_text(encoding="utf-8", errors="ignore")
+        try:
+            section = str(image_path.parent.resolve().relative_to(_work_root(work_dir))).replace("\\", "/")
+        except ValueError:
+            section = ""
+        if section == ".":
+            section = ""
 
-    return {
-        "filename": image_key,
-        "basename": image_path.name,
-        "code": code,
-        "cell_index": None,
-        "section": section,
-        "description": metadata["description"],
-        "alt_text": metadata["alt_text"],
-        "caption": metadata["caption"],
-        "metadata_source": "paired_py",
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
+        metadata = build_image_description(image_key, code, section)
+        return {
+            "filename": image_key,
+            "basename": image_path.name,
+            "code": code,
+            "cell_index": None,
+            "section": section,
+            "description": metadata["description"],
+            "alt_text": metadata["alt_text"],
+            "caption": metadata["caption"],
+            "metadata_source": "paired_py",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    # 策略 3：从 notebook 反向扫描
+    basename = image_path.name
+    for nb_path in _notebook_paths(work_dir):
+        try:
+            nb = nbformat.read(str(nb_path), as_version=4)
+        except Exception:
+            continue
+        cell_index = -1
+        for cell in nb.cells:
+            if cell.get("cell_type") != "code":
+                continue
+            cell_index += 1
+            code = cell.get("source", "")
+            for img in extract_saved_images(code):
+                if Path(img).name == basename or normalize_image_key(img) == image_key:
+                    section = "" if nb_path.name == "notebook.ipynb" else nb_path.stem
+                    metadata = build_image_description(image_key, code, section)
+                    return {
+                        "filename": image_key,
+                        "basename": image_path.name,
+                        "code": code,
+                        "cell_index": cell_index,
+                        "section": section,
+                        "description": metadata["description"],
+                        "alt_text": metadata["alt_text"],
+                        "caption": metadata["caption"],
+                        "metadata_source": "notebook_scan",
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+
+    return None
 
 
 def update_image_metadata(

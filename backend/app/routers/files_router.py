@@ -20,9 +20,10 @@ from app.schemas.response import SystemMessage, ProgressMessage
 from app.schemas.enums import AgentType
 from app.services.redis_manager import redis_manager
 from app.core.prompts.text_revision import get_text_revision_prompt
+from app.models.user_output import clean_final_paper_markdown
 from app.tools.local_interpreter import LocalCodeInterpreter
 from app.tools.notebook_serializer import NotebookSerializer
-from app.utils.common_utils import get_current_files, get_work_dir, md_2_pdf
+from app.utils.common_utils import get_current_files, get_work_dir, md_2_pdf, normalize_markdown_image_paths
 from app.utils.image_code_index import (
     extract_saved_images,
     get_image_code_entry,
@@ -211,7 +212,10 @@ async def get_paper(task_id: str):
         return {"content": ""}
 
     with open(md_path, "r", encoding="utf-8") as f:
-        return {"content": f.read()}
+        content = clean_final_paper_markdown(f.read())
+    # 修正仅用 basename 引用的图片路径，补全子目录前缀
+    content = normalize_markdown_image_paths(content, work_dir)
+    return {"content": content}
 
 
 @router.post("/paper")
@@ -219,7 +223,7 @@ async def save_paper(payload: PaperSaveRequest):
     work_dir = get_work_dir(payload.task_id)
     md_path = os.path.join(work_dir, "res.md")
     with open(md_path, "w", encoding="utf-8") as f:
-        f.write(payload.content)
+        f.write(clean_final_paper_markdown(payload.content))
     return {"success": True}
 
 
