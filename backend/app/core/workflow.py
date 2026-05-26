@@ -1444,6 +1444,67 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     ),
                 )
 
+            # 检查是否内容过长，如果过长则自动精简一次
+            initial_content_check = validate_section_output(
+                key,
+                writer_response.response_content or "",
+                self.ques_count,
+                available_images=winner_coder_response.created_images,
+            )
+            length_issues = [issue for issue in initial_content_check if "内容过长" in issue]
+            if length_issues:
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=f"[组#{group_idx}] 检测到 {key} 内容过长，正在自动精简",
+                        type="warning",
+                    ),
+                )
+
+                trim_prompt = f"""
+你之前生成的"{key}"章节内容过长了。请精简内容，使其更加精炼，但保留所有关键模型结论、数值结果和图片引用。
+
+要求：
+1. 删除冗余的过程描述和重复的解释
+2. 保留模型的核心思想、主要假设、关键公式和最终结果
+3. 保留所有数值预测、对比分析和重要图表引用
+4. 删除过多的中间步骤细节和冗长的背景介绍
+5. 合并同义段落，精简过长的案例说明
+
+输出格式仍为 Markdown，不要输出解释、检查报告或代码块围栏。
+
+原章节内容：
+{writer_response.response_content}
+"""
+                try:
+                    trimmed_response = await asyncio.wait_for(
+                        group_writer.run(
+                            trim_prompt,
+                            available_images=winner_coder_response.created_images,
+                            sub_title=key,
+                        ),
+                        timeout=writer_timeout,
+                    )
+                    if trimmed_response.response_content.strip():
+                        # 验证修剪后的内容是否仍然过长
+                        trimmed_issues = validate_section_output(
+                            key,
+                            trimmed_response.response_content,
+                            self.ques_count,
+                            available_images=winner_coder_response.created_images,
+                        )
+                        if not any("内容过长" in issue for issue in trimmed_issues):
+                            writer_response = trimmed_response
+                            await redis_manager.publish_message(
+                                self.task_id,
+                                SystemMessage(
+                                    content=f"[组#{group_idx}] 已自动精简 {key}，从 {len(writer_response.response_content or '')} 字符优化至 {len(trimmed_response.response_content or '')}",
+                                    type="success",
+                                ),
+                            )
+                except Exception as exc:
+                    logger.warning(f"[组#{group_idx}] {key} 内容精简失败: {exc}")
+
             async with write_lock:
                 user_output.set_res(key, writer_response)
                 self._save_writer_checkpoint(checkpoint, key, writer_response)
