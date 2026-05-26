@@ -49,6 +49,7 @@ export async function getAllFilesDownloadUrl(task_id: string) {
 export function getPaper(task_id: string) {
 	return request.get<{ content: string }>("/paper", {
 		params: { task_id },
+		timeout: 60000,
 	});
 }
 
