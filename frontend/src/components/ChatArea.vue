@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import type { TaskRuntimeStatus } from "@/apis/commonApi";
-import type { Message, ProgressMessage, ToolMessage } from "@/utils/response";
-import { AgentType } from "@/utils/enum";
-import QuestionDiscussion from "@/components/QuestionDiscussion.vue";
 import ModelingDiscussion from "@/components/ModelingDiscussion.vue";
+import QuestionDiscussion from "@/components/QuestionDiscussion.vue";
+import { AgentType } from "@/utils/enum";
+import type { Message, ProgressMessage, ToolMessage } from "@/utils/response";
 import {
+	AlertTriangle,
 	Bot,
 	CheckCircle2,
 	Clock3,
@@ -16,7 +17,6 @@ import {
 	Sparkles,
 	UserRound,
 	Wrench,
-	AlertTriangle,
 } from "lucide-vue-next";
 import { computed, nextTick, ref, watch } from "vue";
 
@@ -40,7 +40,15 @@ interface TimelineEvent {
 	side: "left" | "right" | "center";
 	actor: string;
 	role: string;
-	type: "stage" | "choice" | "progress" | "artifact" | "warning" | "error" | "user" | "raw";
+	type:
+		| "stage"
+		| "choice"
+		| "progress"
+		| "artifact"
+		| "warning"
+		| "error"
+		| "user"
+		| "raw";
 	title: string;
 	detail?: string;
 	brief?: string;
@@ -53,7 +61,14 @@ interface TimelineEvent {
 	progressText?: string;
 	debugCount?: number;
 	isGroup?: boolean;
-	groupPhase?: "question" | "writing" | "planning" | "modeling" | "coding" | "final" | "process";
+	groupPhase?:
+		| "question"
+		| "writing"
+		| "planning"
+		| "modeling"
+		| "coding"
+		| "final"
+		| "process";
 	groupEvents?: TimelineEvent[];
 	groupActors?: string[];
 }
@@ -104,8 +119,12 @@ function messageText(m: Message) {
 	return m.content ?? "";
 }
 
-const allMessageText = computed(() => props.messages.map(messageText).join("\n"));
-const hasStreamingMessage = computed(() => props.messages.some((m) => (m as any).stream_state === "streaming"));
+const allMessageText = computed(() =>
+	props.messages.map(messageText).join("\n"),
+);
+const hasStreamingMessage = computed(() =>
+	props.messages.some((m) => (m as any).stream_state === "streaming"),
+);
 const streamingSignature = computed(() =>
 	props.messages
 		.filter((m) => (m as any).stream_state === "streaming")
@@ -116,14 +135,22 @@ const streamingSignature = computed(() =>
 const questionConfirmed = computed(() =>
 	props.messages.some((m) => {
 		const c = messageText(m);
-		return c.includes("问题划分已确认") || c.includes("已复用问题划分") || c.includes("用户确认了最终的问题划分方案");
+		return (
+			c.includes("问题划分已确认") ||
+			c.includes("已复用问题划分") ||
+			c.includes("用户确认了最终的问题划分方案")
+		);
 	}),
 );
 
 const modelingConfirmed = computed(() =>
 	props.messages.some((m) => {
 		const c = messageText(m);
-		return c.includes("建模方案已确认") || c.includes("已复用建模方案选择") || c.includes("用户确认全部问题的建模方案");
+		return (
+			c.includes("建模方案已确认") ||
+			c.includes("已复用建模方案选择") ||
+			c.includes("用户确认全部问题的建模方案")
+		);
 	}),
 );
 
@@ -168,7 +195,9 @@ function tailBrief(content?: string | null, max = 520) {
 
 function detectQuestionIndex(text: string, msg?: any): number | null {
 	if (typeof msg?.question_index === "number") return msg.question_index;
-	const fromGroup = String(msg?.group_id ?? msg?.agent_instance_id ?? "").match(/q(?:ues)?(\d+)|组#(\d+)/i);
+	const fromGroup = String(msg?.group_id ?? msg?.agent_instance_id ?? "").match(
+		/q(?:ues)?(\d+)|组#(\d+)/i,
+	);
 	if (fromGroup) return Number(fromGroup[1] || fromGroup[2]);
 	const m = text.match(/(?:\[组#|子问题组#|第\s*)(\d+)/);
 	if (m) return Number(m[1]);
@@ -203,7 +232,8 @@ function actorFromMessage(msg: Message, text: string): string {
 	if (/问题划分|拆解|Coordinator|协调/.test(text)) return "CoordinatorAgent";
 	if (/建模|Modeler|模型方案|候选方案/.test(text)) return "ModelerAgent";
 	if (/代码|Coder|求解|执行|改错|错误判别/.test(text)) return "CoderAgent";
-	if (/论文|Writer|写作|终稿|图片修订|文本修订/.test(text)) return "WriterAgent";
+	if (/论文|Writer|写作|终稿|图片修订|文本修订/.test(text))
+		return "WriterAgent";
 	return "SystemMonitor";
 }
 
@@ -232,7 +262,8 @@ function isLowValueSystem(text: string) {
 
 function artifactNames(text: string) {
 	const set = new Set<string>();
-	const re = /[\w\-.\u4e00-\u9fa5/]+\.(?:xlsx|xls|csv|png|jpg|jpeg|svg|pdf|md|docx|py)/gi;
+	const re =
+		/[\w\-.\u4e00-\u9fa5/]+\.(?:xlsx|xls|csv|png|jpg|jpeg|svg|pdf|md|docx|py)/gi;
 	for (const m of text.matchAll(re)) set.add(m[0]);
 	return Array.from(set).slice(0, 6);
 }
@@ -258,14 +289,27 @@ function systemEvent(msg: Message): TimelineEvent | null {
 			status: questionConfirmed.value ? "done" : "waiting",
 			actor: "CoordinatorAgent",
 			role: roleMap.CoordinatorAgent,
-			title: questionConfirmed.value ? "问题划分已确认" : "问题划分已生成，请确认",
-			detail: questionConfirmed.value ? "该步骤已完成。" : "可在这条对话消息内直接修改、增删问题卡片，确认后继续进入建模方案选择。",
+			title: questionConfirmed.value
+				? "问题划分已确认"
+				: "问题划分已生成，请确认",
+			detail: questionConfirmed.value
+				? "该步骤已完成。"
+				: "可在这条对话消息内直接修改、增删问题卡片，确认后继续进入建模方案选择。",
 			choiceKind: "question",
 			badges: questionConfirmed.value ? ["已确认"] : ["需要用户确认"],
 		};
 	}
 	if (line.includes("问题划分已确认") || line.includes("已复用问题划分")) {
-		return { ...base, side: "right", actor: "User", role: roleMap.User, type: "user", status: "done", title: "已确认问题划分", detail: "进入建模方案生成阶段。" };
+		return {
+			...base,
+			side: "right",
+			actor: "User",
+			role: roleMap.User,
+			type: "user",
+			status: "done",
+			title: "已确认问题划分",
+			detail: "进入建模方案生成阶段。",
+		};
 	}
 	if (line.includes("等待用户确认各问建模方案")) {
 		return {
@@ -274,34 +318,187 @@ function systemEvent(msg: Message): TimelineEvent | null {
 			status: modelingConfirmed.value ? "done" : "waiting",
 			actor: "ModelerAgent",
 			role: roleMap.ModelerAgent,
-			title: modelingConfirmed.value ? "建模方案已确认" : "候选建模方案已生成，请选择",
-			detail: modelingConfirmed.value ? "该步骤已完成。" : "可在这条对话消息内直接选择每一问的建模方案，也可以要求重新生成。",
+			title: modelingConfirmed.value
+				? "建模方案已确认"
+				: "候选建模方案已生成，请选择",
+			detail: modelingConfirmed.value
+				? "该步骤已完成。"
+				: "可在这条对话消息内直接选择每一问的建模方案，也可以要求重新生成。",
 			choiceKind: "modeling",
 			badges: modelingConfirmed.value ? ["已确认"] : ["需要用户确认"],
 		};
 	}
 	if (line.includes("建模方案已确认") || line.includes("已复用建模方案选择")) {
-		return { ...base, side: "right", actor: "User", role: roleMap.User, type: "user", status: "done", title: "已确认建模方案", detail: "开始进入代码求解。" };
+		return {
+			...base,
+			side: "right",
+			actor: "User",
+			role: roleMap.User,
+			type: "user",
+			status: "done",
+			title: "已确认建模方案",
+			detail: "开始进入代码求解。",
+		};
 	}
 	if (isLowValueSystem(line)) return null;
 
-	if (/代码手开始求解/.test(line)) return { ...base, actor: "CoderAgent", role: roleMap.CoderAgent, type: "stage", status: "running", title: q ? `第 ${q} 问开始求解` : "开始代码求解", detail: line, badges: q ? [`Q${q}`] : [] };
-	if (/代码手求解成功/.test(line)) return { ...base, actor: "CoderAgent", role: roleMap.CoderAgent, type: "artifact", status: "done", title: q ? `第 ${q} 问求解完成` : "代码求解完成", detail: "结果已移交给写作阶段。", artifacts: artifactNames(content), badges: q ? [`Q${q}`] : [] };
-	if (/论文手开始写/.test(line)) return { ...base, actor: "WriterAgent", role: roleMap.WriterAgent, type: "stage", status: "running", title: q ? `第 ${q} 问开始写作` : "开始论文写作", detail: line, badges: q ? [`Q${q}`] : [] };
-	if (/论文手完成/.test(line)) return { ...base, actor: "WriterAgent", role: roleMap.WriterAgent, type: "artifact", status: "done", title: q ? `第 ${q} 问写作完成` : "写作完成", detail: "已生成对应论文段落。", artifacts: artifactNames(content), badges: q ? [`Q${q}`] : [] };
-	if (/子问题组#\d+.*启动/.test(line)) return { ...base, actor: "SubCoordinatorAgent", role: roleMap.SubCoordinatorAgent, type: "stage", status: "running", title: q ? `子问题组 ${q} 启动` : "子问题组启动", detail: line, badges: q ? [`Q${q}`] : [] };
-	if (/子问题组#\d+.*完成/.test(line)) return { ...base, actor: "SubCoordinatorAgent", role: roleMap.SubCoordinatorAgent, type: "stage", status: "done", title: q ? `子问题组 ${q} 完成` : "子问题组完成", detail: "该组结果已提交汇总。", badges: q ? [`Q${q}`] : [] };
-	if (/协调者后台错误判别已启动/.test(line)) return { ...base, actor: "CoderAgent", role: roleMap.CoderAgent, type: "progress", status: "warning", title: "多次改错，协调者后台判别中", detail: line, progressText: "Coder 继续自行修复，协调者后台判断是否需要换新 Coder。", badges: q ? [`Q${q}`, "后台判别"] : ["后台判别"] };
+	if (/代码手开始求解/.test(line))
+		return {
+			...base,
+			actor: "CoderAgent",
+			role: roleMap.CoderAgent,
+			type: "stage",
+			status: "running",
+			title: q ? `第 ${q} 问开始求解` : "开始代码求解",
+			detail: line,
+			badges: q ? [`Q${q}`] : [],
+		};
+	if (/代码手求解成功/.test(line))
+		return {
+			...base,
+			actor: "CoderAgent",
+			role: roleMap.CoderAgent,
+			type: "artifact",
+			status: "done",
+			title: q ? `第 ${q} 问求解完成` : "代码求解完成",
+			detail: "结果已移交给写作阶段。",
+			artifacts: artifactNames(content),
+			badges: q ? [`Q${q}`] : [],
+		};
+	if (/论文手开始写/.test(line))
+		return {
+			...base,
+			actor: "WriterAgent",
+			role: roleMap.WriterAgent,
+			type: "stage",
+			status: "running",
+			title: q ? `第 ${q} 问开始写作` : "开始论文写作",
+			detail: line,
+			badges: q ? [`Q${q}`] : [],
+		};
+	if (/论文手完成/.test(line))
+		return {
+			...base,
+			actor: "WriterAgent",
+			role: roleMap.WriterAgent,
+			type: "artifact",
+			status: "done",
+			title: q ? `第 ${q} 问写作完成` : "写作完成",
+			detail: "已生成对应论文段落。",
+			artifacts: artifactNames(content),
+			badges: q ? [`Q${q}`] : [],
+		};
+	if (/子问题组#\d+.*启动/.test(line))
+		return {
+			...base,
+			actor: "SubCoordinatorAgent",
+			role: roleMap.SubCoordinatorAgent,
+			type: "stage",
+			status: "running",
+			title: q ? `子问题组 ${q} 启动` : "子问题组启动",
+			detail: line,
+			badges: q ? [`Q${q}`] : [],
+		};
+	if (/子问题组#\d+.*完成/.test(line))
+		return {
+			...base,
+			actor: "SubCoordinatorAgent",
+			role: roleMap.SubCoordinatorAgent,
+			type: "stage",
+			status: "done",
+			title: q ? `子问题组 ${q} 完成` : "子问题组完成",
+			detail: "该组结果已提交汇总。",
+			badges: q ? [`Q${q}`] : [],
+		};
+	if (/协调者后台错误判别已启动/.test(line))
+		return {
+			...base,
+			actor: "CoderAgent",
+			role: roleMap.CoderAgent,
+			type: "progress",
+			status: "warning",
+			title: "多次改错，协调者后台判别中",
+			detail: line,
+			progressText: "Coder 继续自行修复，协调者后台判断是否需要换新 Coder。",
+			badges: q ? [`Q${q}`, "后台判别"] : ["后台判别"],
+		};
 	if (/协调者后台错误判别完成|协调者重复错误判别/.test(line)) {
-		const restart = content.includes("should_restart=true") || content.includes("切换新 Coder");
-		return { ...base, actor: "CoderAgent", role: roleMap.CoderAgent, type: restart ? "warning" : "progress", status: restart ? "warning" : "running", title: restart ? "反复出错，准备换新 Coder" : "协调者给出改错建议", detail: brief(content, 260), badges: q ? [`Q${q}`, "改错"] : ["改错"] };
+		const restart =
+			content.includes("should_restart=true") ||
+			content.includes("切换新 Coder");
+		return {
+			...base,
+			actor: "CoderAgent",
+			role: roleMap.CoderAgent,
+			type: restart ? "warning" : "progress",
+			status: restart ? "warning" : "running",
+			title: restart ? "反复出错，准备换新 Coder" : "协调者给出改错建议",
+			detail: brief(content, 260),
+			badges: q ? [`Q${q}`, "改错"] : ["改错"],
+		};
 	}
-	if (/备用\s*Coder|备用\d+|重写中|重新组织方案/.test(line)) return { ...base, actor: "CoderAgent", role: roleMap.CoderAgent, type: "warning", status: "warning", title: "备用 Coder 接手重写", detail: brief(content, 220), badges: q ? [`Q${q}`, "重写"] : ["重写"] };
-	if (/已停止|任务执行失败|失败|错误/.test(line)) return { ...base, type: "error", status: "error", title: line.slice(0, 80), detail: brief(content, 240), badges: q ? [`Q${q}`] : [] };
-	if (/完成终稿整体检查|论文生成完成/.test(line)) return { ...base, actor: "WriterAgent", role: roleMap.WriterAgent, type: "artifact", status: "done", title: "论文终稿完成", detail: "可以在右侧论文预览或导出菜单查看结果。", artifacts: artifactNames(content) };
-	if (/开始终稿整体检查|集成协调者|并行写作启动|开始灵敏度分析|启动 EDA/.test(line)) return { ...base, type: "stage", status: "running", title: line.slice(0, 80), detail: brief(content, 220) };
-	if (artifactNames(content).length) return { ...base, type: "artifact", status: "done", title: "生成产物", detail: brief(content, 180), artifacts: artifactNames(content) };
-	return { ...base, type: "stage", status: msg.msg_type === "system" && (msg as any).type === "success" ? "done" : "running", title: line || "流程更新", detail: brief(content, 180) };
+	if (/备用\s*Coder|备用\d+|重写中|重新组织方案/.test(line))
+		return {
+			...base,
+			actor: "CoderAgent",
+			role: roleMap.CoderAgent,
+			type: "warning",
+			status: "warning",
+			title: "备用 Coder 接手重写",
+			detail: brief(content, 220),
+			badges: q ? [`Q${q}`, "重写"] : ["重写"],
+		};
+	if (/已停止|任务执行失败|失败|错误/.test(line))
+		return {
+			...base,
+			type: "error",
+			status: "error",
+			title: line.slice(0, 80),
+			detail: brief(content, 240),
+			badges: q ? [`Q${q}`] : [],
+		};
+	if (/完成终稿整体检查|论文生成完成/.test(line))
+		return {
+			...base,
+			actor: "WriterAgent",
+			role: roleMap.WriterAgent,
+			type: "artifact",
+			status: "done",
+			title: "论文终稿完成",
+			detail: "可以在右侧论文预览或导出菜单查看结果。",
+			artifacts: artifactNames(content),
+		};
+	if (
+		/开始终稿整体检查|集成协调者|并行写作启动|开始灵敏度分析|启动 EDA/.test(
+			line,
+		)
+	)
+		return {
+			...base,
+			type: "stage",
+			status: "running",
+			title: line.slice(0, 80),
+			detail: brief(content, 220),
+		};
+	if (artifactNames(content).length)
+		return {
+			...base,
+			type: "artifact",
+			status: "done",
+			title: "生成产物",
+			detail: brief(content, 180),
+			artifacts: artifactNames(content),
+		};
+	return {
+		...base,
+		type: "stage",
+		status:
+			msg.msg_type === "system" && (msg as any).type === "success"
+				? "done"
+				: "running",
+		title: line || "流程更新",
+		detail: brief(content, 180),
+	};
 }
 
 function agentEvent(msg: Message): TimelineEvent | null {
@@ -319,7 +516,12 @@ function agentEvent(msg: Message): TimelineEvent | null {
 		status: isStreaming ? "running" : "done",
 		title: isStreaming ? "正在思考与生成" : "输出结果摘要",
 		detail: isStreaming ? tailBrief(content, 720) : brief(content, 260),
-		brief: content.length > 400 ? (isStreaming ? tailBrief(content, 240) : brief(content, 180)) : undefined,
+		brief:
+			content.length > 400
+				? isStreaming
+					? tailBrief(content, 240)
+					: brief(content, 180)
+				: undefined,
 		timeLabel: timeLabel(msg.created_at),
 		questionIndex: q,
 		badges: q ? [`Q${q}`] : [],
@@ -353,11 +555,32 @@ function toolEvent(msg: ToolMessage): TimelineEvent | null {
 
 function progressEvent(msg: ProgressMessage): TimelineEvent | null {
 	if (!msg.description && msg.percentage == null) return null;
-	return { id: msg.id, side: "center", actor: "SystemMonitor", role: roleMap.SystemMonitor, type: "progress", status: msg.percentage >= 100 ? "done" : "running", title: msg.description || "任务进度更新", progressText: `${msg.percentage ?? 0}%`, timeLabel: timeLabel(msg.created_at) };
+	return {
+		id: msg.id,
+		side: "center",
+		actor: "SystemMonitor",
+		role: roleMap.SystemMonitor,
+		type: "progress",
+		status: msg.percentage >= 100 ? "done" : "running",
+		title: msg.description || "任务进度更新",
+		progressText: `${msg.percentage ?? 0}%`,
+		timeLabel: timeLabel(msg.created_at),
+	};
 }
 
 function toEvent(msg: Message): TimelineEvent | null {
-	if (msg.msg_type === "user") return { id: msg.id, side: "right", actor: "User", role: roleMap.User, type: "user", status: "done", title: brief(msg.content, 80) || "用户确认", detail: brief(msg.content, 220), timeLabel: timeLabel(msg.created_at) };
+	if (msg.msg_type === "user")
+		return {
+			id: msg.id,
+			side: "right",
+			actor: "User",
+			role: roleMap.User,
+			type: "user",
+			status: "done",
+			title: brief(msg.content, 80) || "用户确认",
+			detail: brief(msg.content, 220),
+			timeLabel: timeLabel(msg.created_at),
+		};
 	if (msg.msg_type === "system") return systemEvent(msg);
 	if (msg.msg_type === "agent") return agentEvent(msg);
 	if (msg.msg_type === "tool") return toolEvent(msg as ToolMessage);
@@ -366,33 +589,67 @@ function toEvent(msg: Message): TimelineEvent | null {
 }
 
 function isDebugEvent(ev: TimelineEvent) {
-	return ev.actor === "CoderAgent" && ev.type === "progress" && (ev.title === "代码执行出错，正在改错" || /^第\s*\d+\s*次改错/.test(ev.title));
+	return (
+		ev.actor === "CoderAgent" &&
+		ev.type === "progress" &&
+		(ev.title === "代码执行出错，正在改错" ||
+			/^第\s*\d+\s*次改错/.test(ev.title))
+	);
 }
 
-const rawEvents = computed(() => props.messages.map(toEvent).filter(Boolean) as TimelineEvent[]);
+const rawEvents = computed(
+	() => props.messages.map(toEvent).filter(Boolean) as TimelineEvent[],
+);
 const timelineEvents = computed(() => {
 	const out: TimelineEvent[] = [];
 	for (const ev of rawEvents.value) {
 		const prev = out[out.length - 1];
-		if (prev && isDebugEvent(prev) && isDebugEvent(ev) && prev.questionIndex === ev.questionIndex) {
+		if (
+			prev &&
+			isDebugEvent(prev) &&
+			isDebugEvent(ev) &&
+			prev.questionIndex === ev.questionIndex
+		) {
 			const count = (prev.debugCount ?? 1) + 1;
 			out[out.length - 1] = {
 				...ev,
 				id: prev.id,
 				title: `第 ${count} 次改错`,
-				detail: "连续代码执行出错，Coder 正在自行修复；必要时协调者会后台判别是否需要换新 Coder。",
+				detail:
+					"连续代码执行出错，Coder 正在自行修复；必要时协调者会后台判别是否需要换新 Coder。",
 				progressText: `累计 ${count} 次改错`,
 				debugCount: count,
-				badges: Array.from(new Set([...(prev.badges ?? []), ...(ev.badges ?? [])])),
+				badges: Array.from(
+					new Set([...(prev.badges ?? []), ...(ev.badges ?? [])]),
+				),
 			};
 			continue;
 		}
 		if (isDebugEvent(ev)) {
-			out.push({ ...ev, title: "第 1 次改错", progressText: "累计 1 次改错", debugCount: 1 });
+			out.push({
+				...ev,
+				title: "第 1 次改错",
+				progressText: "累计 1 次改错",
+				debugCount: 1,
+			});
 			continue;
 		}
-		if (prev && prev.actor === ev.actor && prev.type === ev.type && prev.title === ev.title && ev.type !== "choice" && prev.side === ev.side && prev.questionIndex === ev.questionIndex) {
-			out[out.length - 1] = { ...ev, id: prev.id, badges: Array.from(new Set([...(prev.badges ?? []), ...(ev.badges ?? [])])) };
+		if (
+			prev &&
+			prev.actor === ev.actor &&
+			prev.type === ev.type &&
+			prev.title === ev.title &&
+			ev.type !== "choice" &&
+			prev.side === ev.side &&
+			prev.questionIndex === ev.questionIndex
+		) {
+			out[out.length - 1] = {
+				...ev,
+				id: prev.id,
+				badges: Array.from(
+					new Set([...(prev.badges ?? []), ...(ev.badges ?? [])]),
+				),
+			};
 			continue;
 		}
 		out.push(ev);
@@ -406,19 +663,34 @@ function isRevisionEvent(ev: TimelineEvent) {
 }
 
 function groupKeyOf(ev: TimelineEvent) {
-	if (ev.type === "choice" || ev.side !== "left" || isRevisionEvent(ev)) return "";
+	if (ev.type === "choice" || ev.side !== "left" || isRevisionEvent(ev))
+		return "";
 	const text = `${ev.title}\n${ev.detail ?? ""}`;
-	if (ev.questionIndex && ["SubCoordinatorAgent", "CoderAgent", "WriterAgent"].includes(ev.actor)) {
+	if (
+		ev.questionIndex &&
+		["SubCoordinatorAgent", "CoderAgent", "WriterAgent"].includes(ev.actor)
+	) {
 		return `question-${ev.questionIndex}`;
 	}
-	if (!ev.questionIndex && ev.actor === "WriterAgent" && /并行写作|论文手开始写|论文手完成|正在思考与生成|输出结果摘要/.test(text) && !/终稿|整体检查/.test(text)) {
+	if (
+		!ev.questionIndex &&
+		ev.actor === "WriterAgent" &&
+		/并行写作|论文手开始写|论文手完成|正在思考与生成|输出结果摘要/.test(text) &&
+		!/终稿|整体检查/.test(text)
+	) {
 		return "writing-parallel";
 	}
 	if (ev.actor === "CoderAgent") return "phase-coding";
 	if (ev.actor === "SubCoordinatorAgent") return "phase-coding";
 	if (ev.actor === "ModelerAgent") return "phase-modeling";
-	if (ev.actor === "WriterAgent") return /终稿|整体检查|论文生成/.test(text) ? "phase-final" : "writing-parallel";
-	if (ev.actor === "CoordinatorAgent") return /集成|整合|终稿|整体检查|论文生成/.test(text) ? "phase-final" : "phase-planning";
+	if (ev.actor === "WriterAgent")
+		return /终稿|整体检查|论文生成/.test(text)
+			? "phase-final"
+			: "writing-parallel";
+	if (ev.actor === "CoordinatorAgent")
+		return /集成|整合|终稿|整体检查|论文生成/.test(text)
+			? "phase-final"
+			: "phase-planning";
 	return "";
 }
 
@@ -426,8 +698,11 @@ function groupStatus(events: TimelineEvent[]): TimelineEvent["status"] {
 	if (events.some((ev) => ev.status === "error")) return "error";
 	if (events.some((ev) => ev.status === "warning")) return "warning";
 	const latest = events[events.length - 1];
-	if (latest?.status === "running" || latest?.status === "waiting") return latest.status;
-	return events.length && events.every((ev) => ev.status === "done") ? "done" : latest?.status ?? "running";
+	if (latest?.status === "running" || latest?.status === "waiting")
+		return latest.status;
+	return events.length && events.every((ev) => ev.status === "done")
+		? "done"
+		: (latest?.status ?? "running");
 }
 
 function groupTitle(group: TimelineEvent) {
@@ -454,9 +729,12 @@ function groupTitle(group: TimelineEvent) {
 		return `子问题组 ${q} · 改错中`;
 	}
 	if (latest?.actor === "WriterAgent") {
-		return latest.status === "done" ? `子问题组 ${q} · 写作完成` : `子问题组 ${q} · 写作中`;
+		return latest.status === "done"
+			? `子问题组 ${q} · 写作完成`
+			: `子问题组 ${q} · 写作中`;
 	}
-	if (/求解完成|子问题组 \d+ 完成/.test(latest?.title ?? "")) return `子问题组 ${q} · 求解完成`;
+	if (/求解完成|子问题组 \d+ 完成/.test(latest?.title ?? ""))
+		return `子问题组 ${q} · 求解完成`;
 	if (group.status === "done") return `子问题组 ${q} · 已完成`;
 	return `子问题组 ${q} · 求解中`;
 }
@@ -484,7 +762,10 @@ function phaseLabel(phase?: TimelineEvent["groupPhase"]) {
 	return "阶段过程";
 }
 
-function phaseActor(phase?: TimelineEvent["groupPhase"], fallback = "SystemMonitor") {
+function phaseActor(
+	phase?: TimelineEvent["groupPhase"],
+	fallback = "SystemMonitor",
+) {
 	if (phase === "planning" || phase === "final") return "CoordinatorAgent";
 	if (phase === "modeling") return "ModelerAgent";
 	if (phase === "coding") return "CoderAgent";
@@ -509,7 +790,11 @@ function makeGroupEvent(key: string, ev: TimelineEvent): TimelineEvent {
 		detail: "",
 		timeLabel: ev.timeLabel,
 		questionIndex: ev.questionIndex,
-		badges: isQuestion ? (ev.questionIndex ? [`Q${ev.questionIndex}`, "子问题组"] : ["子问题组"]) : [phaseLabel(phase)],
+		badges: isQuestion
+			? ev.questionIndex
+				? [`Q${ev.questionIndex}`, "子问题组"]
+				: ["子问题组"]
+			: [phaseLabel(phase)],
 		artifacts: [],
 		debugCount: 0,
 		isGroup: true,
@@ -520,15 +805,23 @@ function makeGroupEvent(key: string, ev: TimelineEvent): TimelineEvent {
 	return group;
 }
 
-function updateGroupProgressText(group: TimelineEvent, latestProgressText?: string) {
+function updateGroupProgressText(
+	group: TimelineEvent,
+	latestProgressText?: string,
+) {
 	const pieces: string[] = [];
 	if (latestProgressText) pieces.push(`到这里 ${latestProgressText}`);
 	pieces.push(`${group.groupEvents?.length ?? 0} 条更新`);
-	if (group.debugCount) pieces.push(`累计 ${group.debugCount} 次改错 / 重试记录`);
+	if (group.debugCount)
+		pieces.push(`累计 ${group.debugCount} 次改错 / 重试记录`);
 	group.progressText = pieces.join(" · ");
 }
 
-function updateGroup(group: TimelineEvent, ev: TimelineEvent, latestProgressText?: string) {
+function updateGroup(
+	group: TimelineEvent,
+	ev: TimelineEvent,
+	latestProgressText?: string,
+) {
 	group.groupEvents = [...(group.groupEvents ?? []), ev];
 	group.groupActors = pushUnique(group.groupActors, [ev.actor]);
 	group.badges = pushUnique(group.badges, ev.badges ?? []);
@@ -538,22 +831,32 @@ function updateGroup(group: TimelineEvent, ev: TimelineEvent, latestProgressText
 	group.status = groupStatus(group.groupEvents);
 	group.title = groupTitle(group);
 	const latest = group.groupEvents[group.groupEvents.length - 1];
-	const actors = group.groupActors.map((actor) => roleMap[actor] ?? actor).join(" / ");
+	const actors = group.groupActors
+		.map((actor) => roleMap[actor] ?? actor)
+		.join(" / ");
 	group.detail = `${actors || group.role} 正在协同推进；当前步骤：${latest.title}`;
 	updateGroupProgressText(group, latestProgressText);
 }
 
 function taskCompletedForDisplay() {
-	return /论文生成完成|任务处理完成|完成终稿整体检查/.test(allMessageText.value) || props.taskStatus === "completed";
+	return (
+		/论文生成完成|任务处理完成|完成终稿整体检查/.test(allMessageText.value) ||
+		props.taskStatus === "completed"
+	);
 }
 
 function taskStoppedForDisplay() {
-	return /任务执行失败|任务已停止|已中断/.test(allMessageText.value) || ["failed", "stopped", "interrupted"].includes(props.taskStatus);
+	return (
+		/任务执行失败|任务已停止|已中断/.test(allMessageText.value) ||
+		["failed", "stopped", "interrupted"].includes(props.taskStatus)
+	);
 }
 
 function normalizeDisplayStatus(status: TimelineEvent["status"]) {
-	if (taskCompletedForDisplay() && status !== "warning" && status !== "error") return "done";
-	if (taskStoppedForDisplay() && (status === "running" || status === "waiting")) return "warning";
+	if (taskCompletedForDisplay() && status !== "warning" && status !== "error")
+		return "done";
+	if (taskStoppedForDisplay() && (status === "running" || status === "waiting"))
+		return "warning";
 	return status;
 }
 
@@ -599,24 +902,149 @@ const displayEvents = computed(() => {
 	return out.map(normalizeDisplayEvent);
 });
 
-const hasQuestionWait = computed(() => allMessageText.value.includes("等待用户确认问题划分"));
-const hasModelingWait = computed(() => allMessageText.value.includes("等待用户确认各问建模方案"));
-const hasSolvingStarted = computed(() => /代码手开始求解|子问题组#\d+.*启动|开始求解/.test(allMessageText.value));
-const hasSolvingDone = computed(() => /代码手求解成功|子问题组#\d+.*完成/.test(allMessageText.value));
-const hasWritingStarted = computed(() => /论文手开始写|并行写作启动|开始终稿整体检查/.test(allMessageText.value));
-const hasWritingDone = computed(() => /论文手完成|论文生成完成|完成终稿整体检查/.test(allMessageText.value));
-const hasFinalDone = computed(() => /论文生成完成|任务处理完成|完成终稿整体检查/.test(allMessageText.value) || props.taskStatus === "completed");
-const hasFlowWarning = computed(() => /任务执行失败|已停止|should_restart=true|切换新 Coder|后台判别/.test(allMessageText.value));
+const hasQuestionWait = computed(() =>
+	allMessageText.value.includes("等待用户确认问题划分"),
+);
+const hasModelingWait = computed(() =>
+	allMessageText.value.includes("等待用户确认各问建模方案"),
+);
+const hasSolvingStarted = computed(() =>
+	/代码手开始求解|子问题组#\d+.*启动|开始求解/.test(allMessageText.value),
+);
+const hasSolvingDone = computed(() =>
+	/代码手求解成功|子问题组#\d+.*完成/.test(allMessageText.value),
+);
+const hasWritingStarted = computed(() =>
+	/论文手开始写|并行写作启动|开始终稿整体检查/.test(allMessageText.value),
+);
+const hasWritingDone = computed(() =>
+	/论文手完成|论文生成完成|完成终稿整体检查/.test(allMessageText.value),
+);
+const hasFinalDone = computed(
+	() =>
+		/论文生成完成|任务处理完成|完成终稿整体检查/.test(allMessageText.value) ||
+		props.taskStatus === "completed",
+);
+const hasFlowWarning = computed(() =>
+	/任务执行失败|已停止|should_restart=true|切换新 Coder|后台判别/.test(
+		allMessageText.value,
+	),
+);
 
 const flowSteps = computed<FlowStep[]>(() => {
-	const planningDone = hasQuestionWait.value || questionConfirmed.value || modelingConfirmed.value || hasSolvingStarted.value;
+	const planningDone =
+		hasQuestionWait.value ||
+		questionConfirmed.value ||
+		modelingConfirmed.value ||
+		hasSolvingStarted.value;
+	const solvingQuestions = questionStatuses.value.filter((q) =>
+		[
+			"solving",
+			"debugging",
+			"judging",
+			"restarting",
+			"recoding",
+			"plotting",
+		].includes(q.status),
+	);
+	const writingQuestions = questionStatuses.value.filter((q) =>
+		["writing"].includes(q.status),
+	);
+	const solvingDetail = solvingQuestions.length
+		? `${solvingQuestions.length} 个子问题并行求解`
+		: "子问题求解中";
+	const writingDetail = writingQuestions.length
+		? `${writingQuestions.length} 个子问题并行写作`
+		: "写作中";
 	return [
-		{ key: "planning", label: "规划", status: planningDone ? "done" : props.messages.length ? "active" : "pending", detail: planningDone ? "题目拆解完成" : "等待题目拆解" },
-		{ key: "question", label: "问题确认", status: questionConfirmed.value ? "done" : hasQuestionWait.value ? "active" : "pending", detail: questionConfirmed.value ? "已确认" : hasQuestionWait.value ? "等待用户确认" : "未开始" },
-		{ key: "modeling", label: "建模确认", status: modelingConfirmed.value ? "done" : hasModelingWait.value ? "active" : questionConfirmed.value ? "active" : "pending", detail: modelingConfirmed.value ? "已确认" : hasModelingWait.value ? "等待方案选择" : questionConfirmed.value ? "生成方案中" : "未开始" },
-		{ key: "solving", label: "代码求解", status: hasWritingStarted.value || hasWritingDone.value ? "done" : hasSolvingStarted.value ? (hasFlowWarning.value ? "warning" : "active") : "pending", detail: hasWritingStarted.value || hasWritingDone.value ? "已移交写作" : hasSolvingStarted.value ? "子问题求解中" : "未开始" },
-		{ key: "writing", label: "论文写作", status: hasWritingDone.value ? "done" : hasWritingStarted.value || hasSolvingDone.value ? "active" : "pending", detail: hasWritingDone.value ? "章节写作完成" : hasWritingStarted.value || hasSolvingDone.value ? "写作中" : "未开始" },
-		{ key: "final", label: "终稿", status: hasFinalDone.value ? "done" : hasWritingDone.value ? "active" : "pending", detail: hasFinalDone.value ? "终稿完成" : hasWritingDone.value ? "终稿整合中" : "未开始" },
+		{
+			key: "planning",
+			label: "规划",
+			status: planningDone
+				? "done"
+				: props.messages.length
+					? "active"
+					: "pending",
+			detail: planningDone ? "题目拆解完成" : "等待题目拆解",
+		},
+		{
+			key: "question",
+			label: "问题确认",
+			status: questionConfirmed.value
+				? "done"
+				: hasQuestionWait.value
+					? "active"
+					: "pending",
+			detail: questionConfirmed.value
+				? "已确认"
+				: hasQuestionWait.value
+					? "等待用户确认"
+					: "未开始",
+		},
+		{
+			key: "modeling",
+			label: "建模确认",
+			status: modelingConfirmed.value
+				? "done"
+				: hasModelingWait.value
+					? "active"
+					: questionConfirmed.value
+						? "active"
+						: "pending",
+			detail: modelingConfirmed.value
+				? "已确认"
+				: hasModelingWait.value
+					? "等待方案选择"
+					: questionConfirmed.value
+						? "生成方案中"
+						: "未开始",
+		},
+		{
+			key: "solving",
+			label: "代码求解",
+			status:
+				hasWritingStarted.value || hasWritingDone.value
+					? "done"
+					: hasSolvingStarted.value
+						? hasFlowWarning.value
+							? "warning"
+							: "active"
+						: "pending",
+			detail:
+				hasWritingStarted.value || hasWritingDone.value
+					? "已移交写作"
+					: hasSolvingStarted.value
+						? solvingDetail
+						: "未开始",
+		},
+		{
+			key: "writing",
+			label: "论文写作",
+			status: hasWritingDone.value
+				? "done"
+				: hasWritingStarted.value || hasSolvingDone.value
+					? "active"
+					: "pending",
+			detail: hasWritingDone.value
+				? "章节写作完成"
+				: hasWritingStarted.value || hasSolvingDone.value
+					? writingDetail
+					: "未开始",
+		},
+		{
+			key: "final",
+			label: "终稿",
+			status: hasFinalDone.value
+				? "done"
+				: hasWritingDone.value
+					? "active"
+					: "pending",
+			detail: hasFinalDone.value
+				? "终稿完成"
+				: hasWritingDone.value
+					? "终稿整合中"
+					: "未开始",
+		},
 	];
 });
 
@@ -624,7 +1052,13 @@ const questionStatuses = computed<QuestionStatus[]>(() => {
 	const map = new Map<number, QuestionStatus>();
 	function ensure(index: number) {
 		if (!map.has(index)) {
-			map.set(index, { index, label: `Q${index}`, status: "pending", detail: "等待", debugCount: 0 });
+			map.set(index, {
+				index,
+				label: `Q${index}`,
+				status: "pending",
+				detail: "等待",
+				debugCount: 0,
+			});
 		}
 		return map.get(index)!;
 	}
@@ -676,14 +1110,29 @@ const questionStatuses = computed<QuestionStatus[]>(() => {
 			item.detail = "求解中";
 		}
 	}
-	return Array.from(map.values()).sort((a, b) => a.index - b.index).slice(0, 8);
+	return Array.from(map.values())
+		.sort((a, b) => a.index - b.index)
+		.slice(0, 8);
 });
 
-const currentStage = computed(() => [...displayEvents.value].reverse().find((e) => e.status === "running" || e.status === "warning" || e.status === "waiting")?.title ?? (props.taskStatus === "completed" ? "任务已完成" : "等待开始"));
+const currentStage = computed(
+	() =>
+		[...displayEvents.value]
+			.reverse()
+			.find(
+				(e) =>
+					e.status === "running" ||
+					e.status === "warning" ||
+					e.status === "waiting",
+			)?.title ??
+		(props.taskStatus === "completed" ? "任务已完成" : "等待开始"),
+);
 const progressSummary = computed(() => {
 	const total = displayEvents.value.length;
 	const done = displayEvents.value.filter((e) => e.status === "done").length;
-	const warnings = displayEvents.value.filter((e) => e.status === "warning" || e.status === "error").length;
+	const warnings = displayEvents.value.filter(
+		(e) => e.status === "warning" || e.status === "error",
+	).length;
 	return { total, done, warnings };
 });
 
@@ -707,18 +1156,25 @@ function statusIcon(ev: TimelineEvent) {
 
 function flowStepClass(status: FlowStep["status"]) {
 	if (status === "done") return "border-blue-200 bg-blue-50 text-blue-700";
-	if (status === "active") return "border-emerald-200 bg-emerald-50 text-emerald-700 shadow-[0_0_0_2px_rgba(16,185,129,0.08)]";
-	if (status === "warning") return "border-amber-200 bg-amber-50 text-amber-700 shadow-[0_0_0_2px_rgba(245,158,11,0.08)]";
+	if (status === "active")
+		return "border-emerald-200 bg-emerald-50 text-emerald-700 shadow-[0_0_0_2px_rgba(16,185,129,0.08)]";
+	if (status === "warning")
+		return "border-amber-200 bg-amber-50 text-amber-700 shadow-[0_0_0_2px_rgba(245,158,11,0.08)]";
 	return "border-slate-200 bg-slate-50 text-slate-400";
 }
 
 function questionStatusClass(status: QuestionStatusType) {
 	if (status === "done") return "border-blue-200 bg-blue-50 text-blue-700";
-	if (status === "solving") return "border-emerald-200 bg-emerald-50 text-emerald-700";
-	if (status === "writing") return "border-violet-200 bg-violet-50 text-violet-700";
-	if (status === "debugging") return "border-amber-200 bg-amber-50 text-amber-700";
-	if (status === "judging") return "border-orange-200 bg-orange-50 text-orange-700";
-	if (status === "restarting" || status === "recoding") return "border-red-200 bg-red-50 text-red-700";
+	if (status === "solving")
+		return "border-emerald-200 bg-emerald-50 text-emerald-700";
+	if (status === "writing")
+		return "border-violet-200 bg-violet-50 text-violet-700";
+	if (status === "debugging")
+		return "border-amber-200 bg-amber-50 text-amber-700";
+	if (status === "judging")
+		return "border-orange-200 bg-orange-50 text-orange-700";
+	if (status === "restarting" || status === "recoding")
+		return "border-red-200 bg-red-50 text-red-700";
 	if (status === "failed") return "border-red-300 bg-red-100 text-red-800";
 	if (status === "plotting") return "border-cyan-200 bg-cyan-50 text-cyan-700";
 	return "border-slate-200 bg-slate-50 text-slate-400";
@@ -726,7 +1182,8 @@ function questionStatusClass(status: QuestionStatusType) {
 
 function groupSubStatusClass(status?: TimelineEvent["status"]) {
 	if (status === "done") return "bg-blue-50 text-blue-700 border-blue-100";
-	if (status === "warning") return "bg-amber-50 text-amber-700 border-amber-100";
+	if (status === "warning")
+		return "bg-amber-50 text-amber-700 border-amber-100";
 	if (status === "error") return "bg-red-50 text-red-700 border-red-100";
 	return "bg-white/70 text-slate-600 border-slate-100";
 }
@@ -735,7 +1192,9 @@ function scrollStreamingDetailsToBottom() {
 	nextTick(() => {
 		const el = scrollRef.value;
 		if (!el) return;
-		for (const node of el.querySelectorAll<HTMLElement>("[data-streaming-detail='true']")) {
+		for (const node of el.querySelectorAll<HTMLElement>(
+			"[data-streaming-detail='true']",
+		)) {
 			node.scrollTop = node.scrollHeight;
 		}
 	});
@@ -745,7 +1204,12 @@ function scrollToBottom(force = false) {
 	const el = scrollRef.value;
 	if (!el) return;
 	if (!force && userScrolledUp.value) return;
-	nextTick(() => el.scrollTo({ top: el.scrollHeight, behavior: hasStreamingMessage.value ? "auto" : "smooth" }));
+	nextTick(() =>
+		el.scrollTo({
+			top: el.scrollHeight,
+			behavior: hasStreamingMessage.value ? "auto" : "smooth",
+		}),
+	);
 }
 
 function onScroll() {
@@ -754,16 +1218,28 @@ function onScroll() {
 	userScrolledUp.value = el.scrollHeight - el.scrollTop - el.clientHeight > 120;
 }
 
-watch(() => props.messages.length, () => scrollToBottom(), { flush: "post" });
-watch(streamingSignature, () => {
-	if (!streamingSignature.value) return;
-	scrollToBottom(true);
-	scrollStreamingDetailsToBottom();
-}, { flush: "post" });
-watch(displayEvents, () => {
-	if (!hasStreamingMessage.value) return;
-	scrollStreamingDetailsToBottom();
-}, { flush: "post" });
+watch(
+	() => props.messages.length,
+	() => scrollToBottom(),
+	{ flush: "post" },
+);
+watch(
+	streamingSignature,
+	() => {
+		if (!streamingSignature.value) return;
+		scrollToBottom();
+		scrollStreamingDetailsToBottom();
+	},
+	{ flush: "post" },
+);
+watch(
+	displayEvents,
+	() => {
+		if (!hasStreamingMessage.value) return;
+		scrollStreamingDetailsToBottom();
+	},
+	{ flush: "post" },
+);
 </script>
 
 <template>
