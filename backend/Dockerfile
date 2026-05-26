@@ -16,6 +16,7 @@ RUN sed -i 's|http://deb.debian.org/debian|http://mirrors.aliyun.com/debian|g' /
     texlive-xetex \
     texlive-latex-recommended \
     texlive-latex-extra \
+    texlive-fonts-recommended \
     texlive-lang-chinese \
     latexmk \
     && rm -rf /var/lib/apt/lists/*

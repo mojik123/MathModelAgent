@@ -199,6 +199,7 @@ async def get_paper(task_id: str):
         rebuilt, included, missing = _assemble_from_checkpoint(work_dir)
         candidate = final_from_checkpoint or current or rebuilt
         candidate = _apply_patches(candidate, work_dir)
+        candidate = clean_final_paper_markdown(candidate)
         if candidate and candidate != current:
             _write_text(md_path, candidate)
         return {
@@ -213,6 +214,7 @@ async def get_paper(task_id: str):
     preview, included, missing = _assemble_from_checkpoint(work_dir)
     if preview:
         preview = _apply_patches(preview, work_dir)
+        preview = clean_final_paper_markdown(preview)
         return {
             "content": _status_banner(included, missing) + preview,
             "complete": False,

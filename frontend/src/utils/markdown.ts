@@ -258,13 +258,23 @@ function cleanDuplicateRawMath(markdown: string) {
 		.replace(/(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\])\s*\n\s*([A-Za-z_\\][^\n\u4e00-\u9fff]{8,})\s*(?=\n|$)/g, "$1\n");
 }
 
+function normalizeMathDelimiters(markdown: string) {
+	return markdown
+		.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, (_, tex) => `\n$$\n${String(tex).trim()}\n$$\n`)
+		.replace(/\\\(([^\n]+?)\\\)/g, (_, tex) => `$${String(tex).trim()}$`);
+}
+
+function cleanDeletionMarkup(markdown: string) {
+	return markdown
+		.replace(/<del>([\s\S]*?)<\/del>/gi, "$1")
+		.replace(/\\sout\{([^{}]*)\}/g, "$1")
+		.replace(/~~([^~\n][\s\S]*?[^~\n])~~/g, "$1");
+}
+
 export const renderMarkdown = async (content: string, options: Record<string, unknown> & { taskId?: string; imageVersion?: string | number } = {}) => {
 	const { taskId, imageVersion, ...markedOptions } = options;
-	const normalized = normalizeMarkdownImageUrls(cleanDuplicateRawMath(content), taskId, imageVersion)
-		.replace(/\\\[\s*\n/g, "\\[")
-		.replace(/\n\s*\\\]/g, "\\]")
-		.replace(/([a-zA-Z0-9])_\{/g, "$1\\_{")
-		.replace(/(\d)~(\d)/g, "$1\\~$2");
+	const cleaned = cleanDuplicateRawMath(normalizeMathDelimiters(cleanDeletionMarkup(content)));
+	const normalized = normalizeMarkdownImageUrls(cleaned, taskId, imageVersion);
 	registerMarkdownImageHoverBehavior();
 	return marked.parse(normalized, { ...defaultOptions, ...markedOptions });
 };

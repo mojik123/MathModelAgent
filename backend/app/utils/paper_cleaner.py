@@ -12,6 +12,19 @@ import re
 
 IMAGE_EXT = r"png|jpg|jpeg|svg|webp|gif|bmp|tiff"
 
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+NUMBERED_HEADING_RE = re.compile(r"^(\d+(?:\.\d+)+)\s*(.*)$")
+
+TOP_LEVEL_HEADINGS = {
+    "一": "一、问题重述",
+    "二": "二、问题分析",
+    "三": "三、模型假设",
+    "四": "四、符号说明和数据预处理",
+    "五": "五、模型的建立与求解",
+    "六": "六、模型的分析与检验",
+    "七": "七、模型的评价、改进与推广",
+}
+
 COMMON_EN_TO_CN = {
     "Abstract": "摘要",
     "Keywords": "关键词",
@@ -149,6 +162,193 @@ def _clean_common_english_labels(text: str) -> str:
     return cleaned
 
 
+def normalize_math_delimiters(text: str) -> str:
+    """Convert LLM-friendly math delimiters into Pandoc/KaTeX-friendly Markdown."""
+    if not text:
+        return ""
+
+    cleaned = text
+
+    def display_repl(match: re.Match[str]) -> str:
+        tex = match.group(1).strip()
+        return f"\n$$\n{tex}\n$$\n" if tex else ""
+
+    def inline_repl(match: re.Match[str]) -> str:
+        tex = match.group(1).strip()
+        return f"${tex}$" if tex else ""
+
+    cleaned = re.sub(r"\\\[\s*([\s\S]*?)\s*\\\]", display_repl, cleaned)
+    cleaned = re.sub(r"\\\(([^\n]+?)\\\)", inline_repl, cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned
+
+
+def clean_strikethrough_markup(text: str) -> str:
+    """Remove accidental deletion markup while preserving the visible words."""
+    if not text:
+        return ""
+    cleaned = text
+    cleaned = re.sub(r"<del>([\s\S]*?)</del>", r"\1", cleaned, flags=re.I)
+    cleaned = re.sub(r"\\sout\{([^{}]*)\}", r"\1", cleaned)
+    cleaned = re.sub(r"~~([^~\n][\s\S]*?[^~\n])~~", r"\1", cleaned)
+    return cleaned
+
+
+def _strip_heading_markup(title: str) -> str:
+    title = (title or "").strip()
+    title = re.sub(r"^\*\*(.*?)\*\*$", r"\1", title)
+    title = re.sub(r"^#+\s*", "", title)
+    return title.strip()
+
+
+def _canonical_heading(title: str) -> tuple[str | None, str]:
+    raw = _strip_heading_markup(title)
+    compact = re.sub(r"\s+", "", raw)
+
+    if compact == "摘要":
+        return "abstract", "# 摘要"
+    if compact == "目录":
+        return "toc", "## 目录"
+    if compact == "参考文献":
+        return "refs", "# 参考文献"
+
+    top_match = re.match(r"^([一二三四五六七])、", compact)
+    if top_match:
+        cn = top_match.group(1)
+        return f"top:{cn}", f"# {TOP_LEVEL_HEADINGS.get(cn, raw)}"
+
+    numbered_match = NUMBERED_HEADING_RE.match(raw)
+    if numbered_match:
+        number = numbered_match.group(1)
+        rest = numbered_match.group(2).strip()
+        depth = min(number.count(".") + 1, 6)
+        heading_text = f"{number} {rest}".strip()
+        return f"num:{number}", f"{'#' * depth} {heading_text}"
+
+    return None, f"# {raw}" if raw == "摘要" else title.strip()
+
+
+def _split_heading_blocks(text: str) -> list[tuple[str | None, list[str]]]:
+    blocks: list[tuple[str | None, list[str]]] = []
+    current_heading: str | None = None
+    current_lines: list[str] = []
+    for line in text.splitlines():
+        if HEADING_RE.match(line):
+            blocks.append((current_heading, current_lines))
+            current_heading = line
+            current_lines = []
+        else:
+            current_lines.append(line)
+    blocks.append((current_heading, current_lines))
+    return blocks
+
+
+def normalize_paper_structure(text: str) -> str:
+    """Normalize final-paper headings and remove repeated section fragments.
+
+    Parallel writers sometimes repeat parent sections inside a child section, e.g.
+    EDA repeats "四、符号说明" or the first question downgrades "五、模型..." to
+    ``##``. This pass keeps the original order, but canonicalizes section levels
+    and drops duplicate heading blocks so later sections cannot be nested under
+    the wrong parent.
+    """
+    if not text:
+        return ""
+
+    seen_keys: set[str] = set()
+    output: list[str] = []
+    for heading, body in _split_heading_blocks(text):
+        if heading is None:
+            if body:
+                output.extend(body)
+            continue
+
+        match = HEADING_RE.match(heading)
+        if not match:
+            output.append(heading)
+            output.extend(body)
+            continue
+
+        key, canonical = _canonical_heading(match.group(2))
+        if key and key in seen_keys:
+            continue
+        if key:
+            seen_keys.add(key)
+            output.append(canonical)
+        else:
+            output.append(heading.rstrip())
+        output.extend(body)
+
+    cleaned = "\n".join(output)
+
+    if "top:四" not in seen_keys and re.search(r"^##\s+4\.1\b", cleaned, re.M):
+        cleaned = re.sub(
+            r"(?m)^(##\s+4\.1\b)",
+            "# 四、符号说明和数据预处理\n\n\\1",
+            cleaned,
+            count=1,
+        )
+    if "top:五" not in seen_keys and re.search(r"^##\s+5\.1\b", cleaned, re.M):
+        cleaned = re.sub(
+            r"(?m)^(##\s+5\.1\b)",
+            "# 五、模型的建立与求解\n\n\\1",
+            cleaned,
+            count=1,
+        )
+
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _dedupe_repeated_paragraphs(text: str) -> str:
+    if not text:
+        return ""
+
+    chunks = re.split(r"\n{2,}", text)
+    seen: set[str] = set()
+    output: list[str] = []
+    for chunk in chunks:
+        stripped = chunk.strip()
+        if not stripped:
+            continue
+        norm = re.sub(r"\s+", "", stripped)
+        norm = re.sub(r"[\*_`#>\-—，。；：,.!?！？、（）()\[\]{}]+", "", norm)
+        should_check = len(norm) >= 120 and not stripped.startswith("|")
+        if should_check and norm in seen:
+            continue
+        if should_check:
+            seen.add(norm)
+        output.append(stripped)
+    return "\n\n".join(output)
+
+
+def normalize_reference_definitions(text: str) -> str:
+    """Move Markdown footnote definitions into a single references section."""
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    body: list[str] = []
+    refs: list[str] = []
+    seen_refs: set[str] = set()
+    for line in lines:
+        match = re.match(r"^\[\^(\d+)\]:\s*(.+?)\s*$", line.strip())
+        if not match:
+            body.append(line)
+            continue
+        ref_line = f"[^{match.group(1)}]: {match.group(2).strip()}"
+        if ref_line not in seen_refs:
+            refs.append(ref_line)
+            seen_refs.add(ref_line)
+
+    cleaned = "\n".join(body).strip()
+    if not refs:
+        return cleaned
+
+    if re.search(r"^#{1,6}\s+参考文献\s*$", cleaned, re.M):
+        return cleaned.rstrip() + "\n\n" + "\n\n".join(refs)
+    return cleaned.rstrip() + "\n\n# 参考文献\n\n" + "\n\n".join(refs)
+
+
 def clean_markdown_images(text: str) -> str:
     if not text:
         return ""
@@ -186,7 +386,7 @@ def clean_markdown_images(text: str) -> str:
 def clean_duplicate_raw_math(text: str) -> str:
     if not text:
         return ""
-    cleaned = text
+    cleaned = normalize_math_delimiters(text)
     cleaned = re.sub(r"\$\$([\s\S]*?)\$\$\s*\\\[\s*\1\s*\\\]", r"$$\1$$", cleaned)
     cleaned = re.sub(r"\\\[([\s\S]*?)\\\]\s*\$\$\s*\1\s*\$\$", r"\[\1\]", cleaned)
     cleaned = re.sub(
@@ -200,8 +400,12 @@ def clean_duplicate_raw_math(text: str) -> str:
 def clean_chinese_paper_markdown(text: str) -> str:
     """Clean visible paper text for Chinese-only presentation."""
     cleaned = text or ""
+    cleaned = clean_strikethrough_markup(cleaned)
     cleaned = clean_duplicate_raw_math(cleaned)
     cleaned = clean_markdown_images(cleaned)
+    cleaned = normalize_reference_definitions(cleaned)
+    cleaned = normalize_paper_structure(cleaned)
+    cleaned = _dedupe_repeated_paragraphs(cleaned)
     cleaned = _clean_common_english_labels(cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip() + "\n" if cleaned.strip() else ""

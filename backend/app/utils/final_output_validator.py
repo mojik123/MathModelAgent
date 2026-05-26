@@ -36,6 +36,39 @@ def validate_final_paper(work_dir: str, markdown: str) -> list[str]:
     if re.search(r"^#{1,4}\s*$", markdown, re.MULTILINE):
         issues.append("存在空的 Markdown 标题行")
 
+    duplicate_headings: set[str] = set()
+    seen_headings: set[str] = set()
+    for match in re.finditer(r"^#{1,6}\s+(.+?)\s*$", markdown, re.MULTILINE):
+        title = re.sub(r"\s+", "", match.group(1).strip())
+        numbered = re.match(r"^(\d+(?:\.\d+)+)", title)
+        chinese = re.match(r"^([一二三四五六七])、", title)
+        key = None
+        if numbered:
+            key = f"num:{numbered.group(1)}"
+        elif chinese:
+            key = f"top:{chinese.group(1)}"
+        elif title in {"摘要", "参考文献"}:
+            key = title
+        if key and key in seen_headings:
+            duplicate_headings.add(title)
+        if key:
+            seen_headings.add(key)
+
+    if duplicate_headings:
+        issues.append(
+            "存在重复章节标题："
+            + "、".join(sorted(duplicate_headings)[:5])
+        )
+
+    if re.search(r"^#{2,6}\s+[一二三四五六七]、", markdown, re.MULTILINE):
+        issues.append("一级中文章节被降级为二级或更低标题")
+
+    if re.search(r"~~[^~]+~~|<del>.*?</del>|\\sout\{", markdown, re.DOTALL | re.I):
+        issues.append("存在删除线标记，可能导致正文显示为删除状态")
+
+    if re.search(r"\\\[|\\\]|\\\(|\\\)", markdown):
+        issues.append("存在未规范化的反斜杠数学定界符，可能导致 LaTeX/PDF 乱码")
+
     return issues
 
 
