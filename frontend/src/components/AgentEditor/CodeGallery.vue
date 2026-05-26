@@ -5,10 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useFilePreview } from "@/composables/useFilePreview";
 import { useTaskStore } from "@/stores/task";
 import {
-	ChevronDown,
-	ChevronRight,
 	Code2,
-	Folder,
 	FolderOpen,
 	ListTree,
 	PanelLeftClose,
@@ -63,7 +60,6 @@ const fileContentCache = ref<Record<string, string>>({});
 const loadingCodeFile = ref(false);
 const codeFileError = ref('');
 const expandedCodeFiles = ref<Set<string>>(new Set());
-const expandedCodeSections = ref<Set<string>>(new Set());
 const highlightedFilePath = ref("");
 
 const currentTaskId = computed(
@@ -99,20 +95,6 @@ const cleanSectionLabel = (section: string) => {
 		.replace(/^6\.1_/, "6.1 ")
 		.replace(/_/g, " ");
 };
-
-const codeSectionKey = (section: string) => section || "根目录";
-
-function isCodeSectionExpanded(section: string) {
-	return expandedCodeSections.value.has(codeSectionKey(section));
-}
-
-function toggleCodeSection(section: string) {
-	const key = codeSectionKey(section);
-	const next = new Set(expandedCodeSections.value);
-	if (next.has(key)) next.delete(key);
-	else next.add(key);
-	expandedCodeSections.value = next;
-}
 
 // ---- Fixed description (not AI) ----
 
@@ -328,10 +310,6 @@ function locateCodeFile(filePath: string) {
 		.find((file) => normalizePath(file.path) === normalized || fileBaseName(file.path) === base);
 	if (!target) return;
 	showToc.value = true;
-	expandedCodeSections.value = new Set([
-		...expandedCodeSections.value,
-		codeSectionKey(fileDirName(target.path)),
-	]);
 	selectFile(target);
 	highlightedFilePath.value = target.path;
 	nextTick(() => {
@@ -372,7 +350,6 @@ watch(
 	() => {
 		fileContentCache.value = {};
 		expandedCodeFiles.value = new Set();
-		expandedCodeSections.value = new Set();
 		codeFileError.value = "";
 		void loadWorkspaceFiles();
 	},
@@ -423,29 +400,20 @@ onBeforeUnmount(() => {
 						:key="section.section"
 						class="rounded-xl border border-slate-200 bg-white/70 p-2"
 					>
-						<button
-							type="button"
-							class="mb-1 flex w-full items-center gap-1.5 rounded-lg px-1.5 py-1 text-left text-xs font-semibold text-slate-700 transition-colors hover:bg-blue-50 hover:text-blue-700"
-							:aria-expanded="isCodeSectionExpanded(section.section)"
-							@click="toggleCodeSection(section.section)"
-						>
-							<ChevronDown v-if="isCodeSectionExpanded(section.section)" class="h-3.5 w-3.5 shrink-0 text-slate-400" />
-							<ChevronRight v-else class="h-3.5 w-3.5 shrink-0 text-slate-400" />
-							<FolderOpen v-if="isCodeSectionExpanded(section.section)" class="h-3.5 w-3.5 shrink-0 text-blue-600" />
-							<Folder v-else class="h-3.5 w-3.5 shrink-0 text-blue-500" />
+						<div class="mb-1 flex items-center gap-1 text-xs font-semibold text-slate-700">
+							<FolderOpen class="h-3.5 w-3.5 shrink-0 text-blue-600" />
 							<span class="truncate">{{ section.sectionLabel }}</span>
 							<span class="ml-auto shrink-0 text-[10px] text-slate-400">
 								{{ section.files.length }}
 							</span>
-						</button>
+						</div>
 
 						<button
-							v-show="isCodeSectionExpanded(section.section)"
 							v-for="file in section.files"
 							:key="file.path"
 							type="button"
 							:data-code-file-path="file.path"
-							class="flex w-full items-start gap-2 rounded-lg py-1.5 pl-7 pr-2 text-left text-xs hover:bg-blue-50"
+							class="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-xs hover:bg-blue-50"
 							:class="[
 								selectedFilePath === file.path ? 'bg-blue-50 ring-1 ring-blue-200' : '',
 								highlightedFilePath === file.path ? 'ring-2 ring-blue-400 bg-blue-100 shadow-[0_0_0_6px_rgba(59,130,246,0.12)]' : '',
