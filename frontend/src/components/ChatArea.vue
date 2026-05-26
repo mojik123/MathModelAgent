@@ -1296,7 +1296,7 @@ watch(
 						<p v-if="ev.detail" class="mt-2 whitespace-pre-wrap text-xs leading-relaxed opacity-80" :class="{ 'streaming-detail': ev.status === 'running' && ev.type === 'raw' }" :data-streaming-detail="ev.status === 'running' && ev.type === 'raw' ? 'true' : undefined">{{ ev.detail }}</p>
 						<p v-if="ev.progressText" class="mt-2 rounded-xl border border-current/10 bg-white/45 px-2.5 py-1.5 text-xs opacity-90">{{ ev.progressText }}</p>
 
-						<div v-if="ev.groupEvents?.length" class="mt-3 rounded-2xl border border-slate-200/70 bg-white/55 p-2 shadow-inner">
+						<div v-if="ev.groupEvents?.length && ev.status !== 'done'" class="mt-3 rounded-2xl border border-slate-200/70 bg-white/55 p-2 shadow-inner">
 							<div class="mb-2 flex items-center justify-between gap-2">
 								<span class="text-[11px] font-bold text-slate-600">组内进度</span>
 								<span class="text-[10px] text-slate-400">{{ ev.groupEvents.length }} 条更新</span>
