@@ -156,7 +156,7 @@ class Flows:
             ),
             "analysisQues": contract_prompt(
                 "analysisQues",
-                f"问题背景{bg_ques_all}，结合各问题模型求解摘要{model_build_solve}，按照模板撰写问题分析：{fill_template('analysisQues')}",
+                self._build_analysis_ques_prompt(bg_ques_all, model_build_solve, fill_template('analysisQues')),
             ),
             "modelAssumption": contract_prompt(
                 "modelAssumption",
@@ -229,13 +229,24 @@ class Flows:
 - 若某张图片与当前子问题无直接关联，也要在最相关的位置插入并说明其辅助作用。
 - **禁止"如图X所示"一笔带过**，每张图的解读必须是实质性的数据分析段落。
 
-## 三、建模过程完整性
-1. **完整呈现建模过程**：必须详细描述模型的数学公式推导、约束条件设定、目标函数构建，不能只给结论不给过程。
-2. **充分利用代码结果**：代码手产出的所有数值结果、表格数据、优化指标都必须在论文中体现，不能遗漏关键数据。
-3. **模型与结果对应**：每个模型的求解结果必须与模型建立部分对应，说明求解方法、参数设置、迭代过程或算法步骤。
-4. **数据驱动结论**：所有结论必须有数据支撑，引用具体数值、百分比、指标变化量，避免空泛描述。
-5. **建模手方案的充分利用**：建模手提供的数学原理、公式推导、文献引用必须在正文中展开论述，不要浪费这些素材。
+## 三、建模逻辑完整性
+1. **清晰的建模逻辑链**：必须让读者理解"为什么选这个方法→方法怎么解决问题→结果说明什么"，不能只给结论不给推理过程。
+2. **与其他问题的逻辑衔接**：如果建模手指出了各问之间的关系（递进/并列/数据依赖），必须在正文中体现这种衔接。
+3. **充分利用代码结果**：代码手产出的所有数值结果、表格数据、优化指标都必须在论文中体现，不能遗漏关键数据。
+4. **模型与结果对应**：每个模型的求解结果必须与模型建立部分对应，说明求解方法、参数设置、算法步骤。
+5. **数据驱动结论**：所有结论必须有数据支撑，引用具体数值、百分比、指标变化量，避免空泛描述。
+6. **建模手方案的充分利用**：建模手提供的建模思路、逻辑分析、文献引用必须在正文中展开论述，不要浪费这些素材。
 """
+
+        # 获取建模手的全局逻辑概述
+        overall_logic = modeler_solutions.get("overall_logic", "")
+        overall_logic_section = ""
+        if overall_logic:
+            overall_logic_section = (
+                f"\n\n【整体建模逻辑（各问之间的关系）】\n{overall_logic}\n"
+                "上述是建模手对整道题的全局分析，说明了各小问之间的逻辑关系和数据依赖。"
+                "请在撰写本问时注意与其他问题的逻辑衔接。\n"
+            )
 
         quesx_writer_prompt = {}
         for qkey in questions_quesx_keys:
@@ -244,20 +255,20 @@ class Flows:
             modeler_section = ""
             if q_solution:
                 modeler_section = (
-                    f"\n\n【建模手的深度调研成果与建模方案】\n{q_solution}\n"
-                    "上述方案是建模手经过系统性文献调研和头脑风暴后产出的成果，包含：\n"
-                    "- 文献调研综述和前沿方法分析\n"
-                    "- 模型选择的理论依据和文献支撑\n"
-                    "- 详细的数学原理、公式推导和约束条件\n"
-                    "- 参考文献列表\n"
-                    "请在论文中充分体现上述内容，将建模手提供的文献引用转化为正式脚注格式。\n"
+                    f"\n\n【建模手的调研成果与建模方案】\n{q_solution}\n"
+                    "上述方案包含：\n"
+                    "- 本问与其他问题的逻辑关系\n"
+                    "- 建模思路的完整逻辑链（为什么选这个方法、方法如何解决问题）\n"
+                    "- 关键公式及其用途\n"
+                    "- 文献调研和参考文献列表\n"
+                    "请在论文中体现建模思路的逻辑性，将文献引用转化为正式脚注格式。\n"
                 )
 
             quesx_writer_prompt[qkey] = f"""
 问题背景：{bgc}
 
 原始问题：{q_question}
-{modeler_section}
+{overall_logic_section}{modeler_section}
 不需要编写代码。代码手得到的结果如下：
 {coder_response}
 
@@ -313,6 +324,25 @@ class Flows:
         if key in writer_prompt:
             return writer_prompt[key]
         raise ValueError(f"未知的任务类型: {key}")
+
+    def _build_analysis_ques_prompt(
+        self, bg_ques_all: str, model_build_solve: str, template: str
+    ) -> str:
+        """构建问题分析章节的写作 prompt，注入建模手的全局逻辑。"""
+        modeler_solutions = getattr(self, "_modeler_solutions", {})
+        overall_logic = modeler_solutions.get("overall_logic", "")
+        logic_section = ""
+        if overall_logic:
+            logic_section = (
+                f"\n\n【建模手的整体建模逻辑分析】\n{overall_logic}\n"
+                "请在问题分析中体现各小问之间的逻辑关系（递进/并列/对比）和数据依赖，"
+                "让读者清楚理解整道题的解题框架。\n"
+            )
+        return (
+            f"问题背景{bg_ques_all}，结合各问题模型求解摘要{model_build_solve}，"
+            f"按照模板撰写问题分析：{template}"
+            f"{logic_section}"
+        )
 
     def get_questions_quesx_keys(self) -> list[str]:
         return list(self.get_questions_quesx().keys())
