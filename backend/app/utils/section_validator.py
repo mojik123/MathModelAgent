@@ -33,6 +33,18 @@ def validate_section_output(
     if len(text) < 300 and key not in ("firstPage", "toc"):
         issues.append(f"{key} 内容过短（{len(text)} 字符，至少 300）")
 
+    # ── 最大长度检查（防止章节过于冗长）──
+    max_chars = {
+        "ques1": 50000, "ques2": 50000, "ques3": 50000, "ques4": 50000, "ques5": 50000,
+        "analysisQues": 30000, "sensitivity_analysis": 30000, "judge": 20000,
+        "toc": 15000, "firstPage": 10000, "modelAssumption": 15000, "symbol": 10000,
+        "eda": 20000, "RepeatQues": 5000,
+    }
+
+    limit = max_chars.get(key, 30000)
+    if len(text) > limit:
+        issues.append(f"{key} 内容过长（{len(text)} 字符，超过限制 {limit}）")
+
     # ── 子问题章节检查 ──
     if key.startswith("ques"):
         try:
