@@ -16,11 +16,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { useApiKeyStore } from "@/stores/apiKeys";
 import { useTaskStore } from "@/stores/task";
-import { FileUp } from "lucide-vue-next";
-import { Rocket } from "lucide-vue-next";
+import { FileUp, Rocket, Upload } from "lucide-vue-next";
 import { ref } from "vue";
 import { useRouter } from "vue-router";
-import FileConfirmDialog from "./FileConfirmDialog.vue";
+import type FileConfirmDialog from "./FileConfirmDialog.vue";
 
 // ---- Reactive State ----
 
@@ -80,6 +79,12 @@ const taskId = ref<string | null>(null);
 /** 文件输入元素引用 */
 const fileInput = ref<HTMLInputElement | null>(null);
 
+/** 题目文件输入元素引用 */
+const questionFileInput = ref<HTMLInputElement | null>(null);
+
+/** 题目文件名（上传后显示） */
+const questionFileName = ref("");
+
 // ---- Methods ----
 
 const nextStep = () => {
@@ -101,6 +106,26 @@ const handleFileUpload = (event: Event) => {
 			showUploadSuccess.value = false; // 3秒后自动隐藏
 		}, 1000);
 	}
+};
+
+/** 处理题目文件上传，读取文本内容填入 textarea */
+const handleQuestionFileUpload = (event: Event) => {
+	const input = event.target as HTMLInputElement;
+	const file = input.files?.[0];
+	if (!file) return;
+
+	questionFileName.value = file.name;
+	const reader = new FileReader();
+	reader.onload = (e) => {
+		const text = e.target?.result;
+		if (typeof text === "string") {
+			question.value = text;
+		}
+	};
+	reader.readAsText(file, "utf-8");
+
+	// 重置 input 以允许重复选择同一文件
+	input.value = "";
 };
 
 const router = useRouter();
@@ -244,8 +269,24 @@ const handleSubmit = async () => {
       <div v-if="currentStep === 2" class="p-6">
         <div class="space-y-4">
           <div class="space-y-1">
-            <h4 class="text-sm font-medium mb-2">粘贴完整题目</h4>
-            <Textarea v-model="question" placeholder="PDF 中完整题目背景和多个小问" class="min-h-[120px]" />
+            <div class="flex items-center justify-between mb-2">
+              <h4 class="text-sm font-medium">输入题目</h4>
+              <button
+                class="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                @click="() => questionFileInput?.click()"
+              >
+                <Upload class="h-3.5 w-3.5" />
+                {{ questionFileName || "从文件导入" }}
+              </button>
+              <input
+                ref="questionFileInput"
+                type="file"
+                class="hidden"
+                accept=".txt,.md,.text"
+                @change="handleQuestionFileUpload"
+              >
+            </div>
+            <Textarea v-model="question" placeholder="直接粘贴题目，或点击右上角从 .txt 文件导入" class="min-h-[120px]" />
           </div>
 
           <div class="grid grid-cols-3 gap-3">
