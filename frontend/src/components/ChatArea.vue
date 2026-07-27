@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { TaskRuntimeStatus } from "@/apis/commonApi";
+import { type TaskRuntimeStatus, getOriginalProblem } from "@/apis/commonApi";
 import ModelingDiscussion from "@/components/ModelingDiscussion.vue";
 import QuestionDiscussion from "@/components/QuestionDiscussion.vue";
 import { AgentType } from "@/utils/enum";
@@ -122,6 +122,7 @@ const userScrolledUp = ref(false);
 const inlineQuestionPanelOpen = ref(true);
 const inlineModelingPanelOpen = ref(true);
 const expandedProblemIds = ref<Set<string>>(new Set());
+const legacyInputFiles = ref<string[]>([]);
 
 const roleMap: Record<string, string> = {
 	CoordinatorAgent: "任务协调",
@@ -853,7 +854,10 @@ function userEvent(msg: Message): TimelineEvent | null {
 	}
 	if (/用户请求 ModelerAgent 筛选候选模型/.test(content)) return null;
 	if (msg.id === initialUserMessageId.value) {
-		const inputFiles = msg.msg_type === "user" ? (msg.files ?? []) : [];
+		const messageFiles = msg.msg_type === "user" ? (msg.files ?? []) : [];
+		const inputFiles = messageFiles.length
+			? messageFiles
+			: legacyInputFiles.value;
 		return {
 			...common,
 			title: "已确定题目信息",
@@ -1530,6 +1534,21 @@ function inputFileIcon(filename: string) {
 		: FileText;
 }
 
+async function loadLegacyInputFiles(taskId?: string) {
+	legacyInputFiles.value = [];
+	if (!taskId) return;
+	try {
+		const response = await getOriginalProblem(taskId);
+		const supportedExtensions = new Set(["txt", "csv", "xlsx"]);
+		legacyInputFiles.value = (response.data.files ?? []).filter((filename) => {
+			const extension = filename.split(".").pop()?.toLowerCase() ?? "";
+			return !filename.includes("/") && supportedExtensions.has(extension);
+		});
+	} catch {
+		// 旧任务附件读取失败时仍保留紧凑的题目信息卡片。
+	}
+}
+
 function flowStepClass(status: FlowStep["status"]) {
 	if (status === "done") return "border-blue-200 bg-blue-50 text-blue-700";
 	if (status === "active")
@@ -1586,6 +1605,11 @@ function onScroll() {
 	userScrolledUp.value = el.scrollHeight - el.scrollTop - el.clientHeight > 120;
 }
 
+watch(
+	() => props.taskId,
+	(taskId) => loadLegacyInputFiles(taskId),
+	{ immediate: true },
+);
 watch(
 	() => props.messages.length,
 	() => scrollToBottom(),
