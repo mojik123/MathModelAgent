@@ -36,6 +36,24 @@ function Test-DockerEngine {
     return $LASTEXITCODE -eq 0
 }
 
+function Invoke-GitPull {
+    $maximumAttempts = 3
+    for ($attempt = 1; $attempt -le $maximumAttempts; $attempt++) {
+        & git pull --ff-only
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+
+        if ($attempt -lt $maximumAttempts) {
+            Write-Host "Git pull failed. Retrying ($attempt/$maximumAttempts)..." `
+                -ForegroundColor Yellow
+            Start-Sleep -Seconds 3
+        }
+    }
+
+    throw "Git pull failed after $maximumAttempts attempts."
+}
+
 function Start-DockerEngine {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
         throw "Docker is not installed or is not available in PATH."
@@ -122,7 +140,7 @@ try {
         }
 
         Write-Host "Pulling the latest changes from GitHub..."
-        Invoke-NativeCommand -Command "git" -Arguments @("pull", "--ff-only")
+        Invoke-GitPull
     } else {
         Write-Host "Skipping Git pull."
     }
@@ -133,19 +151,25 @@ try {
     }
     Write-Host "Running commit: $afterCommit"
 
-    $dependencyFilesChanged = $false
+    $backendDependenciesChanged = $false
+    $frontendDependenciesChanged = $false
     if ($beforeCommit -ne $afterCommit) {
         $changedFiles = @(& git diff --name-only "$beforeCommit..$afterCommit")
         if ($LASTEXITCODE -eq 0) {
-            $dependencyFilesChanged = @(
+            $backendDependenciesChanged = @(
                 $changedFiles | Where-Object {
                     $_ -match "^(backend/(Dockerfile|pyproject\.toml|uv\.lock)|docker-compose(\.override)?\.yml)$"
+                }
+            ).Count -gt 0
+            $frontendDependenciesChanged = @(
+                $changedFiles | Where-Object {
+                    $_ -match "^frontend/(package\.json|pnpm-lock\.yaml)$"
                 }
             ).Count -gt 0
         }
     }
 
-    if (-not (Test-Path -LiteralPath $frontendVite)) {
+    if ($frontendDependenciesChanged -or -not (Test-Path -LiteralPath $frontendVite)) {
         if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
             throw "Frontend dependencies are missing and pnpm is unavailable."
         }
@@ -165,7 +189,7 @@ try {
         Start-DockerEngine
     }
 
-    $shouldBuild = $Build -or $dependencyFilesChanged
+    $shouldBuild = $Build -or $backendDependenciesChanged
     if ($shouldBuild) {
         Write-Host "Dependency changes detected. Rebuilding the backend image..."
         & powershell `
