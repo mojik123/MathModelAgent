@@ -1735,6 +1735,7 @@ watch(
 								v-for="file in ev.inputFiles"
 								:key="file"
 								type="button"
+								data-chat-artifact-link-ignore="true"
 								class="inline-flex max-w-full items-center gap-1.5 rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[11px] font-medium transition hover:bg-white/15"
 								:title="`下载 ${file}`"
 								@click="emit('fileOpen', file)"
