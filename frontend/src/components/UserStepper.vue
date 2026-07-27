@@ -173,16 +173,9 @@ const handleSubmit = async () => {
 
 		taskId.value = response?.data?.task_id ?? null;
 		if (taskId.value) taskStore.setCurrentTask(taskId.value);
-		taskStore.addUserMessage(question.value);
-		taskStore.addUserAction(
-			"提交",
-			"建模任务配置",
-			`用户提交建模任务：模板=${selectedOptions.value.template}，格式=${selectedOptions.value.format}，附件=${uploadedFiles.value.map((file) => file.name).join("、") || "无"}`,
-			{
-				from: "User",
-				to: "System",
-				label: "创建任务",
-			},
+		taskStore.addUserMessage(
+			question.value,
+			uploadedFiles.value.map((file) => file.name),
 		);
 
 		showSubmitSuccess.value = true;

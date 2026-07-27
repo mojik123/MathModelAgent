@@ -812,10 +812,17 @@ def _load_task_problem(task_id: str) -> Problem:
     )
 
 
-async def _mark_task_created(task_id: str, ques_all: str) -> None:
+async def _mark_task_created(
+    task_id: str,
+    ques_all: str,
+    files: list[str] | None = None,
+) -> None:
     await redis_manager.set(f"task_id:{task_id}", task_id)
     await mark_task_ready(task_id)
-    await redis_manager.publish_message(task_id, UserMessage(content=ques_all))
+    await redis_manager.publish_message(
+        task_id,
+        UserMessage(content=ques_all, files=files or []),
+    )
     await redis_manager.publish_message(
         task_id,
         SystemMessage(content="任务已创建，等待手动启动"),
@@ -990,7 +997,7 @@ async def exampleModeling(
         with open(src_file, "rb") as src, open(dst_file, "wb") as dst:
             dst.write(src.read())
     _save_task_config(task_id, ques_all, CompTemplate.CHINA, FormatOutPut.Markdown)
-    await _mark_task_created(task_id, ques_all)
+    await _mark_task_created(task_id, ques_all, current_files)
     return {"task_id": task_id, "status": "created"}
 
 
@@ -1003,6 +1010,7 @@ async def modeling(
 ):
     task_id = create_task_id()
     work_dir = create_work_dir(task_id)
+    uploaded_filenames: list[str] = []
 
     # 如果有上传文件，保存文件
     if files:
@@ -1035,6 +1043,7 @@ async def modeling(
 
                 with open(data_file_path, "wb") as f:
                     f.write(content)
+                uploaded_filenames.append(filename)
                 logger.info(f"成功保存文件: {data_file_path}")
 
             except HTTPException:
@@ -1048,7 +1057,7 @@ async def modeling(
         logger.warning("没有上传文件")
 
     _save_task_config(task_id, ques_all, comp_template, format_output)
-    await _mark_task_created(task_id, ques_all)
+    await _mark_task_created(task_id, ques_all, uploaded_filenames)
     return {"task_id": task_id, "status": "created"}
 
 

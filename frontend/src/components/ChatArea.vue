@@ -17,8 +17,11 @@ import {
 	AlertTriangle,
 	Bot,
 	CheckCircle2,
+	ChevronDown,
 	Clock3,
 	Code2,
+	Download,
+	FileSpreadsheet,
 	FileText,
 	ImageIcon,
 	LoaderCircle,
@@ -44,6 +47,7 @@ const emit = defineEmits<{
 	questionConfirm: [];
 	modelingConfirm: [];
 	imageOpen: [filename: string];
+	fileOpen: [filename: string];
 }>();
 
 interface TimelineEvent {
@@ -68,6 +72,8 @@ interface TimelineEvent {
 	questionIndex?: number | null;
 	badges?: string[];
 	artifacts?: string[];
+	inputFiles?: string[];
+	problemText?: string;
 	choiceKind?: "question" | "modeling";
 	progressText?: string;
 	debugCount?: number;
@@ -115,6 +121,7 @@ const scrollRef = ref<HTMLDivElement | null>(null);
 const userScrolledUp = ref(false);
 const inlineQuestionPanelOpen = ref(true);
 const inlineModelingPanelOpen = ref(true);
+const expandedProblemIds = ref<Set<string>>(new Set());
 
 const roleMap: Record<string, string> = {
 	CoordinatorAgent: "任务协调",
@@ -313,14 +320,6 @@ function isLowValueAgent(text: string) {
 		/ModelerAgent 正在结合题目目标.*筛选候选模型/,
 		/ModelerAgent 已完成模型比选并传递给 User/,
 	].some((pattern) => pattern.test(normalized));
-}
-
-function isInitialTaskPrompt(text: string) {
-	return (
-		text.length > 600 &&
-		/问题\s*1[.。]/.test(text) &&
-		(/问题\s*2[.。]/.test(text) || /请结合附件数据/.test(text))
-	);
 }
 
 function detectQuestionIndex(text: string, msg?: Message): number | null {
@@ -827,6 +826,16 @@ function progressEvent(msg: ProgressMessage): TimelineEvent | null {
 	};
 }
 
+const initialUserMessageId = computed(
+	() =>
+		props.messages.find(
+			(message) =>
+				message.msg_type === "user" &&
+				!message.action &&
+				!/用户请求启动或恢复当前建模工作流/.test(message.content ?? ""),
+		)?.id ?? "",
+);
+
 function userEvent(msg: Message): TimelineEvent | null {
 	const content = msg.content ?? "";
 	const common = {
@@ -843,6 +852,16 @@ function userEvent(msg: Message): TimelineEvent | null {
 		return null;
 	}
 	if (/用户请求 ModelerAgent 筛选候选模型/.test(content)) return null;
+	if (msg.id === initialUserMessageId.value) {
+		const inputFiles = msg.msg_type === "user" ? (msg.files ?? []) : [];
+		return {
+			...common,
+			title: "已确定题目信息",
+			problemText: content,
+			inputFiles,
+			badges: inputFiles.length ? [`${inputFiles.length} 个附件`] : [],
+		};
+	}
 	if (/用户一键应用 AI 推荐的最优模型方案|选择最优模型方案/.test(content)) {
 		return {
 			...common,
@@ -861,8 +880,7 @@ function userEvent(msg: Message): TimelineEvent | null {
 function toEvent(msg: Message): TimelineEvent | null {
 	if (
 		msg.msg_type === "user" &&
-		(/用户请求启动或恢复当前建模工作流/.test(msg.content ?? "") ||
-			isInitialTaskPrompt(msg.content ?? ""))
+		/用户请求启动或恢复当前建模工作流/.test(msg.content ?? "")
 	) {
 		return null;
 	}
@@ -1486,6 +1504,32 @@ function statusIcon(ev: TimelineEvent) {
 	return LoaderCircle;
 }
 
+function toggleProblemDetail(eventId: string) {
+	const next = new Set(expandedProblemIds.value);
+	if (next.has(eventId)) {
+		next.delete(eventId);
+	} else {
+		next.add(eventId);
+	}
+	expandedProblemIds.value = next;
+}
+
+function inputFileType(filename: string) {
+	const extension = filename.split(".").pop()?.toLowerCase() ?? "";
+	if (extension === "xlsx" || extension === "xls") return "Excel 数据";
+	if (extension === "csv") return "CSV 数据";
+	if (extension === "docx" || extension === "doc") return "Word 文档";
+	if (extension === "txt" || extension === "md") return "文本数据";
+	return "附件";
+}
+
+function inputFileIcon(filename: string) {
+	const extension = filename.split(".").pop()?.toLowerCase() ?? "";
+	return ["xlsx", "xls", "csv"].includes(extension)
+		? FileSpreadsheet
+		: FileText;
+}
+
 function flowStepClass(status: FlowStep["status"]) {
 	if (status === "done") return "border-blue-200 bg-blue-50 text-blue-700";
 	if (status === "active")
@@ -1651,6 +1695,38 @@ watch(
 						</div>
 
 						<p v-if="ev.detail && !ev.isGroup" class="message-detail mt-1.5 whitespace-pre-wrap break-words text-xs leading-relaxed opacity-80" :class="{ 'streaming-detail': ev.status === 'running' && ev.type === 'raw' }" :data-streaming-detail="ev.status === 'running' && ev.type === 'raw' ? 'true' : undefined">{{ ev.detail }}</p>
+						<div v-if="ev.problemText" class="mt-2 flex flex-wrap gap-1.5">
+							<button
+								type="button"
+								class="inline-flex max-w-full items-center gap-1.5 rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[11px] font-medium transition hover:bg-white/15"
+								:title="expandedProblemIds.has(ev.id) ? '收起题目信息' : '查看题目信息'"
+								@click="toggleProblemDetail(ev.id)"
+							>
+								<FileText class="h-3.5 w-3.5 shrink-0 text-blue-200" />
+								<span>题目信息</span>
+								<span class="opacity-55">题目文本</span>
+								<ChevronDown class="h-3 w-3 shrink-0 transition-transform" :class="{ 'rotate-180': expandedProblemIds.has(ev.id) }" />
+							</button>
+							<button
+								v-for="file in ev.inputFiles"
+								:key="file"
+								type="button"
+								class="inline-flex max-w-full items-center gap-1.5 rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[11px] font-medium transition hover:bg-white/15"
+								:title="`下载 ${file}`"
+								@click="emit('fileOpen', file)"
+							>
+								<component :is="inputFileIcon(file)" class="h-3.5 w-3.5 shrink-0 text-emerald-200" />
+								<span class="max-w-44 truncate">{{ file }}</span>
+								<span class="shrink-0 opacity-55">{{ inputFileType(file) }}</span>
+								<Download class="h-3 w-3 shrink-0 opacity-60" />
+							</button>
+						</div>
+						<p
+							v-if="ev.problemText && expandedProblemIds.has(ev.id)"
+							class="message-detail mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-white/10 bg-white/5 px-2.5 py-2 text-xs leading-relaxed opacity-80"
+						>
+							{{ ev.problemText }}
+						</p>
 						<p v-if="ev.progressText && !ev.isGroup" class="mt-1.5 rounded-lg border border-current/10 bg-white/45 px-2 py-1 text-[11px] opacity-90">{{ ev.progressText }}</p>
 
 						<div v-if="ev.groupEvents?.length && ev.status !== 'done' && latestGroupEvent(ev)" class="mt-2 rounded-xl border border-slate-200/70 bg-white/60 px-2.5 py-2 shadow-inner">

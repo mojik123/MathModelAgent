@@ -42,6 +42,7 @@ class SystemMessage(Message):
 
 class UserMessage(Message):
     msg_type: Literal["system", "agent", "user", "tool"] = "user"  # type: ignore[assignment]
+    files: list[str] = Field(default_factory=list)
 
 
 class AgentMessage(Message):

@@ -666,13 +666,14 @@ export const useTaskStore = defineStore("task", () => {
 		return "local";
 	}
 
-	function addUserMessage(content: string) {
+	function addUserMessage(content: string, files: string[] = []) {
 		const taskId = activeTaskId();
 		appendMessage(taskId, {
 			id: localActionId("user"),
 			created_at: new Date().toISOString(),
 			msg_type: "user",
 			content,
+			files,
 		} as UserMessage);
 	}
 

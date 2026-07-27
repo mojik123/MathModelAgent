@@ -1240,6 +1240,7 @@ onBeforeUnmount(() => {
             @question-confirm="onQuestionConfirmed"
             @modeling-confirm="onModelingConfirmed"
             @image-open="openTimelineImage"
+            @file-open="downloadSingleFile"
           />
         </div>
       </ResizablePanel>
