@@ -42,6 +42,23 @@ from app.utils.image_constants import (
 )
 
 
+def recover_unconfirmed_modeling_checkpoint(checkpoint: dict) -> bool:
+    """清理旧版关闭 HIL 时产生的空建模选择及其下游结果。"""
+    if "modeling_selections" not in checkpoint or checkpoint.get(
+        "modeling_selections"
+    ):
+        return False
+
+    preserved = {
+        key: checkpoint[key]
+        for key in ("coordinator", "question_selections")
+        if key in checkpoint
+    }
+    checkpoint.clear()
+    checkpoint.update(preserved)
+    return True
+
+
 class WorkFlow:
     """工作流基类。"""
 
@@ -919,6 +936,17 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         self.task_id = problem.task_id
         self.work_dir = create_work_dir(self.task_id)
         checkpoint = self._load_checkpoint()
+        if settings.HIL_ENABLED and recover_unconfirmed_modeling_checkpoint(
+            checkpoint
+        ):
+            self._save_checkpoint(checkpoint)
+            await redis_manager.publish_message(
+                self.task_id,
+                SystemMessage(
+                    content="检测到未确认的建模方案，已回到建模方案选择阶段",
+                    type="warning",
+                ),
+            )
         checkpoint.setdefault("section_ledger", {})
 
         llm_factory = LLMFactory(self.task_id)

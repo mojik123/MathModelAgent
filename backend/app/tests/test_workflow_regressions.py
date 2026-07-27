@@ -5,12 +5,37 @@ import zipfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from app.config.setting import Settings
 from app.core.flows import Flows
+from app.core.workflow import recover_unconfirmed_modeling_checkpoint
 from app.routers import files_router, modeling_router
 from app.routers.common_router import _parse_task_status
 from app.schemas.A2A import ModelerToCoder
 from app.schemas.enums import CompTemplate, FormatOutPut
 from app.schemas.request import Problem
+
+
+def test_hil_confirmation_is_enabled_by_default() -> None:
+    """默认流程必须展示问题划分和建模方案确认。"""
+    assert Settings.model_fields["HIL_ENABLED"].default is True
+
+
+def test_empty_modeling_selection_resets_downstream_checkpoint() -> None:
+    """旧任务的空建模选择不能继续跳过建模确认。"""
+    checkpoint = {
+        "coordinator": {"ques_count": 2},
+        "question_selections": [{"questionIndex": 1}],
+        "modeling_selections": {},
+        "modeler": {"questions_solution": {}},
+        "user_output_res": {"eda": {"response_content": "stale"}},
+        "completed": True,
+    }
+
+    assert recover_unconfirmed_modeling_checkpoint(checkpoint) is True
+    assert checkpoint == {
+        "coordinator": {"ques_count": 2},
+        "question_selections": [{"questionIndex": 1}],
+    }
 
 
 def test_recoverable_error_is_not_terminal() -> None:

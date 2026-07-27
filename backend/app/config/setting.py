@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     RAG_EMBEDDING_MODEL: str = "BAAI/bge-m3"
     RAG_RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
 
-    HIL_ENABLED: bool = False
+    HIL_ENABLED: bool = True
     HIL_TIMEOUT: int = 300
 
     model_config = SettingsConfigDict(
