@@ -58,8 +58,8 @@ def create_work_dir(task_id: str) -> str:
     Returns:
         工作目录路径。
     """
-    # 设置主工作目录和子目录
-    work_dir = os.path.join("project", "work_dir", task_id)
+    safe_task_id = ensure_safe_task_id(task_id)
+    work_dir = os.path.join("project", "work_dir", safe_task_id)
 
     try:
         # 创建目录，如果目录已存在也不会报错
@@ -142,7 +142,9 @@ def _copy_cumcm_class_to_work_dir(work_dir: str) -> None:
                 logger.debug(f"复制 CUMCM LaTeX 类文件: {source} -> {target}")
                 return
             except Exception as exc:
-                logger.warning(f"复制 CUMCM LaTeX 类文件失败 {source} -> {target}: {exc}")
+                logger.warning(
+                    f"复制 CUMCM LaTeX 类文件失败 {source} -> {target}: {exc}"
+                )
 
     logger.warning(
         "未找到 cumcmthesis.cls，PDF 编译可能失败；已检查："
@@ -162,7 +164,8 @@ def get_work_dir(task_id: str) -> str:
     Raises:
         FileNotFoundError: 工作目录不存在时抛出。
     """
-    work_dir = os.path.join("project", "work_dir", task_id)
+    safe_task_id = ensure_safe_task_id(task_id)
+    work_dir = os.path.join("project", "work_dir", safe_task_id)
     if os.path.exists(work_dir):
         return work_dir
     else:
@@ -229,13 +232,9 @@ def get_current_files(folder_path: str, type: str = "all") -> list[str]:
             if p.is_file() and not p.name.startswith(".")
         )
     elif type == "md":
-        return sorted(
-            _relative(p) for p in root.rglob("*.md") if p.is_file()
-        )
+        return sorted(_relative(p) for p in root.rglob("*.md") if p.is_file())
     elif type == "ipynb":
-        return sorted(
-            _relative(p) for p in root.rglob("*.ipynb") if p.is_file()
-        )
+        return sorted(_relative(p) for p in root.rglob("*.ipynb") if p.is_file())
     elif type == "data":
         return sorted(
             _relative(p)
@@ -244,7 +243,9 @@ def get_current_files(folder_path: str, type: str = "all") -> list[str]:
         )
     elif type == "image":
         return sorted(
-            _relative(p) for p in root.rglob("*") if p.is_file() and is_image_file(p.name)
+            _relative(p)
+            for p in root.rglob("*")
+            if p.is_file() and is_image_file(p.name)
         )
     return []
 
@@ -376,9 +377,7 @@ def md_2_docx(task_id: str) -> str:
         include_equation_tags=False,
     )
     with tempfile.TemporaryDirectory(prefix="paper-docx-", dir=work_dir) as temp_dir:
-        reference_docx = create_reference_docx(
-            os.path.join(temp_dir, "reference.docx")
-        )
+        reference_docx = create_reference_docx(os.path.join(temp_dir, "reference.docx"))
         extra_args = [
             "--resource-path",
             str(work_dir),
@@ -602,14 +601,14 @@ def tex_2_pdf(task_id: str) -> str:
                 if line.strip()
                 and (line.startswith("!") or "Error" in line or "Fatal" in line)
             ]
-            key_error = "\n".join(error_lines[:10]) if error_lines else last_stderr[-500:]
+            key_error = (
+                "\n".join(error_lines[:10]) if error_lines else last_stderr[-500:]
+            )
             logger.error(f"PDF 编译失败:\n{key_error}")
             raise RuntimeError(f"xelatex 编译失败:\n{key_error}")
 
     if not os.path.exists(pdf_path):
-        raise RuntimeError(
-            f"xelatex 执行完成但未生成 PDF: {pdf_path}"
-        )
+        raise RuntimeError(f"xelatex 执行完成但未生成 PDF: {pdf_path}")
 
     logger.info(f"PDF 生成完成: {pdf_path}")
     return pdf_path

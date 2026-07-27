@@ -10,6 +10,7 @@ from typing import Annotated, Optional
 
 class ApiType(str, Enum):
     """LLM API 类型。"""
+
     OPENAI_CHAT = "openai-chat"
     OPENAI_RESPONSES = "openai-responses"
     ANTHROPIC = "anthropic"
@@ -26,6 +27,7 @@ def parse_cors(value: str) -> list[str]:
 
 class Settings(BaseSettings):
     """全局应用配置，从环境变量和 .env 文件加载。"""
+
     ENV: str = "dev"
 
     COORDINATOR_API_TYPE: Optional[ApiType] = None
@@ -57,7 +59,8 @@ class Settings(BaseSettings):
     WRITER_CONTEXT_WINDOW: int = 128000
     WRITER_PARALLELISM: int = 3
     # 0 means run all question groups in parallel; set >0 to cap concurrency.
-    QUESTION_PARALLELISM: int = 0
+    # 默认串行可保证后续问题使用前面问题的产物；确认各问独立后可调高。
+    QUESTION_PARALLELISM: int = 1
 
     # LLM 调用与上下文控制
     LLM_MAX_RETRIES: int = 3
@@ -114,6 +117,7 @@ class Settings(BaseSettings):
     RAG_EMBEDDING_MODEL: str = "BAAI/bge-m3"
     RAG_RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
 
+    HIL_ENABLED: bool = False
     HIL_TIMEOUT: int = 300
 
     model_config = SettingsConfigDict(

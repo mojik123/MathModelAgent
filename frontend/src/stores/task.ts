@@ -111,7 +111,13 @@ export const useTaskStore = defineStore("task", () => {
 		if (message.type === "warning" && content.includes("任务已停止")) {
 			return "stopped";
 		}
-		if (message.type === "error") return "failed";
+		if (
+			message.type === "error" &&
+			(content.includes("任务执行失败") ||
+				content.includes("任务运行超过配置上限"))
+		) {
+			return "failed";
+		}
 		return null;
 	}
 

@@ -9,7 +9,9 @@ from app.schemas.response import ScholarMessage
 class OpenAlexScholar:
     """OpenAlex 学术文献搜索客户端。"""
 
-    def __init__(self, task_id: str, email: str | None = None, api_key: str | None = None):
+    def __init__(
+        self, task_id: str, email: str | None = None, api_key: str | None = None
+    ):
         """初始化 OpenAlex 客户端。
 
         Args:
@@ -99,7 +101,12 @@ class OpenAlexScholar:
         response: requests.Response | None = None
         try:
             print(f"请求 URL: {base_url} 参数: {params}")
-            response = requests.get(base_url, params=params, headers=headers)
+            response = requests.get(
+                base_url,
+                params=params,
+                headers=headers,
+                timeout=15,
+            )
             print(f"响应状态: {response.status_code}")
 
             response.raise_for_status()

@@ -66,24 +66,8 @@ class MathModelWorkFlow(WorkFlow):
     - 集成 CoordinatorAgent 进行终稿审查
     """
 
-    QUESTION_REQUIRED_FILES = {
-        "ques1": ["result1_1.xlsx", "result1_2.xlsx"],
-        "ques2": ["result2.xlsx"],
-        "ques3": [],
-    }
-
-    def _has_required_result_files(self, key: str) -> bool:
-        from pathlib import Path
-
-        required = self.QUESTION_REQUIRED_FILES.get(key, [])
-        if not required:
-            return True
-        work = Path(self.work_dir)
-        for filename in required:
-            matches = list(work.rglob(filename))
-            if not matches:
-                return False
-        return True
+    def __init__(self) -> None:
+        self._managed_interpreters: set = set()
 
     task_id: str
     work_dir: str
@@ -113,11 +97,20 @@ class MathModelWorkFlow(WorkFlow):
 
     def _save_checkpoint(self, checkpoint: dict) -> None:
         path = self._checkpoint_path()
+        temp_path = f"{path}.tmp"
         try:
-            with open(path, "w", encoding="utf-8") as f:
+            with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(checkpoint, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, path)
         except Exception as e:
             logger.warning(f"保存任务断点失败 {self.task_id}: {e}")
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except OSError:
+                pass
 
     def _save_writer_checkpoint(
         self,
@@ -149,6 +142,7 @@ class MathModelWorkFlow(WorkFlow):
         checkpoint.setdefault("coder_stage_cache", {})[key] = {
             "response": coder_response.model_dump(),
             "code_output": code_interpreter.get_code_output(key),
+            "artifact_tag": getattr(code_interpreter, "artifact_tag", "") or None,
         }
         self._save_checkpoint(checkpoint)
 
@@ -190,12 +184,12 @@ class MathModelWorkFlow(WorkFlow):
             section_dir=section_dir_name(key),
             created_images=response.created_images or [],
             require_image=False,
-            artifact_tag=None,
+            artifact_tag=cached.get("artifact_tag"),
         )
-        if not artifact_check.passed:
+        if artifact_check.blocking_issues:
             logger.warning(
                 f"{key} Coder 阶段断点产物已失效，将重新求解: "
-                + "；".join(artifact_check.issues)
+                + "；".join(artifact_check.blocking_issues)
             )
             checkpoint.get("coder_stage_cache", {}).pop(key, None)
             self._save_checkpoint(checkpoint)
@@ -213,15 +207,27 @@ class MathModelWorkFlow(WorkFlow):
         for relative_path in artifact_check.code_files:
             path = Path(self.work_dir) / relative_path
             try:
-                restored_codes.append(
-                    path.read_text(encoding="utf-8", errors="ignore")
-                )
+                restored_codes.append(path.read_text(encoding="utf-8", errors="ignore"))
             except OSError:
                 continue
         if restored_codes:
             code_interpreter.section_codes[key] = restored_codes
 
         return response
+
+    async def cleanup_interpreters(self) -> None:
+        """清理工作流创建过的全部解释器，允许重复调用。"""
+        if not self._managed_interpreters:
+            return
+        interpreters = list(self._managed_interpreters)
+        self._managed_interpreters.clear()
+        results = await asyncio.gather(
+            *(interpreter.cleanup() for interpreter in interpreters),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(f"代码解释器清理失败: {result}")
 
     def _create_llm(
         self,
@@ -262,12 +268,13 @@ class MathModelWorkFlow(WorkFlow):
             max_tokens=settings.WRITER_MAX_TOKENS,
             agent_index=agent_index,
         )
-        assert settings.OPENALEX_EMAIL is not None, "OPENALEX_EMAIL 未配置"
-        scholar = OpenAlexScholar(
-            task_id=self.task_id,
-            email=settings.OPENALEX_EMAIL,
-            api_key=settings.OPENALEX_API_KEY,
-        )
+        scholar = None
+        if settings.OPENALEX_EMAIL:
+            scholar = OpenAlexScholar(
+                task_id=self.task_id,
+                email=settings.OPENALEX_EMAIL,
+                api_key=settings.OPENALEX_API_KEY,
+            )
         return WriterAgent(
             task_id=problem.task_id,
             model=writer_llm,
@@ -339,6 +346,7 @@ class MathModelWorkFlow(WorkFlow):
             timeout=3000,
         )
         interpreter.artifact_tag = artifact_tag
+        self._managed_interpreters.add(interpreter)
         return interpreter
 
     def _section_image_prefix(self, key: str) -> str:
@@ -649,7 +657,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     SystemMessage(content=f"{group_tag}代码手开始求解{key}"),
                 )
 
-                coder_response = await coder_agent.run(
+                coder_coro = coder_agent.run(
                     prompt=self._with_image_position_hint(
                         coder_prompt,
                         key,
@@ -657,6 +665,17 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     ),
                     subtask_title=key,
                 )
+                coder_timeout = max(
+                    0,
+                    int(getattr(settings, "CODER_ATTEMPT_TIMEOUT", 0)),
+                )
+                if coder_timeout:
+                    coder_response = await asyncio.wait_for(
+                        coder_coro,
+                        timeout=coder_timeout,
+                    )
+                else:
+                    coder_response = await coder_coro
 
                 step_counter[0] += 1
                 await self._publish_progress(
@@ -684,9 +703,21 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 require_image=False,
                 artifact_tag=None,
             )
-            if not artifact_check.passed:
+            if artifact_check.blocking_issues:
                 raise RuntimeError(
-                    f"{key} 产物检查失败：" + "；".join(artifact_check.issues)
+                    f"{key} 产物检查失败："
+                    + "；".join(artifact_check.blocking_issues)
+                )
+            if artifact_check.issues:
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=(
+                            f"{group_tag}{key} 产物存在非致命问题，继续写作："
+                            + "；".join(artifact_check.issues[:5])
+                        ),
+                        type="warning",
+                    ),
                 )
             self._save_coder_stage_checkpoint(
                 checkpoint,
@@ -731,11 +762,22 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             SystemMessage(content=f"{group_tag}论文手开始写{key}部分"),
         )
 
-        writer_response = await writer_agent.run(
+        writer_coro = writer_agent.run(
             writer_prompt,
             available_images=coder_response.created_images,
             sub_title=key,
         )
+        writer_timeout = max(
+            0,
+            int(getattr(settings, "WRITER_ATTEMPT_TIMEOUT", 0) or 0),
+        )
+        if writer_timeout:
+            writer_response = await asyncio.wait_for(
+                writer_coro,
+                timeout=writer_timeout,
+            )
+        else:
+            writer_response = await writer_coro
 
         await redis_manager.publish_message(
             self.task_id,
@@ -934,56 +976,80 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         # coordinator(1) + modeler(1) + eda coder+writer(2)
         # + N*[sub_coord_start + modeler + coder + writer + sub_coord_end](5 per group)
         # + sensitivity coder+writer(2) + write_flows(6) + final_review(1) + save(1)
-        n = self.ques_count
         write_flow_count = 7  # firstPage, toc, RepeatQues, analysisQues, modelAssumption, symbol, judge
-        total_steps = (
-            1  # coordinator
-            + 1  # modeler
-            + 2  # EDA coder + writer
-            + n
-            * 5  # per-group: sub_coord_start + modeler + coder + writer + sub_coord_end
-            + 2  # sensitivity coder + writer
-            + write_flow_count  # final write sections
-            + 2  # final review + save
-        )
+
+        def calculate_total_steps(question_count: int) -> int:
+            return (
+                1  # coordinator
+                + 1  # modeler
+                + 2  # EDA coder + writer
+                + question_count
+                * 5  # sub_coord_start + modeler + coder + writer + sub_coord_end
+                + 2  # sensitivity coder + writer
+                + write_flow_count  # final write sections
+                + 2  # final review + save
+            )
+
+        total_steps = calculate_total_steps(self.ques_count)
         step_counter = [1]  # coordinator done; mutable container for closures
 
         await self._publish_progress(
             step_counter[0], total_steps, "问题拆解完成，开始问题划分讨论"
         )
         # ── 等待用户确认问题划分 ─────────────────────────────────────────────
-        if not checkpoint.get("question_selections"):
-            await self._publish_progress(
-                step_counter[0], total_steps, "等待用户确认问题划分"
-            )
-            await redis_manager.publish_message(
-                self.task_id,
-                SystemMessage(content="等待用户确认问题划分"),
-            )
-
-            from app.routers.modeling_router import _active_tasks
-
-            entry = _active_tasks.setdefault(self.task_id, {})
-            self.question_ready_event = asyncio.Event()
-            entry["question_ready_event"] = self.question_ready_event
-            entry["question_selections_ref"] = self
-
-            try:
-                tasks = [asyncio.create_task(self.question_ready_event.wait())]
-                if self.cancel_event:
-                    tasks.append(asyncio.create_task(self.cancel_event.wait()))
-                done, pending = await asyncio.wait(
-                    tasks, return_when=asyncio.FIRST_COMPLETED
+        if "question_selections" not in checkpoint:
+            if settings.HIL_ENABLED:
+                await self._publish_progress(
+                    step_counter[0], total_steps, "等待用户确认问题划分"
                 )
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
-                if self.cancel_event and self.cancel_event.is_set():
-                    raise asyncio.CancelledError("任务被用户停止")
-            finally:
-                _active_tasks[self.task_id].pop("question_ready_event", None)
-                _active_tasks[self.task_id].pop("question_selections_ref", None)
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(content="等待用户确认问题划分"),
+                )
 
+                from app.routers.modeling_router import _active_tasks
+
+                entry = _active_tasks.setdefault(self.task_id, {})
+                self.question_ready_event = asyncio.Event()
+                entry["question_ready_event"] = self.question_ready_event
+                entry["question_selections_ref"] = self
+
+                try:
+                    tasks = [asyncio.create_task(self.question_ready_event.wait())]
+                    if self.cancel_event:
+                        tasks.append(asyncio.create_task(self.cancel_event.wait()))
+                    done, pending = await asyncio.wait(
+                        tasks,
+                        timeout=max(0, settings.HIL_TIMEOUT) or None,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    if self.cancel_event and self.cancel_event.is_set():
+                        raise asyncio.CancelledError("任务被用户停止")
+                    if not done:
+                        await redis_manager.publish_message(
+                            self.task_id,
+                            SystemMessage(
+                                content="问题划分确认超时，自动采用 Coordinator 拆题结果",
+                                type="warning",
+                            ),
+                        )
+                finally:
+                    entry.pop("question_ready_event", None)
+                    entry.pop("question_selections_ref", None)
+
+            if not self.question_selections:
+                self.question_selections = [
+                    {
+                        "questionIndex": idx,
+                        "questionText": str(
+                            coordinator_response.questions.get(f"ques{idx}", "")
+                        ),
+                    }
+                    for idx in range(1, coordinator_response.ques_count + 1)
+                ]
             checkpoint["question_selections"] = self.question_selections
             self._save_checkpoint(checkpoint)
 
@@ -1005,43 +1071,54 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             coordinator_response.ques_count = len(self.question_selections)
             self.questions = coordinator_response.questions
             self.ques_count = coordinator_response.ques_count
+            total_steps = calculate_total_steps(self.ques_count)
             checkpoint["coordinator"] = coordinator_response.model_dump()
             self._save_checkpoint(checkpoint)
 
         # ── 等待用户确认建模方案 ─────────────────────────────────────────────
-        if not checkpoint.get("modeling_selections"):
-            await self._publish_progress(
-                step_counter[0], total_steps, "等待用户确认各问建模方案"
-            )
-            await redis_manager.publish_message(
-                self.task_id,
-                SystemMessage(content="等待用户确认各问建模方案"),
-            )
-            from app.routers.modeling_router import _active_tasks
-
-            # 防御：确保 _active_tasks 中有当前任务的条目（可能在异常恢复中缺失）
-            entry = _active_tasks.setdefault(self.task_id, {})
-            self.modeling_ready_event = asyncio.Event()
-            entry["modeling_ready_event"] = self.modeling_ready_event
-            entry["modeling_selections_ref"] = self
-
-            try:
-                tasks = [asyncio.create_task(self.modeling_ready_event.wait())]
-                if self.cancel_event:
-                    tasks.append(asyncio.create_task(self.cancel_event.wait()))
-                done, pending = await asyncio.wait(
-                    tasks, return_when=asyncio.FIRST_COMPLETED
+        if "modeling_selections" not in checkpoint:
+            if settings.HIL_ENABLED:
+                await self._publish_progress(
+                    step_counter[0], total_steps, "等待用户确认各问建模方案"
                 )
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
-                if self.cancel_event and self.cancel_event.is_set():
-                    raise asyncio.CancelledError("任务被用户停止")
-            finally:
-                _active_tasks[self.task_id].pop("modeling_ready_event", None)
-                _active_tasks[self.task_id].pop("modeling_selections_ref", None)
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(content="等待用户确认各问建模方案"),
+                )
+                from app.routers.modeling_router import _active_tasks
 
-            checkpoint["modeling_selections"] = self.modeling_selections
+                entry = _active_tasks.setdefault(self.task_id, {})
+                self.modeling_ready_event = asyncio.Event()
+                entry["modeling_ready_event"] = self.modeling_ready_event
+                entry["modeling_selections_ref"] = self
+
+                try:
+                    tasks = [asyncio.create_task(self.modeling_ready_event.wait())]
+                    if self.cancel_event:
+                        tasks.append(asyncio.create_task(self.cancel_event.wait()))
+                    done, pending = await asyncio.wait(
+                        tasks,
+                        timeout=max(0, settings.HIL_TIMEOUT) or None,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    if self.cancel_event and self.cancel_event.is_set():
+                        raise asyncio.CancelledError("任务被用户停止")
+                    if not done:
+                        await redis_manager.publish_message(
+                            self.task_id,
+                            SystemMessage(
+                                content="建模方案确认超时，自动采用 Modeler 推荐方案",
+                                type="warning",
+                            ),
+                        )
+                finally:
+                    entry.pop("modeling_ready_event", None)
+                    entry.pop("modeling_selections_ref", None)
+
+            checkpoint["modeling_selections"] = self.modeling_selections or {}
             self._save_checkpoint(checkpoint)
 
             await self._publish_progress(
@@ -1104,7 +1181,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
         step_counter[0] += 1
         await self._publish_progress(
-            step_counter[0], total_steps, "建模分析完成，准备并行求解"
+            step_counter[0], total_steps, "建模分析完成，准备求解"
         )
 
         user_output = UserOutput(work_dir=self.work_dir, ques_count=self.ques_count)
@@ -1125,6 +1202,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             notebook_serializer=notebook_serializer,
             timeout=3000,
         )
+        self._managed_interpreters.add(code_interpreter)
 
         await redis_manager.publish_message(
             self.task_id,
@@ -1151,7 +1229,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
         solution_flows = flows.get_solution_flows(self.questions, modeler_response)
 
-        # 并发控制：QUESTION_PARALLELISM <= 0 表示所有子问题组一起并行。
+        # 默认串行以保留问题间依赖；明确确认各问独立后可通过配置提高并发。
         configured_question_parallelism = int(
             getattr(settings, "QUESTION_PARALLELISM", 0) or 0
         )
@@ -1208,11 +1286,17 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         question_keys = [k for k in solution_flows if k.startswith("ques")]
 
         if question_keys:
+            execution_mode = (
+                "串行执行，后续问题复用前面结果"
+                if question_parallelism == 1
+                else f"最多 {question_parallelism} 组并行"
+            )
             await redis_manager.publish_message(
                 self.task_id,
                 SystemMessage(
                     content=(
-                        f"全局协调者：启动 {len(question_keys)} 个子问题并行组，"
+                        f"全局协调者：启动 {len(question_keys)} 个子问题组，"
+                        f"{execution_mode}；"
                         "每问单 Coder，失败自动启动备用"
                     )
                 ),
@@ -1302,7 +1386,6 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 self._save_checkpoint(checkpoint)
 
                 if not check.passed:
-                    core_ok = self._has_required_result_files(key)
                     issue_text = "；".join(check.issues[:8])
 
                     if check.blocking_issues:
@@ -1311,14 +1394,12 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                             f"Coder {attempt_name} 证据检查失败：{blocking_text}"
                         )
 
-                    if core_ok and not getattr(
-                        settings, "ARTIFACT_STRICT_FATAL", False
-                    ):
+                    if not getattr(settings, "ARTIFACT_STRICT_FATAL", False):
                         await redis_manager.publish_message(
                             self.task_id,
                             SystemMessage(
                                 content=(
-                                    f"[组#{group_idx}] Coder {attempt_name} 核心结果已生成，"
+                                    f"[组#{group_idx}] Coder {attempt_name} 核心证据已生成，"
                                     f"产物检查存在非致命问题，继续进入 Writer。\n"
                                     f"问题：{issue_text}"
                                 ),
@@ -1357,6 +1438,15 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                         base_prompt = (
                             prompt_override or solution_flows[key]["coder_prompt"]
                         )
+                        completed_context = user_output.get_model_build_solve().strip()
+                        if completed_context:
+                            base_prompt += f"""
+
+【已完成阶段的真实结果】
+以下内容来自当前任务已经完成并保存的阶段。若本问依赖前一问，
+必须复用这些结果和工作目录中的实际产物，不能重新猜测数值：
+{completed_context[-12000:]}
+"""
                         attempt_prompt = self._with_image_position_hint(
                             base_prompt,
                             key,
@@ -1503,8 +1593,33 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     f"[组#{group_idx}] 所有 Coder 尝试均失败：" + final_reason
                 )
 
-            # ── 入口：固定主力 → 备用1 ──
-            winner_interp, winner_coder_response = await _run_coder_with_fallback()
+            # ── 入口：优先恢复已通过检查的 Coder 产物，再执行主力 → 备用1 ──
+            winner_interp = await self._create_code_interpreter(
+                key,
+                worker_suffix="_resume",
+            )
+            winner_coder_response = self._restore_coder_stage_checkpoint(
+                checkpoint,
+                key,
+                winner_interp,
+            )
+            if winner_coder_response is None:
+                await winner_interp.cleanup()
+                winner_interp, winner_coder_response = await _run_coder_with_fallback()
+                self._save_coder_stage_checkpoint(
+                    checkpoint,
+                    key,
+                    winner_coder_response,
+                    winner_interp,
+                )
+            else:
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=f"[组#{group_idx}] 从断点恢复 {key} Coder 结果",
+                        type="success",
+                    ),
+                )
 
             step_counter[0] += 1
             await self._publish_progress(
@@ -1590,6 +1705,10 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     detail="已终止该小问 Writer。建议降低章节内容长度或关闭缺图修复。",
                     level="error",
                 )
+                await winner_interp.cleanup()
+                raise
+            except BaseException:
+                await winner_interp.cleanup()
                 raise
             await redis_manager.publish_message(
                 self.task_id,
@@ -1857,7 +1976,16 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             sa_writer = self._create_writer_agent(problem, agent_index=None)
             await self._run_solution_step(
                 key=sa_key,
-                coder_prompt=solution_flows[sa_key]["coder_prompt"],
+                coder_prompt=(
+                    solution_flows[sa_key]["coder_prompt"]
+                    + """
+
+【灵敏度分析输入】
+必须基于前面各问已经保存的真实模型结果、参数、代码和数据文件进行扰动，
+不得重新假设一套与正文不同的模型。已完成求解摘要如下：
+"""
+                    + user_output.get_model_build_solve()[-16000:]
+                ),
                 problem=problem,
                 flows=flows,
                 code_interpreter=code_interpreter,

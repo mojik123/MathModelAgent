@@ -54,7 +54,11 @@ async def create_interpreter(
             work_dir=work_dir,
             notebook_serializer=notebook_serializer,
         )
-        await interp.initialize()
+        try:
+            await interp.initialize()
+        except BaseException:
+            await interp.cleanup()
+            raise
         return interp
     else:
         raise ValueError(f"未知 interpreter 类型：{kind}")

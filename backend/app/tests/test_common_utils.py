@@ -4,6 +4,8 @@ import unittest
 
 from app.utils.common_utils import (
     _replace_markdown_front_matter_for_latex,
+    create_work_dir,
+    get_work_dir,
     split_footnotes,
 )
 
@@ -45,6 +47,13 @@ class TestCommonUtils(unittest.TestCase):
         self.assertNotIn("一、问题重述 1", converted)
         self.assertIn("# 一、问题重述", converted)
         self.assertIn("## 1.1 问题背景", converted)
+
+    def test_work_dir_rejects_path_traversal(self):
+        """任务目录入口必须统一拒绝路径穿越。"""
+        with self.assertRaises(ValueError):
+            create_work_dir("../outside")
+        with self.assertRaises(ValueError):
+            get_work_dir("../outside")
 
 
 if __name__ == "__main__":

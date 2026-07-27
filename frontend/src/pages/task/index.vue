@@ -423,7 +423,13 @@ function getTerminalSystemType(message: (typeof taskStore.messages)[number]) {
 	if (message.type === "warning" && content.includes("任务已停止")) {
 		return "warning";
 	}
-	if (message.type === "error") return "error";
+	if (
+		message.type === "error" &&
+		(content.includes("任务执行失败") ||
+			content.includes("任务运行超过配置上限"))
+	) {
+		return "error";
+	}
 	return null;
 }
 
