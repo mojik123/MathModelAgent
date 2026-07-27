@@ -21,14 +21,13 @@ from app.utils.common_utils import (
     get_work_dir,
     ensure_safe_task_id,
     md_2_docx,
-    md_2_pdf,
 )
 import os
 import asyncio
 import hashlib
 import json
 import re
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 from fastapi import HTTPException
 from icecream import ic  # type: ignore[import-unresolved]
 from app.schemas.request import ExampleRequest
@@ -145,6 +144,42 @@ def _extract_json_object(text: str) -> dict[str, Any]:
             if depth == 0:
                 return json.loads(cleaned[start : i + 1])
     raise ValueError("LLM 返回的 JSON 对象不完整")
+
+
+def _normalize_discussion_response(raw: str) -> tuple[str, dict[str, str]]:
+    """将建模讨论回复拆成聊天说明和可追加的修订方案。
+
+    Args:
+        raw: LLM 返回的原始文本，优先解析约定的 JSON 结构。
+
+    Returns:
+        聊天区说明文本，以及可直接追加到候选列表的修订方案。
+    """
+    cleaned = raw.strip()
+    parsed: dict[str, Any] = {}
+    try:
+        parsed = _extract_json_object(cleaned)
+    except (ValueError, json.JSONDecodeError, TypeError):
+        pass
+
+    suggested_raw = parsed.get("suggestedOption") or parsed.get("suggested_option")
+    suggested = suggested_raw if isinstance(suggested_raw, dict) else {}
+    reply = str(parsed.get("reply") or parsed.get("content") or "").strip()
+    description = str(suggested.get("description") or "").strip()
+
+    if not reply:
+        reply = description or cleaned
+    if not description:
+        description = reply or "请结合本轮讨论进一步完善该建模方案。"
+
+    label = str(suggested.get("label") or "").strip() or "讨论修订方案"
+    return reply, {
+        "label": label[:80],
+        "description": description,
+        "reason": str(suggested.get("reason") or "").strip(),
+        "pros": str(suggested.get("pros") or "").strip(),
+        "cons": str(suggested.get("cons") or "").strip(),
+    }
 
 
 def _model_option_id(label: str, question_index: int, option_index: int) -> str:
@@ -531,10 +566,6 @@ def _validate_model_options_for_questions(
         recommended = next(
             (option for option in options if option.get("isRecommended")),
             options[0],
-        )
-        recommended_text = " ".join(
-            str(recommended.get(field) or "")
-            for field in ("label", "description", "reason", "pros", "cons")
         )
         recommended_focus_text = " ".join(
             str(recommended.get(field) or "")
@@ -1074,6 +1105,7 @@ async def get_task_diagnostics(task_id: str):
         "artifact_checks": artifact_checks,
         "final_audit": checkpoint.get("final_paper_audit"),
         "final_paper_issues": checkpoint.get("final_paper_issues", []),
+        "final_evidence_issues": checkpoint.get("final_evidence_issues", []),
         "final_file_issues": checkpoint.get("final_file_issues", []),
         "final_image_ref_issues": checkpoint.get("final_image_ref_issues", []),
         "final_review_failed": checkpoint.get("final_paper_review_failed"),
@@ -1132,8 +1164,11 @@ async def run_modeling_task_async(
 
     task_completed = False
     try:
-        # 设置超时时间（5 小时）
-        await asyncio.wait_for(task, timeout=3600 * 5)
+        task_timeout = max(0, int(getattr(settings, "TASK_EXECUTION_TIMEOUT", 0)))
+        if task_timeout:
+            await asyncio.wait_for(task, timeout=task_timeout)
+        else:
+            await task
         task_completed = True
 
         await mark_task_terminal(task_id, "completed", "任务处理完成")
@@ -1149,12 +1184,24 @@ async def run_modeling_task_async(
             task_id,
             SystemMessage(content="任务已停止", type="warning"),
         )
-    except Exception as e:
-        logger.error(f"任务 {task_id} 执行失败: {e}")
-        await mark_task_terminal(task_id, "failed", f"任务执行失败: {str(e)}")
+    except asyncio.TimeoutError:
+        timeout_message = (
+            f"任务运行超过配置上限 {task_timeout} 秒，已停止。"
+            "已保留 checkpoint，可调整 TASK_EXECUTION_TIMEOUT 后继续运行"
+        )
+        logger.error(f"任务 {task_id} 超时: {timeout_message}")
+        await mark_task_terminal(task_id, "failed", timeout_message)
         await redis_manager.publish_message(
             task_id,
-            SystemMessage(content=f"任务执行失败: {str(e)}", type="error"),
+            SystemMessage(content=timeout_message, type="error"),
+        )
+    except Exception as e:
+        detail = str(e).strip() or type(e).__name__
+        logger.exception(f"任务 {task_id} 执行失败: {detail}")
+        await mark_task_terminal(task_id, "failed", f"任务执行失败: {detail}")
+        await redis_manager.publish_message(
+            task_id,
+            SystemMessage(content=f"任务执行失败: {detail}", type="error"),
         )
     finally:
         # 从注册表中清理
@@ -1200,7 +1247,8 @@ async def cancel_task(task_id: str):
             message="任务不存在或已完成",
         )
 
-    running_task = active["task"]; cancel_event = active["cancel_event"]
+    running_task = active["task"]
+    cancel_event = active["cancel_event"]
     cancel_event.set()
     await mark_task_stopping(safe_task_id, "停止指令已发送，正在安全停止当前步骤")
     await redis_manager.publish_message(
@@ -1243,6 +1291,9 @@ class ModelingDiscussionChatRequest(BaseModel):
 
 class ModelingDiscussionChatResponse(BaseModel):
     success: bool
+    message: str = ""
+    content: str = ""
+    suggested_option: dict[str, str] | None = None
 
 
 class QuestionConfirmRequest(BaseModel):
@@ -1590,9 +1641,14 @@ async def modeling_discussion_chat(task_id: str, body: ModelingDiscussionChatReq
     shared_context = json.dumps(body.questions, ensure_ascii=False, indent=2)
     user_prompt = (
         "你是建模方案讨论助手。用户会逐问选择模型，所有问题卡片共用同一个上下文。\n"
-        "请结合全部卡片的已选模型、自定义方案、对话历史和联网检索摘要，回答当前问题卡片的追问。\n"
-        "不要直接启动正式建模，只给出可供用户选择/修正的建议；如果更合适的模型不在候选卡片中，"
-        "请明确建议用户通过「自定义方案」填写。\n\n"
+        "请结合全部卡片的已选模型、自定义方案、对话历史和联网检索摘要，"
+        "为当前问题生成一份不覆盖原方案、可独立选择的修订方案。\n"
+        "不要直接启动正式建模。无论用户是在追问、补充还是要求修改，都必须输出一份"
+        "完整、具体、可执行的修订方案。\n"
+        "严格返回一个 JSON 对象，不要使用 Markdown 代码块，结构如下：\n"
+        '{"reply":"给用户的简洁说明","suggestedOption":{"label":"修订后方案标题",'
+        '"description":"完整建模流程与实施步骤","reason":"为什么这样修改",'
+        '"pros":"主要优势","cons":"局限或注意事项"}}\n\n'
         f"【当前讨论的问题】第 {body.question_index} 问\n"
         f"{json.dumps(selected_question, ensure_ascii=False, indent=2) if selected_question else '(未找到当前问题卡片)'}\n\n"
         f"【全部问题卡片共享上下文】\n{shared_context}\n\n"
@@ -1608,7 +1664,7 @@ async def modeling_discussion_chat(task_id: str, body: ModelingDiscussionChatReq
         task_id=safe_task_id,
     )
     try:
-        content = await simple_chat(
+        raw_content = await simple_chat(
             llm,
             [
                 {
@@ -1625,10 +1681,12 @@ async def modeling_discussion_chat(task_id: str, body: ModelingDiscussionChatReq
         logger.error(f"建模讨论失败 {safe_task_id}: {e}")
         raise HTTPException(status_code=500, detail=f"建模讨论失败: {e}") from e
 
+    content, suggested_option = _normalize_discussion_response(raw_content)
     return ModelingDiscussionChatResponse(
         success=True,
         message="已生成建模讨论回复",
-        content=content.strip(),
+        content=content,
+        suggested_option=suggested_option,
     )
 
 

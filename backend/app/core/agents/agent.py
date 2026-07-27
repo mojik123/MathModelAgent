@@ -1,8 +1,11 @@
 """Agent 基类模块，提供对话管理和记忆压缩功能。"""
 
 import asyncio
+import json
 from typing import Any
-from app.core.llm.llm import LLM, simple_chat
+
+from app.config.setting import settings
+from app.core.llm.llm import LLM, LLMCallError, simple_chat
 from app.utils.log_util import logger
 
 # TODO: 评估任务完成情况，rethinking
@@ -37,10 +40,10 @@ class Agent:
         return max(1, len(text) // _CHARS_PER_TOKEN)
 
     def _estimate_message_tokens(self, msg: dict) -> int:
-        """估算单条消息的 token 数（含结构开销）。"""
-        content = msg.get("content") or ""
+        """估算单条消息的 token 数，包含工具参数中的整段代码。"""
+        serialized = json.dumps(msg, ensure_ascii=False, default=str)
         # 4 token 额外开销（role、分隔符等）
-        return self._estimate_tokens(content) + 4
+        return self._estimate_tokens(serialized) + 4
 
     async def _chat(self, stream: bool = False, **kwargs) -> Any:
         """调用 LLM 模型，支持取消中断和流式输出。
@@ -125,6 +128,8 @@ class Agent:
         except asyncio.CancelledError:
             logger.info(f"{self.__class__.__name__}:任务被用户停止")
             raise
+        except LLMCallError:
+            raise
         except Exception as e:
             error_msg = f"执行过程中遇到错误: {str(e)}"
             logger.error(f"Agent执行失败: {str(e)}")
@@ -145,7 +150,14 @@ class Agent:
 
     async def compress_if_needed(self) -> None:
         """当 token 数超过上下文窗口阈值时，使用 LLM 总结压缩历史。"""
-        threshold = int(self.context_window * self.token_threshold_ratio)
+        configured_budget = max(
+            10000,
+            int(getattr(settings, "AGENT_MEMORY_TOKEN_BUDGET", 80000)),
+        )
+        threshold = min(
+            int(self.context_window * self.token_threshold_ratio),
+            configured_budget,
+        )
         if self.current_token_count <= threshold:
             return
 

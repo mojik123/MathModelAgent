@@ -15,7 +15,10 @@ const defaultOptions = {
 };
 
 const apiBaseUrl = () =>
-	(import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+	(import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(
+		/\/$/,
+		"",
+	);
 
 const renderMath = (tex: string, displayMode = false) => {
 	try {
@@ -24,7 +27,7 @@ const renderMath = (tex: string, displayMode = false) => {
 			throwOnError: false,
 			strict: false,
 			// 只输出 HTML，不输出 MathML annotation，避免公式后方显示原始 LaTeX 乱码。
-			output: "html" as any,
+			output: "html",
 		});
 	} catch (err) {
 		console.error("KaTeX rendering error:", err);
@@ -41,19 +44,28 @@ export const resolveTaskImageUrl = (src: string, taskId?: string) => {
 	const suffix = suffixMatch?.[0] ?? "";
 	const pathPart = suffix ? raw.slice(0, -suffix.length) : raw;
 	const normalized = pathPart.replace(/\\/g, "/");
-	const currentTaskId = taskId || window.localStorage.getItem("currentTaskId") || "";
+	const currentTaskId =
+		taskId || window.localStorage.getItem("currentTaskId") || "";
 	if (!currentTaskId) return raw;
 
 	const staticMatch = normalized.match(/(?:^|\/)static\/+(.+)$/);
 	const afterStatic = staticMatch?.[1] ?? normalized;
 	const segments = afterStatic.split("/").filter(Boolean);
-	const filename = segments.length > 1 && segments[0] === currentTaskId ? segments.slice(1).join("/") : afterStatic;
+	const filename =
+		segments.length > 1 && segments[0] === currentTaskId
+			? segments.slice(1).join("/")
+			: afterStatic;
 
 	return `${apiBaseUrl()}/static/${currentTaskId}/${encodeURI(filename)}${suffix}`;
 };
 
 const withImageVersion = (src: string, imageVersion?: string | number) => {
-	if (imageVersion === undefined || imageVersion === null || imageVersion === "") return src;
+	if (
+		imageVersion === undefined ||
+		imageVersion === null ||
+		imageVersion === ""
+	)
+		return src;
 	if (/^(data:|blob:)/i.test(src)) return src;
 	const hashIndex = src.indexOf("#");
 	const base = hashIndex >= 0 ? src.slice(0, hashIndex) : src;
@@ -69,25 +81,63 @@ const openMarkdownImagePreview = (src: string, alt: string) => {
 
 	const overlay = document.createElement("div");
 	overlay.id = IMAGE_PREVIEW_MODAL_ID;
-	overlay.style.cssText = ["position:fixed", "inset:0", "z-index:9999", "background:rgba(0,0,0,0.72)", "display:flex", "align-items:center", "justify-content:center", "padding:24px", "box-sizing:border-box"].join(";");
+	overlay.style.cssText = [
+		"position:fixed",
+		"inset:0",
+		"z-index:9999",
+		"background:rgba(0,0,0,0.72)",
+		"display:flex",
+		"align-items:center",
+		"justify-content:center",
+		"padding:24px",
+		"box-sizing:border-box",
+	].join(";");
 	const close = () => overlay.remove();
 	overlay.addEventListener("click", (event) => {
 		if (event.target === overlay) close();
 	});
 
 	const wrapper = document.createElement("div");
-	wrapper.style.cssText = ["position:relative", "max-width:92vw", "max-height:92vh", "display:flex", "align-items:center", "justify-content:center"].join(";");
+	wrapper.style.cssText = [
+		"position:relative",
+		"max-width:92vw",
+		"max-height:92vh",
+		"display:flex",
+		"align-items:center",
+		"justify-content:center",
+	].join(";");
 
 	const img = document.createElement("img");
 	img.src = src;
 	img.alt = alt;
-	img.style.cssText = ["max-width:92vw", "max-height:92vh", "object-fit:contain", "border-radius:12px", "box-shadow:0 20px 60px rgba(0,0,0,0.45)", "background:#fff"].join(";");
+	img.style.cssText = [
+		"max-width:92vw",
+		"max-height:92vh",
+		"object-fit:contain",
+		"border-radius:12px",
+		"box-shadow:0 20px 60px rgba(0,0,0,0.45)",
+		"background:#fff",
+	].join(";");
 
 	const button = document.createElement("button");
 	button.type = "button";
 	button.textContent = "×";
 	button.setAttribute("aria-label", "关闭图片预览");
-	button.style.cssText = ["position:absolute", "top:-12px", "right:-12px", "width:36px", "height:36px", "border:none", "border-radius:999px", "background:rgba(255,255,255,0.95)", "color:#111", "font-size:24px", "line-height:36px", "cursor:pointer", "box-shadow:0 6px 18px rgba(0,0,0,0.25)"].join(";");
+	button.style.cssText = [
+		"position:absolute",
+		"top:-12px",
+		"right:-12px",
+		"width:36px",
+		"height:36px",
+		"border:none",
+		"border-radius:999px",
+		"background:rgba(255,255,255,0.95)",
+		"color:#111",
+		"font-size:24px",
+		"line-height:36px",
+		"cursor:pointer",
+		"box-shadow:0 6px 18px rgba(0,0,0,0.25)",
+	].join(";");
 	button.addEventListener("click", close);
 
 	wrapper.appendChild(img);
@@ -101,15 +151,32 @@ export const normalizeMarkdownImageUrls = (
 	markdown: string,
 	taskId?: string,
 	imageVersion?: string | number,
-) => markdown.replace(new RegExp(`!\\[(.*?)\\]\\((.*?\\.(?:${IMAGE_EXTENSION_RE_FRAGMENT})(?:[?#][^)]+)?)\\)`, "gi"), (_, alt, src) => `![${alt}](${withImageVersion(resolveTaskImageUrl(src, taskId), imageVersion)})`);
+) =>
+	markdown.replace(
+		new RegExp(
+			`!\\[(.*?)\\]\\((.*?\\.(?:${IMAGE_EXTENSION_RE_FRAGMENT})(?:[?#][^)]+)?)\\)`,
+			"gi",
+		),
+		(_, alt, src) =>
+			`![${alt}](${withImageVersion(resolveTaskImageUrl(src, taskId), imageVersion)})`,
+	);
 
-const escapeHtml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#39;");
+const escapeHtml = (value: string) =>
+	value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/\"/g, "&quot;")
+		.replace(/'/g, "&#39;");
 const hasChinese = (value: string) => /[\u4e00-\u9fff]/.test(value || "");
 
 const looksLikeFilename = (value: string) => {
 	const s = (value || "").trim().replace(/^`|`$/g, "");
 	if (!s) return true;
-	if (new RegExp(`\\.(?:${IMAGE_EXTENSION_RE_FRAGMENT})(?:[?#].*)?$`, "i").test(s)) return true;
+	if (
+		new RegExp(`\\.(?:${IMAGE_EXTENSION_RE_FRAGMENT})(?:[?#].*)?$`, "i").test(s)
+	)
+		return true;
 	if (s.includes("/") || s.includes("\\\\")) return true;
 	if (!hasChinese(s) && /[A-Za-z]/.test(s) && /[_-]/.test(s)) return true;
 	return false;
@@ -117,7 +184,11 @@ const looksLikeFilename = (value: string) => {
 
 const chineseCaptionFromSrc = (src: string) => {
 	const clean = decodeURIComponent((src || "").split(/[?#]/)[0]);
-	const base = clean.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
+	const base =
+		clean
+			.split("/")
+			.pop()
+			?.replace(/\.[^.]+$/, "") || "";
 	const lower = base.toLowerCase();
 	const words: string[] = [];
 	const add = (word: string) => {
@@ -144,26 +215,78 @@ const visibleImageCaption = (alt: string, src: string) => {
 	return raw;
 };
 
-const isTableCaptionText = (value: string) => /^\s*(?:\*\*)?表\s*\d+(?:\.\d+)?[\s　：:、].+?(?:\*\*)?\s*$/.test(value || "");
-const stripStrong = (value: string) => value.replace(/^\s*\*\*/, "").replace(/\*\*\s*$/, "").trim();
+const isTableCaptionText = (value: string) =>
+	/^\s*(?:\*\*)?表\s*\d+(?:\.\d+)?[\s　：:、].+?(?:\*\*)?\s*$/.test(
+		value || "",
+	);
+const stripStrong = (value: string) =>
+	value
+		.replace(/^\s*\*\*/, "")
+		.replace(/\*\*\s*$/, "")
+		.trim();
 
 function renderInlineAndDisplayMath(text: string) {
 	return text
-		.replace(/\\\[([\s\S]*?)\\\]/g, (_, tex) => `<div class="math-block">${renderMath(tex.trim(), true)}</div>`)
-		.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => `<div class="math-block">${renderMath(tex.trim(), true)}</div>`)
+		.replace(
+			/\\\[([\s\S]*?)\\\]/g,
+			(_, tex) =>
+				`<div class="math-block paper-equation">${renderMath(tex.trim(), true)}</div>`,
+		)
+		.replace(
+			/\$\$([\s\S]*?)\$\$/g,
+			(_, tex) =>
+				`<div class="math-block paper-equation">${renderMath(tex.trim(), true)}</div>`,
+		)
 		.replace(/\\\((.*?)\\\)/g, (_, tex) => renderMath(tex.trim(), false))
-		.replace(/(?<!\\)\$([^$\n]+?)(?<!\\)\$/g, (_, tex) => renderMath(tex.trim(), false));
+		.replace(/(?<!\\)\$([^$\n]+?)(?<!\\)\$/g, (_, tex) =>
+			renderMath(tex.trim(), false),
+		);
 }
+
+const frontHeadingPattern =
+	/^(?:摘要|目录|表格和插图清单|表格与插图清单|参考文献|附录|致谢)$/;
+const bodySectionPattern =
+	/^(?:问题重述|问题分析|模型假设|符号说明|数据预处理|模型建立|模型求解|结果分析|模型评价|灵敏度分析|结论与建议)/;
+const numberedHeadingPattern =
+	/^(?:[一二三四五六七八九十]+、|\d+(?:\.\d+)*[.\s、]|第[一二三四五六七八九十\d]+章)/;
 
 const renderer: Partial<RendererObject> = {
 	heading(this: Renderer, token: { depth: number; text: string }) {
 		const tag = `h${Math.min(Math.max(token.depth, 1), 6)}`;
-		return `<${tag}>${marked.parseInline(token.text)}</${tag}>`;
+		const plainText = token.text.replace(/[*_`]/g, "").trim();
+		const classes = [`paper-heading-level-${token.depth}`];
+		if (token.depth === 1 && frontHeadingPattern.test(plainText)) {
+			classes.push("paper-front-heading");
+		} else if (
+			token.depth === 1 &&
+			!bodySectionPattern.test(plainText) &&
+			!numberedHeadingPattern.test(plainText)
+		) {
+			classes.push("paper-document-title");
+		}
+		return `<${tag} class="${classes.join(" ")}">${marked.parseInline(token.text)}</${tag}>`;
 	},
-	table(this: Renderer, token: { header: Array<string | { text: string }>; rows: Array<Array<string | { text: string }>> }) {
-		const cellText = (cell: string | { text: string }) => typeof cell === "string" ? cell : (cell.text ?? "");
-		const rows = token.rows.map((row) => `<tr>${row.map((cell) => `<td>${marked.parseInline(renderInlineAndDisplayMath(cellText(cell)))}</td>`).join("")}</tr>`).join("");
-		const head = token.header.map((cell) => `<th>${marked.parseInline(renderInlineAndDisplayMath(cellText(cell)))}</th>`).join("");
+	table(
+		this: Renderer,
+		token: {
+			header: Array<string | { text: string }>;
+			rows: Array<Array<string | { text: string }>>;
+		},
+	) {
+		const cellText = (cell: string | { text: string }) =>
+			typeof cell === "string" ? cell : (cell.text ?? "");
+		const rows = token.rows
+			.map(
+				(row) =>
+					`<tr>${row.map((cell) => `<td>${marked.parseInline(renderInlineAndDisplayMath(cellText(cell)))}</td>`).join("")}</tr>`,
+			)
+			.join("");
+		const head = token.header
+			.map(
+				(cell) =>
+					`<th>${marked.parseInline(renderInlineAndDisplayMath(cellText(cell)))}</th>`,
+			)
+			.join("");
 		return `<div class="markdown-table-wrapper">
 			<table class="markdown-table">
 				<thead><tr>${head}</tr></thead>
@@ -176,7 +299,7 @@ const renderer: Partial<RendererObject> = {
 
 		if (isTableCaptionText(text)) {
 			const caption = escapeHtml(stripStrong(text));
-			return `<p class="markdown-table-caption" style="margin:0.75rem 0 0.35rem;text-align:center;font-size:0.95rem;font-weight:400;">${caption}</p>`;
+			return `<p class="markdown-table-caption">${caption}</p>`;
 		}
 
 		const imagePattern = /!\[(.*?)\]\((.*?)\)/g;
@@ -195,9 +318,11 @@ const renderer: Partial<RendererObject> = {
 			const caption = visibleImageCaption(rawAlt, src);
 			const safeAlt = escapeHtml(caption || rawAlt || "图片");
 			const safeSrc = escapeHtml(src);
-			const captionHtml = caption ? `<figcaption style="margin-top:0.5rem;text-align:center;font-size:0.95rem;font-weight:400;">${escapeHtml(caption)}</figcaption>` : "";
+			const captionHtml = caption
+				? `<figcaption>${escapeHtml(caption)}</figcaption>`
+				: "";
 			return `
-				<figure class="markdown-figure" style="margin:1.25rem 0;text-align:center;">
+				<figure class="markdown-figure">
 					<span class="markdown-image-wrapper" style="position:relative;display:inline-block;max-width:100%;">
 						<img src="${safeSrc}" alt="${safeAlt}" class="max-w-full h-auto" style="display:block;" />
 						<button type="button" class="markdown-image-zoom-btn" aria-label="放大预览图片" data-src="${safeSrc}" data-alt="${safeAlt}" style="position:absolute;left:10px;bottom:10px;opacity:0;pointer-events:none;width:32px;height:32px;border:none;border-radius:999px;background:rgba(0,0,0,0.62);color:#fff;cursor:pointer;transition:opacity 0.2s ease;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,0.22);">⌕</button>
@@ -217,9 +342,13 @@ const registerMarkdownImageHoverBehavior = () => {
 	imagePreviewListenerRegistered = true;
 	document.addEventListener("mouseover", (event) => {
 		const target = event.target as HTMLElement | null;
-		const wrapper = target?.closest?.(".markdown-image-wrapper") as HTMLElement | null;
+		const wrapper = target?.closest?.(
+			".markdown-image-wrapper",
+		) as HTMLElement | null;
 		if (!wrapper) return;
-		const btn = wrapper.querySelector(".markdown-image-zoom-btn") as HTMLElement | null;
+		const btn = wrapper.querySelector(
+			".markdown-image-zoom-btn",
+		) as HTMLElement | null;
 		if (btn) {
 			btn.style.opacity = "1";
 			btn.style.pointerEvents = "auto";
@@ -227,11 +356,15 @@ const registerMarkdownImageHoverBehavior = () => {
 	});
 	document.addEventListener("mouseout", (event) => {
 		const target = event.target as HTMLElement | null;
-		const wrapper = target?.closest?.(".markdown-image-wrapper") as HTMLElement | null;
+		const wrapper = target?.closest?.(
+			".markdown-image-wrapper",
+		) as HTMLElement | null;
 		if (!wrapper) return;
 		const related = event.relatedTarget as HTMLElement | null;
 		if (related && wrapper.contains(related)) return;
-		const btn = wrapper.querySelector(".markdown-image-zoom-btn") as HTMLElement | null;
+		const btn = wrapper.querySelector(
+			".markdown-image-zoom-btn",
+		) as HTMLElement | null;
 		if (btn) {
 			btn.style.opacity = "0";
 			btn.style.pointerEvents = "none";
@@ -239,7 +372,9 @@ const registerMarkdownImageHoverBehavior = () => {
 	});
 	document.addEventListener("click", (event) => {
 		const target = event.target as HTMLElement | null;
-		const btn = target?.closest?.(".markdown-image-zoom-btn") as HTMLButtonElement | null;
+		const btn = target?.closest?.(
+			".markdown-image-zoom-btn",
+		) as HTMLButtonElement | null;
 		if (!btn) return;
 		event.preventDefault();
 		event.stopPropagation();
@@ -250,18 +385,78 @@ const registerMarkdownImageHoverBehavior = () => {
 };
 
 function cleanDuplicateRawMath(markdown: string) {
-	return markdown
-		// If the model wrote the same display formula twice in two delimiter styles, keep one copy.
-		.replace(/\$\$([\s\S]*?)\$\$\s*\\\[\s*\1\s*\\\]/g, "$$$$$1$$$$")
-		.replace(/\\\[([\s\S]*?)\\\]\s*\$\$\s*\1\s*\$\$/g, "\\[$1\\]")
-		// Remove a pure raw-LaTeX line immediately after a display formula. This line is usually residue from LLM output.
-		.replace(/(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\])\s*\n\s*([A-Za-z_\\][^\n\u4e00-\u9fff]{8,})\s*(?=\n|$)/g, "$1\n");
+	return (
+		markdown
+			// If the model wrote the same display formula twice in two delimiter styles, keep one copy.
+			.replace(/\$\$([\s\S]*?)\$\$\s*\\\[\s*\1\s*\\\]/g, "$$$$$1$$$$")
+			.replace(/\\\[([\s\S]*?)\\\]\s*\$\$\s*\1\s*\$\$/g, "\\[$1\\]")
+			// Remove a pure raw-LaTeX line immediately after a display formula. This line is usually residue from LLM output.
+			.replace(
+				/(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\])\s*\n\s*([A-Za-z_\\][^\n\u4e00-\u9fff]{8,})\s*(?=\n|$)/g,
+				"$1\n",
+			)
+	);
 }
 
 function normalizeMathDelimiters(markdown: string) {
 	return markdown
-		.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, (_, tex) => `\n$$\n${String(tex).trim()}\n$$\n`)
+		.replace(
+			/\\\[\s*([\s\S]*?)\s*\\\]/g,
+			(_, tex) => `\n$$\n${String(tex).trim()}\n$$\n`,
+		)
 		.replace(/\\\(([^\n]+?)\\\)/g, (_, tex) => `$${String(tex).trim()}$`);
+}
+
+/**
+ * 为网页预览生成与 DOCX/PDF 一致的公式、插图和显式表题连续编号。
+ */
+export function normalizePaperNumbering(markdown: string) {
+	let equationIndex = 0;
+	let figureIndex = 0;
+	let tableIndex = 0;
+	const fencedCodePattern = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/g;
+	const imagePattern = new RegExp(
+		`!\\[([^\\]]*)\\]\\(([^)]*\\.(?:${IMAGE_EXTENSION_RE_FRAGMENT})(?:[?#][^)]*)?)\\)`,
+		"gi",
+	);
+
+	return markdown
+		.split(fencedCodePattern)
+		.map((segment) => {
+			if (/^(?:```|~~~)/.test(segment)) return segment;
+
+			let output = segment.replace(/\$\$([\s\S]*?)\$\$/g, (match, rawBody) => {
+				const body = String(rawBody).trim();
+				if (!body || /\\begin\{align\*?\}/.test(body)) return match;
+				equationIndex += 1;
+				const withoutOldNumber = body
+					.replace(/\\tag\{[^{}]*\}\s*$/, "")
+					.replace(/(?:\\q?quad\s*)?[（(]\s*\d+\s*[）)]\s*$/, "")
+					.trimEnd();
+				return `$$\n${withoutOldNumber}\n\\tag{${equationIndex}}\n$$`;
+			});
+
+			output = output.replace(imagePattern, (_, rawAlt, src) => {
+				figureIndex += 1;
+				const stripped = String(rawAlt)
+					.replace(/^\s*图\s*(?:\d+(?:\.\d+)?)?[\s　:：、.-]*/, "")
+					.trim();
+				const caption =
+					stripped && !looksLikeFilename(stripped)
+						? stripped
+						: chineseCaptionFromSrc(src);
+				return `![图 ${figureIndex}  ${caption}](${src})`;
+			});
+
+			return output.replace(
+				/^(\s*(?:\*\*)?)表\s*(?:\d+(?:\.\d+)?)?[\s　:：、.-]+(.+?)((?:\*\*)?\s*)$/gm,
+				(_, prefix, caption, suffix) => {
+					tableIndex += 1;
+					return `${prefix}表 ${tableIndex}  ${String(caption).trim()}${suffix}`;
+				},
+			);
+		})
+		.join("");
 }
 
 function cleanDeletionMarkup(markdown: string) {
@@ -271,10 +466,19 @@ function cleanDeletionMarkup(markdown: string) {
 		.replace(/~~([^~\n][\s\S]*?[^~\n])~~/g, "$1");
 }
 
-export const renderMarkdown = async (content: string, options: Record<string, unknown> & { taskId?: string; imageVersion?: string | number } = {}) => {
+export const renderMarkdown = async (
+	content: string,
+	options: Record<string, unknown> & {
+		taskId?: string;
+		imageVersion?: string | number;
+	} = {},
+) => {
 	const { taskId, imageVersion, ...markedOptions } = options;
-	const cleaned = cleanDuplicateRawMath(normalizeMathDelimiters(cleanDeletionMarkup(content)));
-	const normalized = normalizeMarkdownImageUrls(cleaned, taskId, imageVersion);
+	const cleaned = cleanDuplicateRawMath(
+		normalizeMathDelimiters(cleanDeletionMarkup(content)),
+	);
+	const numbered = normalizePaperNumbering(cleaned);
+	const normalized = normalizeMarkdownImageUrls(numbered, taskId, imageVersion);
 	registerMarkdownImageHoverBehavior();
 	return marked.parse(normalized, { ...defaultOptions, ...markedOptions });
 };

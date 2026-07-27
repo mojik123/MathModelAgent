@@ -208,7 +208,7 @@ def _canonical_heading(title: str) -> tuple[str | None, str]:
     if compact == "摘要":
         return "abstract", "# 摘要"
     if compact == "目录":
-        return "toc", "## 目录"
+        return "toc", "# 目录"
     if compact == "参考文献":
         return "refs", "# 参考文献"
 

@@ -135,6 +135,9 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:
-        await pubsub.unsubscribe(f"task:{safe_task_id}:messages")
+        try:
+            await pubsub.unsubscribe(f"task:{safe_task_id}:messages")
+        finally:
+            await pubsub.aclose()
         ws_manager.disconnect(websocket)
         logger.info(f"WebSocket connection closed for task: {safe_task_id}")

@@ -15,7 +15,7 @@ from app.schemas.response import (
     SystemMessage,
 )
 from app.utils.image_code_index import extract_saved_images, update_image_code_index
-from app.utils.image_constants import is_image_file, validate_image_filename
+from app.utils.image_constants import validate_image_filename
 
 
 class LocalCodeInterpreter(BaseCodeInterpreter):
@@ -194,8 +194,11 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
             current_section = self.notebook_serializer.current_segmentation
             if current_section:
                 self.append_section_code(current_section, code)
-                # 非图片代码：保存为 5.1_step_01.py 等顺序编号文件
-                if not has_images:
+                # notebook 与章节 code.py 已保留完整轨迹；逐步脚本仅供显式调试。
+                if (
+                    not has_images
+                    and getattr(settings, "SAVE_STEP_CODE_FILES", False)
+                ):
                     self.save_non_image_code(code)
 
         await self._push_to_websocket(content_to_display)

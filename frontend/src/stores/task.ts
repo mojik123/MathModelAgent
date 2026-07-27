@@ -245,11 +245,19 @@ export const useTaskStore = defineStore("task", () => {
 	function applyTerminalSystemMessage(taskId: string, message: Message) {
 		const status = terminalStatusFromSystemMessage(message);
 		if (!status) return;
+		const previousState =
+			taskRuntimeState.value?.task_id === taskId
+				? taskRuntimeState.value
+				: null;
 		taskRuntimeState.value = {
 			task_id: taskId,
 			status,
 			message: message.content ?? "",
-			current_step: taskRuntimeState.value?.current_step ?? "",
+			current_step: previousState?.current_step ?? "",
+			progress:
+				previousState?.progress ?? currentProgress.value?.percentage ?? null,
+			started_at: previousState?.started_at,
+			finished_at: message.created_at,
 			updated_at: message.created_at,
 			active: false,
 		};
@@ -368,14 +376,13 @@ export const useTaskStore = defineStore("task", () => {
 	}
 
 	function getAgentStreamKey(msg: AgentMessage): string {
-		const m = msg as any;
 		return (
-			m.agent_instance_id ??
+			msg.agent_instance_id ??
 			[
-				m.agent_type,
-				m.question_index ?? "",
-				m.race_index ?? "",
-				m.agent_index ?? "",
+				msg.agent_type,
+				msg.question_index ?? "",
+				msg.race_index ?? "",
+				msg.agent_index ?? "",
 			].join(":")
 		);
 	}

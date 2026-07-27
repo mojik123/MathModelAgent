@@ -4,10 +4,12 @@ from app.models.user_output import UserOutput
 from app.tools.base_interpreter import BaseCodeInterpreter
 from app.core.agents.modeler_agent import ModelerToCoder
 from app.core.section_contracts import SECTION_CONTRACTS
+from app.utils.paper_evidence_validator import build_writer_evidence_context
 
 
 class Flows:
     """管理数学建模任务的求解流程和写作流程。"""
+
     def __init__(self, questions: dict[str, str | int]):
         self.flows: dict[str, dict] = {}
         self.questions: dict[str, str | int] = questions
@@ -93,7 +95,11 @@ class Flows:
 
         def fill_template(key: str) -> str:
             tpl = config_template.get(key, "")
-            return tpl.replace("{问题}", model_build_solve).replace("{模型的建立与求解}", model_build_solve).replace("{题目}", bg_ques_all)
+            return (
+                tpl.replace("{问题}", model_build_solve)
+                .replace("{模型的建立与求解}", model_build_solve)
+                .replace("{题目}", bg_ques_all)
+            )
 
         def contract_prompt(key: str, base_prompt: str) -> str:
             contract = SECTION_CONTRACTS.get(key)
@@ -131,7 +137,7 @@ class Flows:
 """
 
         symbol_specific_prompt = f"""
-结合模型变量和求解摘要{model_build_solve}，按照模板撰写符号说明：{fill_template('symbol')}
+结合模型变量和求解摘要{model_build_solve}，按照模板撰写符号说明：{fill_template("symbol")}
 
 【符号说明强制要求】
 1. 只生成最重要的 10 个符号，不能超过 10 行。
@@ -156,7 +162,9 @@ class Flows:
             ),
             "analysisQues": contract_prompt(
                 "analysisQues",
-                self._build_analysis_ques_prompt(bg_ques_all, model_build_solve, fill_template('analysisQues')),
+                self._build_analysis_ques_prompt(
+                    bg_ques_all, model_build_solve, fill_template("analysisQues")
+                ),
             ),
             "modelAssumption": contract_prompt(
                 "modelAssumption",
@@ -178,12 +186,15 @@ class Flows:
         config_template: dict,
     ) -> str:
         code_output = code_interpreter.get_code_output(key)
+        evidence_context = build_writer_evidence_context(
+            code_interpreter.work_dir,
+            key,
+        )
         questions_quesx_keys = self.get_questions_quesx_keys()
         bgc = str(self.questions.get("background") or "")
 
         # 获取建模手的方案（在 get_solution_flows 时已保存）
         modeler_solutions = getattr(self, "_modeler_solutions", {})
-        modeler_solution_text = modeler_solutions.get(key, "")
 
         _SUBQUES_SCOPE_CONSTRAINT = """
 
@@ -207,21 +218,19 @@ class Flows:
 
         _WRITING_DEPTH_INSTRUCTION = """
 
-【写作深度与篇幅要求 — 必须严格遵守，违反将被退回重写】
+【写作深度与篇幅要求 — 必须严格遵守】
 
-## 一、字数硬性要求（质量优先，避免冗余）
-- **每个子问题（ques1, ques2, ...）的"模型的建立与求解"部分应在 1000-5000 字之间**（中文正文，不含公式、图片标签、表格）。
-- **下限**：不少于 1000 字，确保充分论述模型逻辑
-- **上限**：不超过 5000 字，避免冗余和重复
-  - 若有多个独立子模型（3+）可适当超过，但总体应控制在 3000-5000 字为主
-  - 删除内容的优先级：冗余背景描述 > 重复解释 > 中间计算步骤细节 > 次要模型假设
+## 一、证据优先的篇幅控制
+- 不设置机械最低字数，以完整说明"目标→变量→模型→求解→结果→验证→结论"为结束条件。
+- 复杂问题可以充分展开，简单问题保持简洁；不得通过重复题意、算法背景或中间日志凑字数。
+- 内容过长时按以下顺序精简：冗余背景描述 > 重复解释 > 次要中间过程 > 与结论无关的图表。
 
-**字数优化建议**（在上限内做质量优化）：
+**内容优化建议**：
 - ✅ 保留：模型核心思想、关键公式推导逻辑、求解方法的主要步骤、关键数值结果、结论分析
 - ❌ 删除：问题重述（那是分析章节的任务）、教科书级别的背景知识、所有中间计算细节、重复解释
 
-- **EDA 章节 600-1500 字，灵敏度分析章节 500-2000 字。**
-- 超过上限时自动精简，保留模型结果和关键发现
+- EDA 只保留会影响模型选择的数据审计和发现；灵敏度分析只扰动会影响最终结论的关键参数。
+- 自动精简时保留模型关系、关键参数、真实结果、验证证据和本问直接答案。
 
 ## 二、图片全覆盖强制规则
 - **代码手产出的每一张图片都必须插入到论文中，0 遗漏。**
@@ -279,6 +288,7 @@ class Flows:
 
 代码手的执行输出：
 {code_output}
+{evidence_context}
 
 按照如下模板撰写：{config_template[qkey]}
 {_SUBQUES_SCOPE_CONSTRAINT}
@@ -288,7 +298,9 @@ class Flows:
         modeler_eda_solution = modeler_solutions.get("eda", "")
         eda_modeler_section = ""
         if modeler_eda_solution:
-            eda_modeler_section = f"\n\n【建模手的 EDA 调研方案】\n{modeler_eda_solution}\n"
+            eda_modeler_section = (
+                f"\n\n【建模手的 EDA 调研方案】\n{modeler_eda_solution}\n"
+            )
 
         modeler_sa_solution = modeler_solutions.get("sensitivity_analysis", "")
         sa_modeler_section = ""
@@ -307,6 +319,7 @@ class Flows:
 
 代码手的执行输出：
 {code_output}
+{evidence_context}
 
 按照如下模板撰写：{config_template["eda"]}
 {_WRITING_DEPTH_INSTRUCTION}
@@ -320,6 +333,7 @@ class Flows:
 
 代码手的执行输出：
 {code_output}
+{evidence_context}
 
 按照如下模板撰写：{config_template["sensitivity_analysis"]}
 {_WRITING_DEPTH_INSTRUCTION}

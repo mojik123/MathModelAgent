@@ -149,7 +149,11 @@ function addStyle() {
 	document.head.appendChild(style);
 }
 
-function setAttrIfChanged(node: HTMLElement, name: string, value: string | null) {
+function setAttrIfChanged(
+	node: HTMLElement,
+	name: string,
+	value: string | null,
+) {
 	if (value === null) {
 		if (node.hasAttribute(name)) node.removeAttribute(name);
 		return;
@@ -162,36 +166,55 @@ function textOf(node: HTMLElement) {
 }
 
 function isLiveModelingProgress(text: string) {
-	return /正在检索文献|正在生成模型方案|正在生成建模方案|生成模型方案/.test(text);
+	return /正在检索文献|正在生成模型方案|正在生成建模方案|生成模型方案/.test(
+		text,
+	);
 }
 
 function isImportantCard(text: string) {
-	return /候选建模方案已生成|等待用户确认|建模方案已确认|问题划分已确认|代码手开始求解|求解完成|写作完成|任务执行失败|错误/.test(text);
+	return /候选建模方案已生成|等待用户确认|建模方案已确认|问题划分已确认|代码手开始求解|求解完成|写作完成|任务执行失败|错误/.test(
+		text,
+	);
 }
 
 function isTerminalCard(text: string) {
-	return /100%|已确认|已完成|完成|成功|失败|错误|任务执行失败|任务已完成|论文终稿完成|论文生成完成/.test(text);
+	return /100%|已确认|已完成|完成|成功|失败|错误|任务执行失败|任务已完成|论文终稿完成|论文生成完成/.test(
+		text,
+	);
 }
 
 function isActiveProgressCard(row: HTMLElement) {
 	const text = textOf(row);
 	if (!text || isTerminalCard(text)) return false;
-	return Boolean(row.querySelector(".animate-spin")) || /正在|开始|进行中|生成中|检索文献/.test(text);
+	return (
+		Boolean(row.querySelector(".animate-spin")) ||
+		/正在|开始|进行中|生成中|检索文献/.test(text)
+	);
 }
 
 function getTimelineScroll(panel: HTMLElement) {
-	return Array.from(panel.querySelectorAll<HTMLElement>("div")).find((node) => {
-		const cls = node.getAttribute("class") || "";
-		return cls.includes("overflow-y-auto") && cls.includes("space-y-4");
-	}) || null;
+	return (
+		panel.querySelector<HTMLElement>("[data-agent-timeline-scroll='true']") ||
+		Array.from(panel.querySelectorAll<HTMLElement>("div")).find((node) => {
+			const cls = node.getAttribute("class") || "";
+			return cls.includes("overflow-y-auto") && cls.includes("space-y-4");
+		}) ||
+		null
+	);
 }
 
 function closestTimelineRow(node: HTMLElement, scroll: HTMLElement) {
 	let current: HTMLElement | null = node;
-	while (current && current.parentElement) {
+	while (current?.parentElement) {
 		const parent = current.parentElement;
 		const cls = current.getAttribute("class") || "";
-		if (parent === scroll && (cls.includes("justify-start") || cls.includes("justify-center") || cls.includes("justify-end"))) return current;
+		if (
+			parent === scroll &&
+			(cls.includes("justify-start") ||
+				cls.includes("justify-center") ||
+				cls.includes("justify-end"))
+		)
+			return current;
 		current = parent;
 	}
 	return null;
@@ -208,18 +231,31 @@ function getTimelineRows(panel: HTMLElement) {
 }
 
 function getMessageCard(row: HTMLElement) {
-	const directCards = Array.from(row.children).flatMap((child) => Array.from(child.querySelectorAll<HTMLElement>("div")));
-	return directCards.find((node) => {
-		const cls = node.getAttribute("class") || "";
-		return cls.includes("rounded-2xl") && cls.includes("shadow-sm") && !cls.includes("choice-attachment");
-	}) || null;
+	const directCards = Array.from(row.children).flatMap((child) =>
+		Array.from(child.querySelectorAll<HTMLElement>("div")),
+	);
+	return (
+		directCards.find((node) => {
+			const cls = node.getAttribute("class") || "";
+			return (
+				cls.includes("rounded-2xl") &&
+				cls.includes("shadow-sm") &&
+				!cls.includes("choice-attachment")
+			);
+		}) || null
+	);
 }
 
 function getAvatar(row: HTMLElement) {
-	return Array.from(row.querySelectorAll<HTMLElement>("div")).find((node) => {
-		const cls = node.getAttribute("class") || "";
-		return cls.includes("h-8") && cls.includes("w-8") && cls.includes("rounded-full");
-	}) || null;
+	return (
+		Array.from(row.querySelectorAll<HTMLElement>("div")).find((node) => {
+			const cls = node.getAttribute("class") || "";
+			const hasAvatarSize =
+				(cls.includes("h-8") && cls.includes("w-8")) ||
+				(cls.includes("h-7") && cls.includes("w-7"));
+			return hasAvatarSize && cls.includes("rounded-full");
+		}) || null
+	);
 }
 
 function agentKind(row: HTMLElement) {
@@ -247,7 +283,11 @@ function hideDuplicateChatFlowOverview(panel: HTMLElement) {
 			text.includes("确认、求解、写作与终稿状态集中显示") &&
 			!parentText.includes("Agent 对话流 当前") &&
 			text.length < 260;
-		setAttrIfChanged(node, "data-chat-duplicate-flow-overview", shouldHide ? "true" : null);
+		setAttrIfChanged(
+			node,
+			"data-chat-duplicate-flow-overview",
+			shouldHide ? "true" : null,
+		);
 	}
 }
 
@@ -272,8 +312,11 @@ function decorateAgentCards(rows: HTMLElement[]) {
 	for (const card of panel.querySelectorAll<HTMLElement>("[data-agent-card]")) {
 		if (!currentCards.has(card)) card.removeAttribute("data-agent-card");
 	}
-	for (const avatar of panel.querySelectorAll<HTMLElement>("[data-agent-avatar]")) {
-		if (!currentAvatars.has(avatar)) avatar.removeAttribute("data-agent-avatar");
+	for (const avatar of panel.querySelectorAll<HTMLElement>(
+		"[data-agent-avatar]",
+	)) {
+		if (!currentAvatars.has(avatar))
+			avatar.removeAttribute("data-agent-avatar");
 	}
 }
 
@@ -284,14 +327,27 @@ function compactLiveProgressRows(rows: HTMLElement[]) {
 	});
 	const latestLive = liveRows.at(-1) || null;
 	for (const row of rows) {
-		const shouldHide = liveRows.length > 1 && liveRows.includes(row) && row !== latestLive;
-		setAttrIfChanged(row, "data-compact-live-progress-hidden", shouldHide ? "true" : null);
+		const shouldHide =
+			liveRows.length > 1 && liveRows.includes(row) && row !== latestLive;
+		setAttrIfChanged(
+			row,
+			"data-compact-live-progress-hidden",
+			shouldHide ? "true" : null,
+		);
 	}
 }
 
 function decorateRunningRows(rows: HTMLElement[]) {
-	const timelineDone = rows.some((row) => /100%|任务已完成|论文终稿完成|论文生成完成|任务处理完成/.test(textOf(row)));
-	const visibleActiveRows = timelineDone ? [] : rows.filter((row) => row.getAttribute("data-compact-live-progress-hidden") !== "true" && isActiveProgressCard(row));
+	const timelineDone = rows.some((row) =>
+		/100%|任务已完成|论文终稿完成|论文生成完成|任务处理完成/.test(textOf(row)),
+	);
+	const visibleActiveRows = timelineDone
+		? []
+		: rows.filter(
+				(row) =>
+					row.getAttribute("data-compact-live-progress-hidden") !== "true" &&
+					isActiveProgressCard(row),
+			);
 	const latestActive = visibleActiveRows.at(-1) || null;
 	const desired = new Map<HTMLElement, "running" | "stale" | "none">();
 	for (const row of rows) {
@@ -301,12 +357,22 @@ function decorateRunningRows(rows: HTMLElement[]) {
 		else desired.set(card, row === latestActive ? "running" : "stale");
 	}
 	for (const [card, state] of desired.entries()) {
-		setAttrIfChanged(card, "data-running-card", state === "running" ? "true" : null);
-		setAttrIfChanged(card, "data-stale-running-card", state === "stale" ? "true" : null);
+		setAttrIfChanged(
+			card,
+			"data-running-card",
+			state === "running" ? "true" : null,
+		);
+		setAttrIfChanged(
+			card,
+			"data-stale-running-card",
+			state === "stale" ? "true" : null,
+		);
 	}
 	const panel = document.querySelector<HTMLElement>(".glass-left-panel");
 	if (!panel) return;
-	for (const card of panel.querySelectorAll<HTMLElement>("[data-running-card], [data-stale-running-card]")) {
+	for (const card of panel.querySelectorAll<HTMLElement>(
+		"[data-running-card], [data-stale-running-card]",
+	)) {
 		if (!desired.has(card)) {
 			card.removeAttribute("data-running-card");
 			card.removeAttribute("data-stale-running-card");
@@ -325,7 +391,12 @@ function compactLiveProgressCards() {
 }
 
 export function installCompactTimelineDomPatch() {
-	if (installed || typeof window === "undefined" || typeof document === "undefined") return;
+	if (
+		installed ||
+		typeof window === "undefined" ||
+		typeof document === "undefined"
+	)
+		return;
 	installed = true;
 	addStyle();
 	setInterval(compactLiveProgressCards, 900);

@@ -17,7 +17,10 @@ import { useToast } from "@/components/ui/toast";
 import { useFilePreview } from "@/composables/useFilePreview";
 import { useTaskStore } from "@/stores/task";
 import { AgentType } from "@/utils/enum";
-import { IMAGE_EXTENSION_RE_FRAGMENT } from "@/utils/imageConstants";
+import {
+	IMAGE_EXTENSION_RE_FRAGMENT,
+	normalizeImageFilename,
+} from "@/utils/imageConstants";
 import { resolveTaskImageUrl } from "@/utils/markdown";
 import type { InterpreterMessage } from "@/utils/response";
 import {
@@ -68,7 +71,11 @@ interface ImageCodeState {
 	loading?: boolean;
 }
 
-const props = defineProps<{ refreshKey?: number }>();
+const props = defineProps<{
+	refreshKey?: number;
+	focusFilename?: string;
+	focusRequest?: number;
+}>();
 const emit = defineEmits<{ "paper-updated": [] }>();
 const route = useRoute();
 const taskStore = useTaskStore();
@@ -95,6 +102,7 @@ const lastRevisionStatus = ref<RevisionState | null>(null);
 const imageCodeStates = ref<Record<string, ImageCodeState>>({});
 const imageRefreshVersion = ref(Date.now());
 let revisionMemoryTimer: ReturnType<typeof setInterval> | null = null;
+let focusReassertTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** 从文件名中提取所属章节目录名（如 5.1_问题1的模型建立与求解），无目录则返回空字符串 */
 function sectionPath(filename: string) {
@@ -120,7 +128,7 @@ const sectionGroups = computed(() => {
 	for (const img of images.value) {
 		const dir = sectionPath(img.filename);
 		if (!groups.has(dir)) groups.set(dir, []);
-		groups.get(dir)!.push(img);
+		groups.get(dir)?.push(img);
 	}
 	const sorted = Array.from(groups.entries()).sort(([a], [b]) =>
 		a.localeCompare(b, "en", { numeric: true }),
@@ -377,9 +385,9 @@ async function loadImages() {
 	try {
 		const [filesRes, paperRes] = await Promise.all([
 			getFiles(taskId.value),
-			getPaper(taskId.value),
+			getPaper(taskId.value).catch(() => null),
 		]);
-		paperContent.value = paperRes.data.content || "";
+		paperContent.value = paperRes?.data.content || paperContent.value || "";
 		const fileImages = (Array.isArray(filesRes.data) ? filesRes.data : [])
 			.map((file) => file.filename)
 			.filter(
@@ -437,14 +445,46 @@ async function loadImages() {
 	}
 }
 
+function refreshImages() {
+	imageRefreshVersion.value = Date.now();
+	void loadImages();
+}
+
+function handleArtifactEditUpdated(event: Event) {
+	const detail = (event as CustomEvent<{ type?: string }>).detail;
+	if (detail?.type === "image") refreshImages();
+}
+
 function scrollToImage(id: string) {
 	activeImageId.value = id;
 	keepActiveImageTocVisible();
-	nextTick(() =>
-		document
-			.getElementById(imageDomId(id))
-			?.scrollIntoView({ behavior: "smooth", block: "start" }),
+	nextTick(() => {
+		const container = imageScrollHost.value;
+		const target = document.getElementById(imageDomId(id));
+		if (!container || !target) return;
+		container.scrollTo({
+			top: Math.max(0, target.offsetTop - container.clientHeight * 0.2),
+			behavior: "smooth",
+		});
+	});
+}
+
+function focusRequestedImage() {
+	const requested = props.focusFilename?.trim();
+	if (!requested || !images.value.length) return;
+	const requestedBase = normalizeImageFilename(requested);
+	const matched = images.value.find(
+		(image) =>
+			image.filename === requested ||
+			normalizeImageFilename(image.filename) === requestedBase,
 	);
+	if (!matched) return;
+	scrollToImage(matched.filename);
+	if (focusReassertTimer) clearTimeout(focusReassertTimer);
+	focusReassertTimer = setTimeout(() => {
+		activeImageId.value = matched.filename;
+		keepActiveImageTocVisible();
+	}, 500);
 }
 
 function keepActiveImageTocVisible() {
@@ -473,7 +513,11 @@ function updateActiveImage() {
 	for (const card of cards) {
 		if (card.offsetTop <= top) current = card.id;
 	}
-	activeImageId.value = current.replace(/-/g, "/");
+	activeImageId.value =
+		images.value.find((image) => imageDomId(image.filename) === current)
+			?.filename ??
+		images.value[0]?.filename ??
+		"";
 }
 
 function bindImageScroll() {
@@ -662,6 +706,7 @@ onMounted(() => {
 	restoreRevisionMemory();
 	void loadImages();
 	bindImageScroll();
+	window.addEventListener("artifact-edit-updated", handleArtifactEditUpdated);
 	revisionMemoryTimer = setInterval(() => {
 		if (hasRunningRevision()) restoreRevisionMemory();
 	}, 1000);
@@ -669,11 +714,16 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
 	imageScrollHost.value?.removeEventListener("scroll", updateActiveImage);
+	window.removeEventListener(
+		"artifact-edit-updated",
+		handleArtifactEditUpdated,
+	);
 	dialogOpen.value = false;
 	if (revisionMemoryTimer) {
 		clearInterval(revisionMemoryTimer);
 		revisionMemoryTimer = null;
 	}
+	if (focusReassertTimer) clearTimeout(focusReassertTimer);
 	persistRevisionMemory();
 });
 
@@ -682,6 +732,14 @@ watch(
 	() => {
 		void loadImages();
 	},
+);
+
+watch(
+	[() => props.focusRequest, () => images.value.length],
+	() => {
+		nextTick(focusRequestedImage);
+	},
+	{ flush: "post" },
 );
 
 watch(
@@ -741,7 +799,7 @@ watch(
           <h2 class="text-base font-semibold text-gray-900">图片结果</h2>
           <span class="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{{ images.length }} 张</span>
         </div>
-        <Button variant="ghost" size="sm" :disabled="loading" @click="loadImages"><RefreshCw class="mr-1 h-4 w-4" :class="{ 'animate-spin': loading }" />刷新</Button>
+        <Button variant="ghost" size="sm" :disabled="loading" @click="refreshImages"><RefreshCw class="mr-1 h-4 w-4" :class="{ 'animate-spin': loading }" />刷新</Button>
       </div>
 
       <div ref="imageScrollHost" class="image-content-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden">

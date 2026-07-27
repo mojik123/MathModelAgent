@@ -7,12 +7,14 @@ from pathlib import Path
 
 from app.utils.image_constants import is_image_file, validate_image_filename
 from app.utils.image_code_index import load_image_code_index
+from app.utils.paper_evidence_validator import inspect_code_evidence
 
 
 @dataclass
 class ArtifactCheckResult:
     passed: bool
     issues: list[str]
+    blocking_issues: list[str]
     images: list[str]
     code_files: list[str]
 
@@ -40,14 +42,23 @@ def check_section_artifacts(
         ``ArtifactCheckResult``，``passed=True`` 表示所有检查通过。
     """
     issues: list[str] = []
+    blocking_issues: list[str] = []
     images: list[str] = []
     code_files: list[str] = []
 
     section_path = Path(work_dir) / section_dir
 
     if not section_path.exists():
-        issues.append(f"章节目录不存在：{section_dir}")
-        return ArtifactCheckResult(False, issues, images, code_files)
+        issue = f"章节目录不存在：{section_dir}"
+        issues.append(issue)
+        blocking_issues.append(issue)
+        return ArtifactCheckResult(
+            False,
+            issues,
+            blocking_issues,
+            images,
+            code_files,
+        )
 
     # 检查图片
     for img in created_images or []:
@@ -55,10 +66,14 @@ def check_section_artifacts(
         if not img_path.exists():
             img_path = section_path / Path(img).name
         if not img_path.exists():
-            issues.append(f"图片文件不存在：{img}")
+            issue = f"图片文件不存在：{img}"
+            issues.append(issue)
+            blocking_issues.append(issue)
             continue
         if not is_image_file(img_path.name):
-            issues.append(f"不是支持的图片文件：{img_path.name}")
+            issue = f"不是支持的图片文件：{img_path.name}"
+            issues.append(issue)
+            blocking_issues.append(issue)
             continue
         ok, reason = validate_image_filename(img_path.name)
         if not ok:
@@ -66,7 +81,9 @@ def check_section_artifacts(
         images.append(str(img_path.relative_to(work_dir)).replace("\\", "/"))
 
     if require_image and not images:
-        issues.append("本问未生成有效图片")
+        issue = "本问未生成有效图片"
+        issues.append(issue)
+        blocking_issues.append(issue)
 
     # 检查代码文件（按 artifact_tag 严格过滤，避免主力残留"骗过"备用检查）
     if artifact_tag:
@@ -76,18 +93,48 @@ def check_section_artifacts(
         expected_code_name = "code.py"
         expected_step_pat = "_step_"
 
+    # 图片同名 .py 是解释器为当前图片保存的精确代码证据。它由本次
+    # ``created_images`` 反向限定，因此既能恢复已成功的旧任务，也不会让
+    # 其他 Coder 尝试遗留的脚本误通过当前尝试的检查。
+    paired_code_names = {
+        Path(image).with_suffix(".py").name for image in created_images or []
+    }
+
     for path in section_path.glob("*.py"):
         name = path.name
         if artifact_tag:
-            if name == expected_code_name or expected_step_pat in name:
+            if (
+                name == expected_code_name
+                or expected_step_pat in name
+                or name in paired_code_names
+            ):
                 code_files.append(str(path.relative_to(work_dir)).replace("\\", "/"))
         else:
-            if name == expected_code_name or (expected_step_pat in name and "_b" not in name and "_r" not in name):
+            is_main_step = (
+                expected_step_pat in name and "_b" not in name and "_r" not in name
+            )
+            if (
+                name == expected_code_name
+                or is_main_step
+                or name in paired_code_names
+            ):
                 code_files.append(str(path.relative_to(work_dir)).replace("\\", "/"))
 
     if not code_files:
         target = f"artifact_tag={artifact_tag or 'main'}"
-        issues.append(f"章节目录内没有保存当前尝试的代码文件：{section_dir} ({target})")
+        issue = f"章节目录内没有保存当前尝试的代码文件：{section_dir} ({target})"
+        issues.append(issue)
+        blocking_issues.append(issue)
+    else:
+        code = "\n\n".join(
+            (Path(work_dir) / path).read_text(encoding="utf-8", errors="ignore")
+            for path in code_files
+        )
+        evidence = inspect_code_evidence(code)
+        for evidence_issue in evidence["issues"]:
+            issue = f"代码证据不合格：{evidence_issue}"
+            issues.append(issue)
+            blocking_issues.append(issue)
 
     # 检查图片是否写入 .image_code_index.json
     index = load_image_code_index(work_dir)
@@ -101,6 +148,7 @@ def check_section_artifacts(
     return ArtifactCheckResult(
         passed=len(issues) == 0,
         issues=issues,
+        blocking_issues=blocking_issues,
         images=images,
         code_files=code_files,
     )

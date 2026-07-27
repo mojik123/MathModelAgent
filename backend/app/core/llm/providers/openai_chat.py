@@ -149,7 +149,6 @@ class OpenAIChatProvider(BaseProvider):
                     arguments=entry["arguments"],
                 ))
 
-        full_content = "".join(content_parts)
         full_reasoning = "".join(reasoning_parts)
         yield StreamChunk(
             delta="",

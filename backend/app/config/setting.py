@@ -59,13 +59,20 @@ class Settings(BaseSettings):
     # 0 means run all question groups in parallel; set >0 to cap concurrency.
     QUESTION_PARALLELISM: int = 0
 
+    # LLM 调用与上下文控制
+    LLM_MAX_RETRIES: int = 3
+    STREAM_PUBLISH_INTERVAL: float = 0.4
+    AGENT_MEMORY_TOKEN_BUDGET: int = 80000
+
     # Coder 执行配置
     CODE_EXECUTION_TIMEOUT: int = 300
-    CODER_MAX_RETRIES: int | None = None
+    CODER_MAX_RETRIES: int | None = 6
+    CODER_MAX_TOTAL_ERRORS: int = 8
     CODER_MAX_SAME_ERROR: int = 3
-    CODER_ATTEMPT_TIMEOUT: int = 0
-    CODER_MAX_TOTAL_STEPS: int = 0
+    CODER_ATTEMPT_TIMEOUT: int = 2700
+    CODER_MAX_TOTAL_STEPS: int = 30
     CODER_REPEAT_ERROR_JUDGE_ENABLED: bool = True
+    SAVE_STEP_CODE_FILES: bool = False
 
     # 速度与阻塞控制
     IMAGE_DESCRIPTION_ENABLED: bool = False
@@ -73,8 +80,10 @@ class Settings(BaseSettings):
     WRITER_IMAGE_REPAIR_ENABLED: bool = True
 
     # 流程阶段控制
-    QUESTION_GROUP_TIMEOUT: int = 0
-    WRITER_ATTEMPT_TIMEOUT: int | None = None
+    QUESTION_GROUP_TIMEOUT: int = 3600
+    WRITER_ATTEMPT_TIMEOUT: int | None = 1800
+    # 整体任务默认不做墙钟超时；大题由 checkpoint、取消按钮和阶段级保护控制。
+    TASK_EXECUTION_TIMEOUT: int = 0
 
     # 产物检查分级
     ARTIFACT_STRICT_FATAL: bool = False
@@ -112,24 +121,6 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="allow",
     )
-
-    def model_post_init(self, __context) -> None:
-        """归一化 Coder 流程控制配置。
-
-        目标：本地 .env.dev 里如果还保留旧值，也不会覆盖当前流程策略。
-        具体策略：
-        - Coder 不按累计步数停止；
-        - Coder 不按累计重试次数停止；
-        - Coder attempt 不按总时长停止；
-        - 子问题组不按总时长停止；
-        - 只保留单段代码执行超时和重复错误判别。
-        """
-        self.CODER_MAX_TOTAL_STEPS = 0
-        self.CODER_MAX_RETRIES = None
-        self.MAX_RETRIES = None
-        self.CODER_ATTEMPT_TIMEOUT = 0
-        self.QUESTION_GROUP_TIMEOUT = 0
-        self.CODER_REPEAT_ERROR_JUDGE_ENABLED = True
 
     @classmethod
     def from_env(cls, env: str | None = None):

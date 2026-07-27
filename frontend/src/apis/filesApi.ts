@@ -131,7 +131,7 @@ export function reviseImageChat(
 			description,
 			conversation_history,
 		},
-		{ timeout: 600000 },
+		{ timeout: 1_200_000 },
 	);
 }
 

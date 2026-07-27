@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import tomllib
 import subprocess
+import tempfile
 from pathlib import Path
 from app.schemas.enums import CompTemplate
 from app.utils.log_util import logger
@@ -13,6 +14,11 @@ import re
 import pypandoc  # type: ignore[import-unresolved]
 from app.config.setting import settings
 from app.utils.image_constants import IMAGE_EXTENSION_RE_FRAGMENT, is_image_file
+from app.utils.paper_formatting import (
+    create_reference_docx,
+    format_exported_docx,
+    normalize_paper_numbering,
+)
 
 TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -71,7 +77,10 @@ def create_work_dir(task_id: str) -> str:
 # 字体源目录（backend/fonts/）
 _FONTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "fonts")
 _CONFIG_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "config"))
-_CUMCM_PANDOC_TEMPLATE = os.path.join(_CONFIG_DIR, "cumcm_pandoc_template.tex")
+_STATISTICAL_PANDOC_TEMPLATE = os.path.join(
+    _CONFIG_DIR,
+    "statistical_modeling_pandoc_template.tex",
+)
 _CUMCM_CLASS_FILENAME = "cumcmthesis.cls"
 _CUMCM_CLASS_CANDIDATES = [
     Path("/third_party/CUMCMThesis") / _CUMCM_CLASS_FILENAME,
@@ -350,7 +359,7 @@ def transform_link(task_id: str, content: str):
     return content
 
 
-def md_2_docx(task_id: str):
+def md_2_docx(task_id: str) -> str:
     """将 Markdown 论文转换为 DOCX 格式。
 
     Args:
@@ -360,22 +369,35 @@ def md_2_docx(task_id: str):
     md_path = os.path.join(work_dir, "res.md")
     docx_path = os.path.join(work_dir, "res.docx")
 
-    extra_args = [
-        "--resource-path",
-        str(work_dir),
-        "--mathml",  # MathML 格式公式
-        "--standalone",
-    ]
-
-    pypandoc.convert_file(
-        source_file=md_path,
-        to="docx",
-        outputfile=docx_path,
-        format="markdown+tex_math_dollars",
-        extra_args=extra_args,
+    title = _extract_markdown_title(md_path)
+    pandoc_md_path = _write_statistical_markdown_source(
+        md_path,
+        work_dir,
+        include_equation_tags=False,
     )
+    with tempfile.TemporaryDirectory(prefix="paper-docx-", dir=work_dir) as temp_dir:
+        reference_docx = create_reference_docx(
+            os.path.join(temp_dir, "reference.docx")
+        )
+        extra_args = [
+            "--resource-path",
+            str(work_dir),
+            "--standalone",
+            f"--reference-doc={reference_docx}",
+            "--metadata",
+            f"title={title}",
+        ]
+        pypandoc.convert_file(
+            source_file=pandoc_md_path,
+            to="docx",
+            outputfile=docx_path,
+            format="markdown+tex_math_dollars+tex_math_single_backslash",
+            extra_args=extra_args,
+        )
+    format_exported_docx(docx_path)
     print(f"转换完成: {docx_path}")
     logger.info(f"转换完成: {docx_path}")
+    return docx_path
 
 
 def md_2_tex(task_id: str) -> str:
@@ -392,14 +414,18 @@ def md_2_tex(task_id: str) -> str:
     md_path = os.path.join(work_dir, "res.md")
     tex_path = os.path.join(work_dir, "res.tex")
     title = _extract_markdown_title(md_path)
-    pandoc_md_path = _write_cumcm_markdown_source(md_path, work_dir)
+    pandoc_md_path = _write_statistical_markdown_source(
+        md_path,
+        work_dir,
+        latex_front_matter=True,
+    )
 
     extra_args = [
         "--resource-path",
         str(work_dir),
         "--standalone",
         "--wrap=none",
-        f"--template={_CUMCM_PANDOC_TEMPLATE}",
+        f"--template={_STATISTICAL_PANDOC_TEMPLATE}",
         "--metadata",
         f"title={title}",
     ]
@@ -408,7 +434,7 @@ def md_2_tex(task_id: str) -> str:
         source_file=pandoc_md_path,
         to="latex",
         outputfile=tex_path,
-        format="markdown+tex_math_dollars+tex_math_single_backslash",
+        format="markdown+raw_tex+tex_math_dollars+tex_math_single_backslash",
         extra_args=extra_args,
     )
     print(f"转换完成: {tex_path}")
@@ -416,9 +442,15 @@ def md_2_tex(task_id: str) -> str:
     return tex_path
 
 
-def _write_cumcm_markdown_source(md_path: str, work_dir: str) -> str:
-    """Create a Pandoc source file without a duplicated first level-1 title."""
-    source_path = os.path.join(work_dir, "res_cumcm_source.md")
+def _write_statistical_markdown_source(
+    md_path: str,
+    work_dir: str,
+    *,
+    include_equation_tags: bool = True,
+    latex_front_matter: bool = False,
+) -> str:
+    """Create a normalized Pandoc source without a duplicated first title."""
+    source_path = os.path.join(work_dir, "res_export_source.md")
     try:
         with open(md_path, "r", encoding="utf-8") as f:
             source_text = f.read()
@@ -430,6 +462,14 @@ def _write_cumcm_markdown_source(md_path: str, work_dir: str) -> str:
         except Exception as exc:
             logger.warning(f"清洗 CUMCM Markdown 中间文件失败: {exc}")
 
+        source_text = normalize_markdown_image_paths(source_text, work_dir)
+        source_text = normalize_paper_numbering(
+            source_text,
+            include_equation_tags=include_equation_tags,
+            explicit_caption_numbers=False,
+        )
+        if latex_front_matter:
+            source_text = _replace_markdown_front_matter_for_latex(source_text)
         lines = source_text.splitlines(keepends=True)
 
         output_lines: list[str] = []
@@ -447,6 +487,59 @@ def _write_cumcm_markdown_source(md_path: str, work_dir: str) -> str:
     except Exception as e:
         logger.warning(f"生成 CUMCM Markdown 中间文件失败: {e}")
         return md_path
+
+
+def _replace_markdown_front_matter_for_latex(markdown: str) -> str:
+    """用模板命令替换摘要与静态目录，生成真实 LaTeX 目录页。
+
+    Args:
+        markdown: 已清洗的论文 Markdown。
+
+    Returns:
+        包含 ``\\paperabstractheading`` 与 ``\\papermaintoc`` 的 Markdown。
+    """
+    lines = markdown.splitlines()
+    output: list[str] = []
+    index = 0
+    heading_re = re.compile(r"^(?P<marks>#{1,6})\s+(?P<title>.+?)\s*$")
+
+    while index < len(lines):
+        line = lines[index]
+        match = heading_re.match(line.strip())
+        if not match:
+            output.append(line)
+            index += 1
+            continue
+
+        compact_title = re.sub(
+            r"[\s　*_`]+",
+            "",
+            re.sub(r"\{[^{}]*\}\s*$", "", match.group("title")),
+        )
+        if compact_title == "摘要":
+            output.append(r"\paperabstractheading")
+            index += 1
+            continue
+        if compact_title != "目录":
+            output.append(line)
+            index += 1
+            continue
+
+        toc_level = len(match.group("marks"))
+        output.append(r"\papermaintoc")
+        index += 1
+        while index < len(lines):
+            next_match = heading_re.match(lines[index].strip())
+            if next_match and len(next_match.group("marks")) <= toc_level:
+                break
+            index += 1
+
+    return "\n".join(output).rstrip() + "\n"
+
+
+def _write_cumcm_markdown_source(md_path: str, work_dir: str) -> str:
+    """Backward-compatible alias for the statistical export source builder."""
+    return _write_statistical_markdown_source(md_path, work_dir)
 
 
 def _extract_markdown_title(md_path: str) -> str:
@@ -548,8 +641,12 @@ def split_footnotes(text: str) -> tuple[str, list[tuple[str, str]]]:
     main_text = re.sub(
         r"\n\[\^\d+\]:.*?(?=\n\[\^|\n\n|\Z)", "", text, flags=re.DOTALL
     ).strip()
+    main_text = re.sub(r"\[\^\d+\]", "", main_text)
 
     # 匹配脚注定义
     footnotes = re.findall(r"\[\^(\d+)\]:\s*(.+?)(?=\n\[\^|\n\n|\Z)", text, re.DOTALL)
-    logger.info(f"main_text:{main_text} \n footnotes:{footnotes}")
+    logger.debug(
+        f"脚注解析完成: text_len={len(text)}, "
+        f"main_text_len={len(main_text)}, footnotes={len(footnotes)}"
+    )
     return main_text, footnotes

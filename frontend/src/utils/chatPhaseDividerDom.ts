@@ -10,20 +10,34 @@ const PHASES = [
 	{
 		key: "planning",
 		label: "问题拆解与建模思路讨论",
-		complete: (text: string) => /建模方案已确认|已确认建模方案|开始进入代码求解|代码手开始求解|子问题组#\d+.*启动/.test(text),
-		match: (text: string) => /问题划分|问题确认|建模方案|建模确认|建模思路|候选建模|ModelerAgent|CoordinatorAgent|问题划分附件|建模方案附件|已确认问题划分|已确认建模方案/.test(text),
+		complete: (text: string) =>
+			/建模方案已确认|已确认建模方案|开始进入代码求解|代码手开始求解|子问题组#\d+.*启动/.test(
+				text,
+			),
+		match: (text: string) =>
+			/问题划分|问题确认|建模方案|建模确认|建模思路|候选建模|ModelerAgent|CoordinatorAgent|问题划分附件|建模方案附件|已确认问题划分|已确认建模方案/.test(
+				text,
+			),
 	},
 	{
 		key: "solving",
 		label: "问题求解",
-		complete: (text: string) => /论文手开始写|并行写作启动|开始终稿整体检查|论文手完成|论文生成完成/.test(text),
-		match: (text: string) => /子问题组|代码求解|CoderAgent|SubCoordinatorAgent|开始求解|求解完成|改错|后台判别|备用\s*Coder|重写中/.test(text),
+		complete: (text: string) =>
+			/并行写作启动|开始终稿整体检查|论文生成完成|任务处理完成/.test(text),
+		match: (text: string) =>
+			/子问题组|代码求解|CoderAgent|SubCoordinatorAgent|开始求解|求解完成|改错|后台判别|备用\s*Coder|重写中/.test(
+				text,
+			),
 	},
 	{
 		key: "writing",
 		label: "论文写作",
-		complete: (text: string) => /论文手完成|完成终稿整体检查|论文生成完成|任务处理完成/.test(text),
-		match: (text: string) => /并行写作|论文手开始写|论文手完成|WriterAgent|论文写作|章节写作|写作完成/.test(text) && !/终稿整体检查|论文终稿完成/.test(text),
+		complete: (text: string) =>
+			/开始终稿整体检查|完成终稿整体检查|论文生成完成|任务处理完成/.test(text),
+		match: (text: string) =>
+			/并行写作|论文手开始写|论文手完成|WriterAgent|论文写作|章节写作|写作完成/.test(
+				text,
+			) && !/终稿整体检查|论文终稿完成/.test(text),
 	},
 ] as const;
 
@@ -228,11 +242,12 @@ function getPanel() {
 }
 
 function getScroll(panel: HTMLElement) {
-	return Array.from(panel.querySelectorAll<HTMLElement>("div"))
-		.find((node) => {
+	return (
+		Array.from(panel.querySelectorAll<HTMLElement>("div")).find((node) => {
 			const cls = node.getAttribute("class") || "";
 			return cls.includes("overflow-y-auto") && cls.includes("space-y-4");
-		}) || null;
+		}) || null
+	);
 }
 
 function getRows(scroll: HTMLElement) {
@@ -249,15 +264,24 @@ function storageKey(taskId: string, phase: PhaseKey) {
 }
 
 function currentTaskId() {
-	return window.location.pathname.match(/\/task\/([^/]+)/)?.[1] || window.localStorage.getItem("currentTaskId") || "default";
+	return (
+		window.location.pathname.match(/\/task\/([^/]+)/)?.[1] ||
+		window.localStorage.getItem("currentTaskId") ||
+		"default"
+	);
 }
 
 function isExpanded(phase: PhaseKey) {
-	return window.localStorage.getItem(storageKey(currentTaskId(), phase)) === "true";
+	return (
+		window.localStorage.getItem(storageKey(currentTaskId(), phase)) === "true"
+	);
 }
 
 function setExpanded(phase: PhaseKey, expanded: boolean) {
-	window.localStorage.setItem(storageKey(currentTaskId(), phase), expanded ? "true" : "false");
+	window.localStorage.setItem(
+		storageKey(currentTaskId(), phase),
+		expanded ? "true" : "false",
+	);
 }
 
 function ensureDivider(scroll: HTMLElement, phase: PhaseKey) {
@@ -275,9 +299,16 @@ function ensureDivider(scroll: HTMLElement, phase: PhaseKey) {
 	return node;
 }
 
-function updateDivider(node: HTMLElement, phase: PhaseKey, label: string, rows: HTMLElement[]) {
+function updateDivider(
+	node: HTMLElement,
+	phase: PhaseKey,
+	label: string,
+	rows: HTMLElement[],
+) {
 	const expanded = isExpanded(phase);
-	const warning = rows.some((row) => /失败|错误|改错|后台判别|需关注|停止/.test(textOf(row)));
+	const warning = rows.some((row) =>
+		/失败|错误|改错|后台判别|需关注|停止/.test(textOf(row)),
+	);
 	node.dataset.phaseExpanded = expanded ? "true" : "false";
 	node.dataset.phaseWarning = warning ? "true" : "false";
 	node.dataset.phaseLabel = label;
@@ -293,21 +324,26 @@ function updateDivider(node: HTMLElement, phase: PhaseKey, label: string, rows: 
 
 function setRowHidden(row: HTMLElement, hidden: boolean) {
 	if (hidden) {
-		if (row.getAttribute(HIDDEN_ATTR) !== "true") row.setAttribute(HIDDEN_ATTR, "true");
+		if (row.getAttribute(HIDDEN_ATTR) !== "true")
+			row.setAttribute(HIDDEN_ATTR, "true");
 	} else if (row.hasAttribute(HIDDEN_ATTR)) {
 		row.removeAttribute(HIDDEN_ATTR);
 	}
 }
 
 function removeUnusedDividers(scroll: HTMLElement, used: Set<string>) {
-	for (const divider of Array.from(scroll.querySelectorAll<HTMLElement>(`[${DIVIDER_ATTR}]`))) {
+	for (const divider of Array.from(
+		scroll.querySelectorAll<HTMLElement>(`[${DIVIDER_ATTR}]`),
+	)) {
 		const key = divider.getAttribute(DIVIDER_ATTR) || "";
 		if (!used.has(key)) divider.remove();
 	}
 }
 
 function ensureEdgeContainer(edge: EdgePosition) {
-	let container = document.querySelector<HTMLElement>(`[${EDGE_CONTAINER_ATTR}="${edge}"]`);
+	let container = document.querySelector<HTMLElement>(
+		`[${EDGE_CONTAINER_ATTR}="${edge}"]`,
+	);
 	if (!container) {
 		container = document.createElement("div");
 		container.className = "chat-phase-edge-container";
@@ -319,7 +355,9 @@ function ensureEdgeContainer(edge: EdgePosition) {
 }
 
 function hideEdgeContainer(edge: EdgePosition) {
-	const container = document.querySelector<HTMLElement>(`[${EDGE_CONTAINER_ATTR}="${edge}"]`);
+	const container = document.querySelector<HTMLElement>(
+		`[${EDGE_CONTAINER_ATTR}="${edge}"]`,
+	);
 	if (!container) return;
 	container.style.display = "none";
 	container.innerHTML = "";
@@ -330,18 +368,27 @@ function hideAllEdgeMarkers() {
 	hideEdgeContainer("bottom");
 }
 
-function positionEdgeContainer(container: HTMLElement, scroll: HTMLElement, edge: EdgePosition) {
+function positionEdgeContainer(
+	container: HTMLElement,
+	scroll: HTMLElement,
+	edge: EdgePosition,
+) {
 	const rect = scroll.getBoundingClientRect();
 	container.style.left = `${Math.max(0, rect.left + 10)}px`;
 	container.style.width = `${Math.max(120, rect.width - 20)}px`;
 	container.style.top = edge === "top" ? `${rect.top + 6}px` : "auto";
-	container.style.bottom = edge === "bottom" ? `${Math.max(6, window.innerHeight - rect.bottom + 6)}px` : "auto";
+	container.style.bottom =
+		edge === "bottom"
+			? `${Math.max(6, window.innerHeight - rect.bottom + 6)}px`
+			: "auto";
 }
 
 function scrollToDivider(phase: string) {
 	const panel = getPanel();
 	const scroll = panel ? getScroll(panel) : null;
-	const divider = scroll?.querySelector<HTMLElement>(`[${DIVIDER_ATTR}="${phase}"]`);
+	const divider = scroll?.querySelector<HTMLElement>(
+		`[${DIVIDER_ATTR}="${phase}"]`,
+	);
 	divider?.scrollIntoView({ block: "center", behavior: "smooth" });
 	setTimeout(updateEdgeMarkers, 260);
 }
@@ -370,7 +417,11 @@ function createEdgeMarker(edge: EdgePosition, divider: HTMLElement) {
 	return marker;
 }
 
-function showEdgeMarkers(edge: EdgePosition, dividers: HTMLElement[], scroll: HTMLElement) {
+function showEdgeMarkers(
+	edge: EdgePosition,
+	dividers: HTMLElement[],
+	scroll: HTMLElement,
+) {
 	const container = ensureEdgeContainer(edge);
 	container.innerHTML = "";
 	if (!dividers.length) {
@@ -395,7 +446,9 @@ function updateEdgeMarkers() {
 		hideAllEdgeMarkers();
 		return;
 	}
-	const dividers = Array.from(scroll.querySelectorAll<HTMLElement>(`[${DIVIDER_ATTR}]`));
+	const dividers = Array.from(
+		scroll.querySelectorAll<HTMLElement>(`[${DIVIDER_ATTR}]`),
+	);
 	if (!dividers.length) {
 		hideAllEdgeMarkers();
 		return;
@@ -403,7 +456,10 @@ function updateEdgeMarkers() {
 	const scrollRect = scroll.getBoundingClientRect();
 	const topLimit = scrollRect.top + 8;
 	const bottomLimit = scrollRect.bottom - 8;
-	const dividerRects = dividers.map((divider) => ({ divider, rect: divider.getBoundingClientRect() }));
+	const dividerRects = dividers.map((divider) => ({
+		divider,
+		rect: divider.getBoundingClientRect(),
+	}));
 	const above = dividerRects
 		.filter((item) => item.rect.bottom < topLimit)
 		.sort((a, b) => a.rect.top - b.rect.top)
@@ -466,7 +522,12 @@ function applyPhaseDividers() {
 }
 
 export function installChatPhaseDividerDomPatch() {
-	if (installed || typeof window === "undefined" || typeof document === "undefined") return;
+	if (
+		installed ||
+		typeof window === "undefined" ||
+		typeof document === "undefined"
+	)
+		return;
 	installed = true;
 	addStyle();
 	setInterval(applyPhaseDividers, 900);

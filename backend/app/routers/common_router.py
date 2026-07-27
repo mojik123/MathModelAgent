@@ -42,7 +42,6 @@ def _require_safe_task_id(task_id: str) -> str:
 
 def _salvage_json_array(raw: str) -> list:
     """从损坏的 JSON 文件中尽力恢复消息数组。"""
-    import re
     items = []
     # 尝试匹配每个顶层 JSON 对象
     depth = 0

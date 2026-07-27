@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { confirmModeling, generateModelingOptions } from "@/apis/commonApi";
 import { useTaskStore } from "@/stores/task";
-import { AgentType } from "@/utils/enum";
 import { Lightbulb, LoaderCircle, RefreshCw, Wand2 } from "lucide-vue-next";
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
@@ -29,6 +28,9 @@ interface ModelOption {
 	isRecommended?: boolean;
 	sources?: string[];
 	sourceDetails?: Array<Record<string, unknown>>;
+	origin?: "generated" | "discussion";
+	revisionNumber?: number;
+	discussionPrompt?: string;
 }
 
 interface ChatMessage {
@@ -71,8 +73,14 @@ function startProgressAnimation() {
 
 function stopProgressAnimation() {}
 
-const activeReferenceTools = computed(() => referenceSearchEnabled.value ? ["openalex"] : []);
-const referenceStatusText = computed(() => referenceSearchEnabled.value ? "参考文献检索：OpenAlex" : "参考文献检索：关闭");
+const activeReferenceTools = computed(() =>
+	referenceSearchEnabled.value ? ["openalex"] : [],
+);
+const referenceStatusText = computed(() =>
+	referenceSearchEnabled.value
+		? "参考文献检索：OpenAlex"
+		: "参考文献检索：关闭",
+);
 
 function getReferenceStorageKey() {
 	return `modeling-reference-tools:${taskId}`;
@@ -80,10 +88,13 @@ function getReferenceStorageKey() {
 
 function persistReferencePreference() {
 	if (typeof window === "undefined") return;
-	window.localStorage.setItem(getReferenceStorageKey(), JSON.stringify({
-		enabled: referenceSearchEnabled.value,
-		tools: ["openalex"],
-	}));
+	window.localStorage.setItem(
+		getReferenceStorageKey(),
+		JSON.stringify({
+			enabled: referenceSearchEnabled.value,
+			tools: ["openalex"],
+		}),
+	);
 }
 
 function restoreReferencePreference() {
@@ -118,31 +129,50 @@ const modelOptionsProgressText = computed(() => {
 			c.includes("并行检索与生成") ||
 			c.includes("参考文献检索") ||
 			c.includes("OpenAlex")
-		) return c;
+		)
+			return c;
 	}
 	return `ModelerAgent 正在筛选候选模型 · ${referenceStatusText.value}`;
 });
 
-const optionsEstimatedSec = computed(() => Math.max(questionsList.value.length * (referenceSearchEnabled.value ? 55 : 35), 30));
+const optionsEstimatedSec = computed(() =>
+	Math.max(
+		questionsList.value.length * (referenceSearchEnabled.value ? 55 : 35),
+		30,
+	),
+);
 
 type GenStatus = "waiting" | "searching" | "generating" | "retrying" | "done";
-const questionGenStatus = computed<Record<number, { status: GenStatus; text: string }>>(() => {
+const questionGenStatus = computed<
+	Record<number, { status: GenStatus; text: string }>
+>(() => {
 	const result: Record<number, { status: GenStatus; text: string }> = {};
-	for (const q of questions.value) result[q.questionIndex] = { status: "waiting", text: "等待生成..." };
+	for (const q of questions.value)
+		result[q.questionIndex] = { status: "waiting", text: "等待生成..." };
 	const msgs = taskStore.messages;
 	for (let i = progressStartIndex; i < msgs.length; i++) {
 		const c = msgs[i].content ?? "";
 		const match = c.match(/第\s*(\d+)\s*问/);
 		if (!match) continue;
-		const idx = parseInt(match[1]);
+		const idx = Number.parseInt(match[1]);
 		if (!result[idx]) continue;
-		if (c.includes("检索")) result[idx] = { status: "searching", text: "正在检索 OpenAlex..." };
-		if (c.includes("生成")) result[idx] = { status: "generating", text: "正在生成候选模型..." };
-		if (c.includes("质量未达标") || c.includes("重新生成")) result[idx] = { status: "retrying", text: "质量检查未通过，重新生成中..." };
-		if (c.includes("候选方案生成完成")) result[idx] = { status: "done", text: "生成完毕" };
+		if (c.includes("检索"))
+			result[idx] = { status: "searching", text: "正在检索 OpenAlex..." };
+		if (c.includes("生成"))
+			result[idx] = { status: "generating", text: "正在生成候选模型..." };
+		if (c.includes("质量未达标") || c.includes("重新生成"))
+			result[idx] = {
+				status: "retrying",
+				text: "质量检查未通过，重新生成中...",
+			};
+		if (c.includes("候选方案生成完成"))
+			result[idx] = { status: "done", text: "生成完毕" };
 	}
 	for (const q of questions.value) {
-		if (q.presetOptions.length > 0 && result[q.questionIndex]?.status !== "done") {
+		if (
+			q.presetOptions.length > 0 &&
+			result[q.questionIndex]?.status !== "done"
+		) {
 			result[q.questionIndex] = { status: "done", text: "生成完毕" };
 		}
 	}
@@ -150,7 +180,9 @@ const questionGenStatus = computed<Record<number, { status: GenStatus; text: str
 });
 
 const coordinatorData = computed(() => {
-	const msgs = taskStore.coordinatorMessages.filter((m: any) => m.stream_state !== "streaming");
+	const msgs = taskStore.coordinatorMessages.filter(
+		(m) => m.stream_state !== "streaming",
+	);
 	if (msgs.length === 0) return null;
 	const lastMsg = msgs[msgs.length - 1];
 	try {
@@ -176,27 +208,37 @@ const problemBackground = computed(() => {
 
 const questionsList = computed(() => {
 	if (taskStore.questionCards.length > 0) {
-		return taskStore.questionCards.map((q) => ({ index: q.questionIndex, text: q.questionText }));
+		return taskStore.questionCards.map((q) => ({
+			index: q.questionIndex,
+			text: q.questionText,
+		}));
 	}
 	const data = coordinatorData.value;
 	if (!data) return [];
 	const count = (data.ques_count as number) || 0;
 	const list: Array<{ index: number; text: string }> = [];
-	for (let i = 1; i <= count; i++) list.push({ index: i, text: (data[`ques${i}`] as string) || `第 ${i} 问` });
+	for (let i = 1; i <= count; i++)
+		list.push({ index: i, text: (data[`ques${i}`] as string) || `第 ${i} 问` });
 	return list;
 });
 
-const optionsSignature = computed(() => JSON.stringify({
-	title: problemTitle.value,
-	background: problemBackground.value,
-	questions: questionsList.value,
-	referenceSearchEnabled: referenceSearchEnabled.value,
-	referenceTools: activeReferenceTools.value,
-}));
+const optionsSignature = computed(() =>
+	JSON.stringify({
+		title: problemTitle.value,
+		background: problemBackground.value,
+		questions: questionsList.value,
+		referenceSearchEnabled: referenceSearchEnabled.value,
+		referenceTools: activeReferenceTools.value,
+	}),
+);
 
 const coordinatorSignature = computed(() => {
 	if (!coordinatorData.value || questionsList.value.length === 0) return "";
-	return JSON.stringify({ title: problemTitle.value, background: problemBackground.value, questions: questionsList.value });
+	return JSON.stringify({
+		title: problemTitle.value,
+		background: problemBackground.value,
+		questions: questionsList.value,
+	});
 });
 
 function getDiscussionStorageKey() {
@@ -223,7 +265,11 @@ function restoreDiscussionState() {
 function buildQuestionCards(): QuestionCard[] {
 	const restored = restoreDiscussionState();
 	return questionsList.value.map((q) => {
-		const existing = questions.value.find((c) => c.questionIndex === q.index) ?? restored.find((c) => c.questionIndex === q.index && c.questionText === q.text);
+		const existing =
+			questions.value.find((c) => c.questionIndex === q.index) ??
+			restored.find(
+				(c) => c.questionIndex === q.index && c.questionText === q.text,
+			);
 		if (existing) return existing;
 		return {
 			questionIndex: q.index,
@@ -240,15 +286,28 @@ function buildQuestionCards(): QuestionCard[] {
 }
 
 function needsDynamicModelOptions() {
-	return Boolean(coordinatorData.value) && questionsList.value.length > 0 && questions.value.length > 0 && !props.locked && questions.value.some((q) => q.presetOptions.length === 0);
+	return (
+		Boolean(coordinatorData.value) &&
+		questionsList.value.length > 0 &&
+		questions.value.length > 0 &&
+		!props.locked &&
+		questions.value.some((q) => q.presetOptions.length === 0)
+	);
 }
 
-function normalizeModelOptions(rawOptions: Array<Record<string, unknown>>): ModelOption[] {
+function normalizeModelOptions(
+	rawOptions: Array<Record<string, unknown>>,
+): ModelOption[] {
 	const mapped: Array<ModelOption | null> = rawOptions.map((raw, idx) => {
 		const label = String(raw.label ?? raw.model ?? "").trim();
 		if (!label) return null;
 		const id = String(raw.id ?? `llm_model_${idx + 1}`).trim();
-		const score = typeof raw.score === "number" ? raw.score : Number.isFinite(Number(raw.score)) ? Number(raw.score) : null;
+		const score =
+			typeof raw.score === "number"
+				? raw.score
+				: Number.isFinite(Number(raw.score))
+					? Number(raw.score)
+					: null;
 		return {
 			id,
 			label,
@@ -258,8 +317,12 @@ function normalizeModelOptions(rawOptions: Array<Record<string, unknown>>): Mode
 			reason: String(raw.reason ?? "").trim(),
 			score,
 			isRecommended: Boolean(raw.isRecommended),
-			sources: Array.isArray(raw.sources) ? raw.sources.map((item) => String(item)).filter(Boolean) : [],
-			sourceDetails: Array.isArray(raw.sourceDetails) ? raw.sourceDetails as Array<Record<string, unknown>> : [],
+			sources: Array.isArray(raw.sources)
+				? raw.sources.map((item) => String(item)).filter(Boolean)
+				: [],
+			sourceDetails: Array.isArray(raw.sourceDetails)
+				? (raw.sourceDetails as Array<Record<string, unknown>>)
+				: [],
 		};
 	});
 	return mapped.filter((item): item is ModelOption => item !== null);
@@ -279,8 +342,6 @@ async function loadDynamicModelOptions(forceRefresh = false) {
 	optionsLoading.value = true;
 	startProgressAnimation();
 	optionsError.value = "";
-	taskStore.addUserAction("提交", "模型比选请求", `用户请求 ModelerAgent 筛选候选模型。${referenceStatusText.value}`, { from: "User", to: "ModelerAgent", label: "请求模型比选" });
-	taskStore.addAgentAction(AgentType.MODELER, "比选", "模型候选方案", `ModelerAgent 正在结合题目目标、数据形态、验证方式和可解释性筛选候选模型。${referenceStatusText.value}`, { from: "User", to: "ModelerAgent", label: "接收比选任务" });
 	try {
 		const res = await generateModelingOptions(taskId, {
 			title: problemTitle.value,
@@ -291,32 +352,55 @@ async function loadDynamicModelOptions(forceRefresh = false) {
 			reference_tools: activeReferenceTools.value,
 		});
 		if (seq !== optionsRequestSeq) return;
-		const generated = new Map(res.data.questions.map((q) => [q.questionIndex, {
-			researchSummary: q.researchSummary,
-			recommendedOptionId: q.recommendedOptionId,
-			options: normalizeModelOptions(q.options),
-		}]));
+		const generated = new Map(
+			res.data.questions.map((q) => [
+				q.questionIndex,
+				{
+					researchSummary: q.researchSummary,
+					recommendedOptionId: q.recommendedOptionId,
+					options: normalizeModelOptions(q.options),
+				},
+			]),
+		);
 		const updated = questions.value.map((q) => {
 			const matched = generated.get(q.questionIndex);
 			if (!matched?.options.length) return q;
-			const selectedStillExists = matched.options.some((option) => option.id === q.selectedOptionId);
-			return { ...q, presetOptions: matched.options, researchSummary: matched.researchSummary, recommendedOptionId: matched.recommendedOptionId, selectedOptionId: selectedStillExists ? q.selectedOptionId : "", confirmed: selectedStillExists ? q.confirmed : false };
+			const discussionOptions = q.presetOptions.filter(
+				(option) => option.origin === "discussion",
+			);
+			const nextOptions = [...matched.options, ...discussionOptions];
+			const selectedStillExists = nextOptions.some(
+				(option) => option.id === q.selectedOptionId,
+			);
+			return {
+				...q,
+				presetOptions: nextOptions,
+				researchSummary: matched.researchSummary,
+				recommendedOptionId: matched.recommendedOptionId,
+				selectedOptionId: selectedStillExists ? q.selectedOptionId : "",
+				confirmed: selectedStillExists ? q.confirmed : false,
+			};
 		});
 		handleQuestionsUpdate(updated);
-		const optionSummary = updated.map((q) => {
-			const recommended = q.presetOptions.find((option) => option.id === q.recommendedOptionId);
-			return recommended ? `第 ${q.questionIndex} 问：${recommended.label}` : `第 ${q.questionIndex} 问：${q.presetOptions.length} 个候选`;
-		}).join("；");
-		taskStore.addAgentAction(AgentType.MODELER, "传递", "候选模型方案", `ModelerAgent 已完成模型比选并传递给 User：${optionSummary}`, { from: "ModelerAgent", to: "User", label: "提交候选方案" });
 	} catch (error) {
-		const detail = typeof error === "object" && error && "response" in error && (error as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+		const detail =
+			typeof error === "object" &&
+			error &&
+			"response" in error &&
+			(error as { response?: { data?: { detail?: string } } }).response?.data
+				?.detail;
 		optionsError.value = detail || "动态模型候选生成失败，可先使用自定义方案。";
 	} finally {
-		if (seq === optionsRequestSeq) { optionsLoading.value = false; stopProgressAnimation(); }
+		if (seq === optionsRequestSeq) {
+			optionsLoading.value = false;
+			stopProgressAnimation();
+		}
 	}
 }
 
-function handleRetryOptions() { void loadDynamicModelOptions(true); }
+function handleRetryOptions() {
+	void loadDynamicModelOptions(true);
+}
 
 function handleQuestionsUpdate(updated: QuestionCard[]) {
 	questions.value = updated;
@@ -326,17 +410,26 @@ function handleQuestionsUpdate(updated: QuestionCard[]) {
 async function handleConfirm() {
 	if (confirming.value) return;
 	confirmError.value = "";
-	const incomplete = questions.value.find((q) => !q.selectedOptionId || (q.selectedOptionId === "__custom__" && !q.customInput.trim()));
+	const incomplete = questions.value.find(
+		(q) =>
+			!q.selectedOptionId ||
+			(q.selectedOptionId === "__custom__" && !q.customInput.trim()),
+	);
 	if (incomplete) {
 		confirmError.value = `请先选择第 ${incomplete.questionIndex} 问的建模方案。`;
 		return;
 	}
 	const selections = questions.value.map((q) => {
-		const selectedOption = q.presetOptions.find((option) => option.id === q.selectedOptionId);
+		const selectedOption = q.presetOptions.find(
+			(option) => option.id === q.selectedOptionId,
+		);
 		return {
 			index: q.questionIndex,
 			question: q.questionText,
-			model: q.selectedOptionId === "__custom__" ? q.customInput.trim() : (selectedOption?.label ?? q.selectedOptionId),
+			model:
+				q.selectedOptionId === "__custom__"
+					? q.customInput.trim()
+					: (selectedOption?.label ?? q.selectedOptionId),
 			model_id: q.selectedOptionId,
 			model_description: selectedOption?.description ?? "",
 			model_reason: selectedOption?.reason ?? "",
@@ -348,34 +441,52 @@ async function handleConfirm() {
 			chatHistory: q.chatHistory,
 		};
 	});
-	const selectionSummary = selections.map((item) => `第 ${item.index} 问：${item.model}`).join("；");
-	taskStore.addUserAction("确认", "建模方案选择", `用户确认全部问题的建模方案：${selectionSummary}`, { from: "User", to: "ModelerAgent", label: "返回确认选择" });
+	const selectionSummary = selections
+		.map((item) => `第 ${item.index} 问：${item.model}`)
+		.join("；");
+	taskStore.addUserAction(
+		"确认",
+		"建模方案选择",
+		`用户确认全部问题的建模方案：${selectionSummary}`,
+		{ from: "User", to: "ModelerAgent", label: "返回确认选择" },
+	);
 	confirming.value = true;
 	try {
 		await confirmModeling(taskId, selections);
-		taskStore.addAgentAction(AgentType.MODELER, "接收", "确认建模方案", "ModelerAgent 已接收用户确认的建模方案，后续正式建模以该选择为优先约束。", { from: "User", to: "ModelerAgent", label: "开始正式建模" });
 		persistDiscussionState();
 		emit("confirm");
 	} catch (error) {
-		const detail = typeof error === "object" && error && "response" in error && (error as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+		const detail =
+			typeof error === "object" &&
+			error &&
+			"response" in error &&
+			(error as { response?: { data?: { detail?: string } } }).response?.data
+				?.detail;
 		confirmError.value = detail || "提交建模思路失败，请稍后重试。";
 	} finally {
 		confirming.value = false;
 	}
 }
 
-watch(coordinatorSignature, (signature) => {
-	if (signature) {
-		questions.value = buildQuestionCards();
-		persistDiscussionState();
-		showDiscussion.value = true;
-		if (props.expanded) void loadDynamicModelOptions();
-	}
-}, { immediate: true });
+watch(
+	coordinatorSignature,
+	(signature) => {
+		if (signature) {
+			questions.value = buildQuestionCards();
+			persistDiscussionState();
+			showDiscussion.value = true;
+			if (props.expanded) void loadDynamicModelOptions();
+		}
+	},
+	{ immediate: true },
+);
 
-watch(() => props.expanded, (expanded) => {
-	if (expanded) void loadDynamicModelOptions();
-});
+watch(
+	() => props.expanded,
+	(expanded) => {
+		if (expanded) void loadDynamicModelOptions();
+	},
+);
 </script>
 
 <template>

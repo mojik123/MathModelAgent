@@ -3,6 +3,25 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+_PLACEHOLDER_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"(?:\[|【|<)\s*待(?:补|填|完善|确认|计算|核验)[^]】>]{0,20}(?:\]|】|>)"),
+        "存在待补充占位符",
+    ),
+    (
+        re.compile(r"\b(?:TODO|TBD|FIXME)\b", re.I),
+        "存在开发占位符",
+    ),
+    (
+        re.compile(r"(?<![A-Za-z])X{2,}(?![A-Za-z])", re.I),
+        "存在 XX 类占位符",
+    ),
+    (
+        re.compile(r"\bX\s*%\s*(?:-|—|–|~|～|至)\s*Y\s*%", re.I),
+        "存在未填写的百分比区间",
+    ),
+)
+
 
 def validate_final_paper(work_dir: str, markdown: str) -> list[str]:
     """检查终稿 Markdown 的章节完整性和基本质量。"""
@@ -68,6 +87,10 @@ def validate_final_paper(work_dir: str, markdown: str) -> list[str]:
 
     if re.search(r"\\\[|\\\]|\\\(|\\\)", markdown):
         issues.append("存在未规范化的反斜杠数学定界符，可能导致 LaTeX/PDF 乱码")
+
+    for pattern, issue in _PLACEHOLDER_PATTERNS:
+        if pattern.search(markdown):
+            issues.append(issue)
 
     return issues
 

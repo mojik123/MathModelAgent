@@ -8,7 +8,7 @@ from app.utils.log_util import logger
 from app.services.redis_manager import redis_manager
 from app.schemas.response import SystemMessage, InterpreterMessage
 from app.tools.base_interpreter import BaseCodeInterpreter
-from app.core.llm.llm import LLM
+from app.core.llm.llm import LLM, LLMCallError
 from app.schemas.A2A import CoderToWriter
 from app.core.prompts import CODER_PROMPT
 from app.utils.common_utils import get_current_files
@@ -35,11 +35,7 @@ class CoderAgent(Agent):
         configured_retries = (
             max_retries
             if max_retries is not None
-            else (
-                settings.MAX_RETRIES
-                if getattr(settings, "MAX_RETRIES", None) not in (None, 0)
-                else settings.CODER_MAX_RETRIES
-            )
+            else settings.CODER_MAX_RETRIES
         )
         self.max_retries = int(configured_retries) if configured_retries not in (None, 0) else None
         self.is_first_run = True
@@ -81,12 +77,17 @@ class CoderAgent(Agent):
         await self.append_chat_history({"role": "user", "content": prompt})
 
         retry_count = 0
+        total_error_count = 0
         last_error_message = ""
         consecutive_same_error_count = 0
         total_execute_count = 0
         max_total_steps = int(getattr(settings, "CODER_MAX_TOTAL_STEPS", 0) or 0)
+        max_total_errors = int(
+            getattr(settings, "CODER_MAX_TOTAL_ERRORS", 8) or 0
+        )
         last_error_type = ""
         has_executed_code = False
+        budget_warning_sent = False
 
         # 协调者错误判别：旁路异步，不阻塞当前 Coder。
         judge_min_errors = int(getattr(settings, "CODER_REPEAT_ERROR_JUDGE_MIN_ERRORS", 3) or 3)
@@ -165,6 +166,34 @@ class CoderAgent(Agent):
             total_execute_count += 1
             await _consume_judge_if_ready()
 
+            remaining_steps = max_total_steps - total_execute_count + 1
+            if (
+                max_total_steps > 0
+                and remaining_steps <= 5
+                and not budget_warning_sent
+            ):
+                budget_warning_sent = True
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=(
+                            f"代码手剩余 {remaining_steps} 个决策步骤，"
+                            "请停止探索，复用内存中的数据和函数，完成验证后立即 task_complete"
+                        ),
+                        type="warning",
+                    ),
+                )
+                await self.append_chat_history(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"【执行预算提醒】只剩 {remaining_steps} 个决策步骤。"
+                            "禁止重新读取已加载文件、重复定义已有函数或继续无目标探索；"
+                            "请合并剩余计算，验证核心结果并调用 task_complete。"
+                        ),
+                    }
+                )
+
             if restart_requested:
                 await redis_manager.publish_message(
                     self.task_id,
@@ -219,6 +248,23 @@ class CoderAgent(Agent):
                     f"最后错误：{last_error_message}"
                 )
 
+            if max_total_errors > 0 and total_error_count >= max_total_errors:
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=(
+                            f"代码手已停止：累计错误达到上限({max_total_errors})\n"
+                            f"子任务：{subtask_title}\n"
+                            f"最后错误：{last_error_message[:1000]}"
+                        ),
+                        type="error",
+                    ),
+                )
+                raise RuntimeError(
+                    f"代码手求解失败：累计错误达到上限 {max_total_errors}，"
+                    f"子任务：{subtask_title}，最后错误：{last_error_message}"
+                )
+
             try:
                 response = await self._chat(
                     stream=True,
@@ -237,6 +283,7 @@ class CoderAgent(Agent):
                         if not has_executed_code:
                             logger.info("代码手未执行代码却调用 task_complete，已拒绝完成")
                             retry_count += 1
+                            total_error_count += 1
                             last_error_message = "代码手未调用 execute_code 工具，不能直接 task_complete"
                             error_type = "no_execute_before_complete"
                             if error_type == last_error_type:
@@ -321,6 +368,7 @@ class CoderAgent(Agent):
 
                             logger.warning(f"代码执行错误: {error_message}")
                             retry_count += 1
+                            total_error_count += 1
                             previous_error_message = last_error_message
                             last_error_message = error_message
 
@@ -402,6 +450,7 @@ class CoderAgent(Agent):
                 if not has_executed_code:
                     logger.info("代码手未调用 execute_code，强制要求至少执行一次")
                     retry_count += 1
+                    total_error_count += 1
                     last_error_message = "代码手未调用 execute_code 工具"
                     error_type = "no_tool_call"
                     if error_type == last_error_type:
@@ -434,9 +483,14 @@ class CoderAgent(Agent):
                 if pending_judge_task is not None and not pending_judge_task.done():
                     pending_judge_task.cancel()
                 raise
+            except LLMCallError:
+                if pending_judge_task is not None and not pending_judge_task.done():
+                    pending_judge_task.cancel()
+                raise
             except Exception as e:
                 logger.error(f"执行过程中发生异常: {str(e)}")
                 retry_count += 1
+                total_error_count += 1
                 last_error_message = str(e)
                 error_type = str(e)[:100]
                 if error_type == last_error_type:

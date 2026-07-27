@@ -35,6 +35,20 @@ SECTION_LABELS = {
     "sensitivity_analysis": "模型分析与检验",
     "judge": "模型评价、改进与推广",
 }
+LEADING_PREVIEW_PLACEHOLDERS = {
+    "firstPage": (
+        "> **标题、摘要与关键词尚未生成。** "
+        "当前任务在论文终稿阶段之前中断，本区域不会用占位文字冒充正文。"
+    ),
+    "RepeatQues": "# 一、问题重述\n\n> 本章节尚未生成。",
+    "analysisQues": "# 二、问题分析\n\n> 本章节尚未生成。",
+    "modelAssumption": "# 三、模型假设\n\n> 本章节尚未生成。",
+    "symbol": (
+        "# 四、符号说明和数据预处理\n\n"
+        "## 4.1 符号说明\n\n"
+        "> 本章节尚未生成。下方 4.2 起的内容是已经保存的 EDA 片段。"
+    ),
+}
 
 
 def _read_text(path: Path) -> str:
@@ -130,6 +144,7 @@ def _assemble_from_checkpoint(
     work_dir: str,
     *,
     include_toc: bool = True,
+    include_missing_placeholders: bool = False,
 ) -> tuple[str, list[str], list[str]]:
     cp = _checkpoint(work_dir)
     res = cp.get("user_output_res")
@@ -149,6 +164,10 @@ def _assemble_from_checkpoint(
         if text:
             included.append(key)
             parts.append(text)
+        elif include_missing_placeholders and key in LEADING_PREVIEW_PLACEHOLDERS:
+            # 占位只用于未完成任务的只读预览，并明确标注“尚未生成”。
+            # 它不会计入 included，也不会写入 res.md，避免把残稿误认为完整论文。
+            parts.append(LEADING_PREVIEW_PLACEHOLDERS[key])
 
     if not parts:
         return "", [], _missing_sections(res, q_count)
@@ -173,10 +192,26 @@ def _status_banner(included: list[str], missing: list[str]) -> str:
     missing_labels = "、".join(_section_label(k) for k in missing[:12]) or "暂无"
     if len(missing) > 12:
         missing_labels += f" 等 {len(missing)} 项"
+    writing_note = ""
+    if any(
+        key in missing
+        for key in (
+            "firstPage",
+            "RepeatQues",
+            "analysisQues",
+            "modelAssumption",
+            "symbol",
+        )
+    ):
+        writing_note = (
+            "> 写作顺序：前置章节会在全部小问求解及灵敏度检验完成后统一总结；"
+            "当前尚未进入该阶段。\n"
+        )
     return (
         "> **当前为生成中预览，不是最终论文。**\n"
         f"> 已生成章节：{included_labels}。\n"
         f"> 待生成章节：{missing_labels}。\n\n"
+        f"{writing_note}\n"
     )
 
 
@@ -211,7 +246,10 @@ async def get_paper(task_id: str):
         }
 
     # Running / incomplete mode: return preview only. Never write res.md here.
-    preview, included, missing = _assemble_from_checkpoint(work_dir)
+    preview, included, missing = _assemble_from_checkpoint(
+        work_dir,
+        include_missing_placeholders=True,
+    )
     if preview:
         preview = _apply_patches(preview, work_dir)
         preview = clean_final_paper_markdown(preview)

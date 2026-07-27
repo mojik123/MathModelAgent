@@ -3,7 +3,16 @@ import type { TaskRuntimeStatus } from "@/apis/commonApi";
 import ModelingDiscussion from "@/components/ModelingDiscussion.vue";
 import QuestionDiscussion from "@/components/QuestionDiscussion.vue";
 import { AgentType } from "@/utils/enum";
-import type { Message, ProgressMessage, ToolMessage } from "@/utils/response";
+import { isImageFile, normalizeImageFilename } from "@/utils/imageConstants";
+import { resolveTaskImageUrl } from "@/utils/markdown";
+import type {
+	AgentMessage,
+	InterpreterMessage,
+	Message,
+	ProgressMessage,
+	SystemMessage,
+	ToolMessage,
+} from "@/utils/response";
 import {
 	AlertTriangle,
 	Bot,
@@ -11,6 +20,7 @@ import {
 	Clock3,
 	Code2,
 	FileText,
+	ImageIcon,
 	LoaderCircle,
 	MessageSquareText,
 	PenLine,
@@ -33,6 +43,7 @@ const props = withDefaults(
 const emit = defineEmits<{
 	questionConfirm: [];
 	modelingConfirm: [];
+	imageOpen: [filename: string];
 }>();
 
 interface TimelineEvent {
@@ -123,12 +134,18 @@ const allMessageText = computed(() =>
 	props.messages.map(messageText).join("\n"),
 );
 const hasStreamingMessage = computed(() =>
-	props.messages.some((m) => (m as any).stream_state === "streaming"),
+	props.messages.some(
+		(message) =>
+			message.msg_type === "agent" && message.stream_state === "streaming",
+	),
 );
 const streamingSignature = computed(() =>
 	props.messages
-		.filter((m) => (m as any).stream_state === "streaming")
-		.map((m) => `${m.id}:${(m.content ?? "").length}`)
+		.filter(
+			(message) =>
+				message.msg_type === "agent" && message.stream_state === "streaming",
+		)
+		.map((message) => `${message.id}:${(message.content ?? "").length}`)
 		.join("|"),
 );
 
@@ -152,6 +169,22 @@ const modelingConfirmed = computed(() =>
 			c.includes("用户确认全部问题的建模方案")
 		);
 	}),
+);
+
+const hasExplicitQuestionConfirmMessage = computed(() =>
+	props.messages.some(
+		(message) =>
+			message.msg_type === "user" &&
+			/用户确认了最终的问题划分方案/.test(messageText(message)),
+	),
+);
+
+const hasExplicitModelingConfirmMessage = computed(() =>
+	props.messages.some(
+		(message) =>
+			message.msg_type === "user" &&
+			/用户确认全部问题的建模方案/.test(messageText(message)),
+	),
 );
 
 function handleInlineQuestionConfirm() {
@@ -193,11 +226,118 @@ function tailBrief(content?: string | null, max = 520) {
 	return s.length > max ? `…${s.slice(-max)}` : s;
 }
 
-function detectQuestionIndex(text: string, msg?: any): number | null {
-	if (typeof msg?.question_index === "number") return msg.question_index;
-	const fromGroup = String(msg?.group_id ?? msg?.agent_instance_id ?? "").match(
-		/q(?:ues)?(\d+)|组#(\d+)/i,
+function readableBrief(content?: string | null, max = 320) {
+	const normalized = (content ?? "")
+		.replace(/```(?:json)?/gi, "")
+		.replace(/\\n/g, "\n")
+		.replace(/\r\n?/g, "\n")
+		.split("\n")
+		.map((line) => line.replace(/^[#>*`\s]+/, "").trim())
+		.filter(Boolean)
+		.join("\n");
+	return normalized.length > max
+		? `${normalized.slice(0, max).trimEnd()}…`
+		: normalized;
+}
+
+function structuredPayload(content: string): Record<string, unknown> | null {
+	const normalized = content
+		.trim()
+		.replace(/^```(?:json)?\s*/i, "")
+		.replace(/\s*```$/, "");
+	const start = normalized.indexOf("{");
+	const end = normalized.lastIndexOf("}");
+	if (start < 0 || end <= start) return null;
+	try {
+		const parsed = JSON.parse(normalized.slice(start, end + 1));
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? parsed
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+function structuredAgentSummary(
+	content: string,
+	actor: string,
+): Pick<TimelineEvent, "title" | "detail"> | null {
+	const payload = structuredPayload(content);
+	if (!payload) return null;
+
+	const payloadTitle =
+		typeof payload.title === "string" ? payload.title.trim() : "";
+	const questions = Array.isArray(payload.questions) ? payload.questions : [];
+	const rawCount =
+		payload.quescount ?? payload.question_count ?? questions.length;
+	const questionCount =
+		typeof rawCount === "number"
+			? rawCount
+			: Number.parseInt(String(rawCount || ""), 10);
+
+	if (actor === "CoordinatorAgent") {
+		const details = [
+			payloadTitle ? `题目：${payloadTitle}` : "",
+			Number.isFinite(questionCount) && questionCount > 0
+				? `问题拆解：已识别 ${questionCount} 个小问`
+				: "",
+			"完整内容已整理到下方的问题划分卡片。",
+		].filter(Boolean);
+		return {
+			title: "题目解析完成",
+			detail: details.join("\n"),
+		};
+	}
+
+	if (actor === "ModelerAgent") {
+		return {
+			title: "建模方案整理完成",
+			detail: "结构化方案已整理到下方的建模确认卡片。",
+		};
+	}
+
+	return {
+		title: "结构化结果已生成",
+		detail: payloadTitle
+			? `结果：${payloadTitle}`
+			: "结果已完成结构化整理，可在对应阶段卡片中查看。",
+	};
+}
+
+function isLowValueAgent(text: string) {
+	const normalized = stripMarkdown(text);
+	return [
+		/^Agent 模型配置[：:]/,
+		/识别用户意图和拆解问题(?:ing)?/,
+		/协调者正在分析问题结构/,
+		/ModelerAgent 正在结合题目目标.*筛选候选模型/,
+		/ModelerAgent 已完成模型比选并传递给 User/,
+	].some((pattern) => pattern.test(normalized));
+}
+
+function isInitialTaskPrompt(text: string) {
+	return (
+		text.length > 600 &&
+		/问题\s*1[.。]/.test(text) &&
+		(/问题\s*2[.。]/.test(text) || /请结合附件数据/.test(text))
 	);
+}
+
+function detectQuestionIndex(text: string, msg?: Message): number | null {
+	if (
+		msg?.msg_type === "agent" &&
+		[AgentType.COORDINATOR, AgentType.MODELER].includes(msg.agent_type)
+	) {
+		return null;
+	}
+	if (msg?.msg_type === "agent" && typeof msg.question_index === "number") {
+		return msg.question_index;
+	}
+	const groupIdentity =
+		msg?.msg_type === "agent"
+			? (msg.group_id ?? msg.agent_instance_id ?? "")
+			: "";
+	const fromGroup = String(groupIdentity).match(/q(?:ues)?(\d+)|组#(\d+)/i);
 	if (fromGroup) return Number(fromGroup[1] || fromGroup[2]);
 	const m = text.match(/(?:\[组#|子问题组#|第\s*)(\d+)/);
 	if (m) return Number(m[1]);
@@ -207,16 +347,10 @@ function detectQuestionIndex(text: string, msg?: any): number | null {
 }
 
 function actorFromMessage(msg: Message, text: string): string {
-	const anyMsg = msg as any;
-	const instance = anyMsg.agent_instance_id || anyMsg.group_id || "";
 	if (msg.msg_type === "user") return "User";
 	if (msg.msg_type === "progress") return "SystemMonitor";
-	if (instance.includes("sub_coordinator")) return "SubCoordinatorAgent";
-	if (instance.includes("modeler")) return "ModelerAgent";
-	if (instance.includes("coder")) return "CoderAgent";
-	if (instance.includes("writer")) return "WriterAgent";
 	if (msg.msg_type === "agent") {
-		switch ((msg as any).agent_type) {
+		switch (msg.agent_type) {
 			case AgentType.COORDINATOR:
 				return "CoordinatorAgent";
 			case AgentType.SUB_COORDINATOR:
@@ -229,6 +363,14 @@ function actorFromMessage(msg: Message, text: string): string {
 				return "WriterAgent";
 		}
 	}
+	const instance =
+		msg.msg_type === "agent"
+			? (msg.agent_instance_id ?? msg.group_id ?? "")
+			: "";
+	if (instance.includes("sub_coordinator")) return "SubCoordinatorAgent";
+	if (instance.includes("modeler")) return "ModelerAgent";
+	if (instance.includes("coder")) return "CoderAgent";
+	if (instance.includes("writer")) return "WriterAgent";
 	if (/问题划分|拆解|Coordinator|协调/.test(text)) return "CoordinatorAgent";
 	if (/建模|Modeler|模型方案|候选方案/.test(text)) return "ModelerAgent";
 	if (/代码|Coder|求解|执行|改错|错误判别/.test(text)) return "CoderAgent";
@@ -252,10 +394,16 @@ function isLowValueSystem(text: string) {
 		"任务开始处理",
 		"消息已发布",
 		"保存",
+		"Agent 模型配置",
 		"传递：工作指令",
 		"代码手自行反思纠错",
 		"代码手根据协调者建议反思纠错",
 		"协调者后台判别不阻塞当前尝试",
+		"正在检索文献依据",
+		"正在生成模型方案",
+		"候选方案生成完成",
+		"模型候选方案生成完成",
+		"并行生成候选模型方案",
 	];
 	return drop.some((key) => text.includes(key));
 }
@@ -268,7 +416,56 @@ function artifactNames(text: string) {
 	return Array.from(set).slice(0, 6);
 }
 
-function systemEvent(msg: Message): TimelineEvent | null {
+function imageArtifactNames(items?: string[]) {
+	return (items ?? []).filter((item) => isImageFile(item));
+}
+
+function nonImageArtifactNames(items?: string[]) {
+	return (items ?? []).filter((item) => !isImageFile(item));
+}
+
+function imageArtifactUrl(filename: string) {
+	return resolveTaskImageUrl(filename, props.taskId);
+}
+
+function imageEvent(
+	msg: Message,
+	content: string,
+	actor: string,
+	questionIndex: number | null,
+): TimelineEvent | null {
+	const images = artifactNames(content).filter((item) => isImageFile(item));
+	if (
+		!images.length ||
+		!/图片生成完成|已生成图片描述|图片修订完成|图片已重新生成/.test(content)
+	) {
+		return null;
+	}
+	const updated = /修订|重新生成/.test(content);
+	const firstImage = normalizeImageFilename(images[0]);
+	return {
+		id: msg.id,
+		side: "left",
+		actor,
+		role: roleMap[actor] ?? "Agent",
+		type: "artifact",
+		status: "done",
+		title:
+			images.length > 1
+				? `${updated ? "已更新" : "已生成"} ${images.length} 张图片`
+				: `${updated ? "图片已更新" : "图片生成完成"}：${firstImage}`,
+		detail: "图片已加入右侧图片结果，可直接点击下方缩略图查看。",
+		timeLabel: timeLabel(msg.created_at),
+		questionIndex,
+		badges: [
+			...(questionIndex ? [`Q${questionIndex}`] : []),
+			updated ? "图片更新" : "新图片",
+		],
+		artifacts: images,
+	};
+}
+
+function systemEvent(msg: SystemMessage): TimelineEvent | null {
 	const content = msg.content ?? "";
 	const line = firstLine(content);
 	const actor = actorFromMessage(msg, content);
@@ -281,6 +478,8 @@ function systemEvent(msg: Message): TimelineEvent | null {
 		timeLabel: timeLabel(msg.created_at),
 		questionIndex: q,
 	};
+	const generatedImage = imageEvent(msg, content, actor, q);
+	if (generatedImage) return generatedImage;
 
 	if (line.includes("等待用户确认问题划分")) {
 		return {
@@ -300,6 +499,7 @@ function systemEvent(msg: Message): TimelineEvent | null {
 		};
 	}
 	if (line.includes("问题划分已确认") || line.includes("已复用问题划分")) {
+		if (hasExplicitQuestionConfirmMessage.value) return null;
 		return {
 			...base,
 			side: "right",
@@ -329,6 +529,7 @@ function systemEvent(msg: Message): TimelineEvent | null {
 		};
 	}
 	if (line.includes("建模方案已确认") || line.includes("已复用建模方案选择")) {
+		if (hasExplicitModelingConfirmMessage.value) return null;
 		return {
 			...base,
 			side: "right",
@@ -337,7 +538,44 @@ function systemEvent(msg: Message): TimelineEvent | null {
 			type: "user",
 			status: "done",
 			title: "已确认建模方案",
-			detail: "开始进入代码求解。",
+			detail: "进入整体建模方案生成阶段。",
+		};
+	}
+	if (/问题拆解完成，共\s*\d+\s*个小问/.test(line)) {
+		return {
+			...base,
+			actor: "CoordinatorAgent",
+			role: roleMap.CoordinatorAgent,
+			type: "stage",
+			status: "done",
+			title: "题目解析与问题拆解完成",
+			detail: line,
+		};
+	}
+	if (
+		/建模手.*(?:深度调研完成|整体建模方案.*(?:完成|已生成)|已从断点恢复整体建模方案)/.test(
+			line,
+		)
+	) {
+		return {
+			...base,
+			actor: "ModelerAgent",
+			role: roleMap.ModelerAgent,
+			type: "stage",
+			status: "done",
+			title: "整体建模方案生成完成",
+			detail: line,
+		};
+	}
+	if (/建模手.*正在.*(?:生成|调研)/.test(line)) {
+		return {
+			...base,
+			actor: "ModelerAgent",
+			role: roleMap.ModelerAgent,
+			type: "stage",
+			status: "running",
+			title: "正在生成整体建模方案",
+			detail: line,
 		};
 	}
 	if (isLowValueSystem(line)) return null;
@@ -492,21 +730,34 @@ function systemEvent(msg: Message): TimelineEvent | null {
 	return {
 		...base,
 		type: "stage",
-		status:
-			msg.msg_type === "system" && (msg as any).type === "success"
-				? "done"
-				: "running",
+		status: msg.type === "success" ? "done" : "running",
 		title: line || "流程更新",
 		detail: brief(content, 180),
 	};
 }
 
-function agentEvent(msg: Message): TimelineEvent | null {
+function agentEvent(msg: AgentMessage): TimelineEvent | null {
 	const content = msg.content ?? "";
 	if (!content.trim()) return null;
 	const actor = actorFromMessage(msg, content);
+	if (isLowValueAgent(content)) return null;
 	const q = detectQuestionIndex(content, msg);
-	const isStreaming = (msg as any).stream_state === "streaming";
+	const generatedImage = imageEvent(msg, content, actor, q);
+	if (generatedImage) return generatedImage;
+	const isStreaming = msg.stream_state === "streaming";
+	const structured = isStreaming
+		? null
+		: structuredAgentSummary(content, actor);
+	const isStructuredStream =
+		isStreaming &&
+		["CoordinatorAgent", "ModelerAgent"].includes(actor) &&
+		content.trimStart().startsWith("{");
+	const streamingTitle =
+		actor === "CoordinatorAgent"
+			? "正在解析题目并拆分问题"
+			: actor === "ModelerAgent"
+				? "正在生成建模方案"
+				: "正在思考与生成";
 	return {
 		id: msg.id,
 		side: "left",
@@ -514,8 +765,14 @@ function agentEvent(msg: Message): TimelineEvent | null {
 		role: roleMap[actor] ?? "Agent",
 		type: "raw",
 		status: isStreaming ? "running" : "done",
-		title: isStreaming ? "正在思考与生成" : "输出结果摘要",
-		detail: isStreaming ? tailBrief(content, 720) : brief(content, 260),
+		title: structured?.title ?? (isStreaming ? streamingTitle : "输出结果摘要"),
+		detail:
+			structured?.detail ??
+			(isStructuredStream
+				? "正在整理结构化结果，完成后将显示简明摘要。"
+				: isStreaming
+					? readableBrief(tailBrief(content, 720), 520)
+					: readableBrief(content, 320)),
 		brief:
 			content.length > 400
 				? isStreaming
@@ -530,13 +787,14 @@ function agentEvent(msg: Message): TimelineEvent | null {
 
 function toolEvent(msg: ToolMessage): TimelineEvent | null {
 	if (msg.tool_name !== "execute_code") return null;
-	const code = String((msg.input as any)?.code ?? "");
-	const output = Array.isArray(msg.output) ? msg.output : [];
-	const hasError = output.some((o: any) => o?.res_type === "error");
-	const desc = msg.description || "执行 Python 代码";
+	const executeMessage = msg as InterpreterMessage;
+	const code = executeMessage.input?.code ?? "";
+	const output = executeMessage.output ?? [];
+	const hasError = output.some((item) => item.res_type === "error");
+	const desc = executeMessage.description || "执行 Python 代码";
 	if (!hasError) return null;
-	const text = `${(msg as any).content ?? ""}\n${desc}\n${code}`;
-	const q = detectQuestionIndex(text, msg as any);
+	const text = `${executeMessage.content ?? ""}\n${desc}\n${code}`;
+	const q = detectQuestionIndex(text, executeMessage);
 	return {
 		id: msg.id,
 		side: "left",
@@ -555,6 +813,7 @@ function toolEvent(msg: ToolMessage): TimelineEvent | null {
 
 function progressEvent(msg: ProgressMessage): TimelineEvent | null {
 	if (!msg.description && msg.percentage == null) return null;
+	if (msg.percentage === 0 && /准备中/.test(msg.description ?? "")) return null;
 	return {
 		id: msg.id,
 		side: "center",
@@ -568,19 +827,46 @@ function progressEvent(msg: ProgressMessage): TimelineEvent | null {
 	};
 }
 
-function toEvent(msg: Message): TimelineEvent | null {
-	if (msg.msg_type === "user")
+function userEvent(msg: Message): TimelineEvent | null {
+	const content = msg.content ?? "";
+	const common = {
+		id: msg.id,
+		side: "right" as const,
+		actor: "User",
+		role: roleMap.User,
+		type: "user" as const,
+		status: "done" as const,
+		timeLabel: timeLabel(msg.created_at),
+	};
+	if (/用户确认了最终的问题划分方案|用户确认全部问题的建模方案/.test(content)) {
+		// 对应确认卡本身会切换为“已确认”，不再额外生成重复的用户气泡。
+		return null;
+	}
+	if (/用户请求 ModelerAgent 筛选候选模型/.test(content)) return null;
+	if (/用户一键应用 AI 推荐的最优模型方案|选择最优模型方案/.test(content)) {
 		return {
-			id: msg.id,
-			side: "right",
-			actor: "User",
-			role: roleMap.User,
-			type: "user",
-			status: "done",
-			title: brief(msg.content, 80) || "用户确认",
-			detail: brief(msg.content, 220),
-			timeLabel: timeLabel(msg.created_at),
+			...common,
+			title: "选择最优模型方案",
 		};
+	}
+	const title = brief(content, 80) || "用户确认";
+	const detail = brief(content, 220);
+	return {
+		...common,
+		title,
+		detail: detail && detail !== title ? detail : undefined,
+	};
+}
+
+function toEvent(msg: Message): TimelineEvent | null {
+	if (
+		msg.msg_type === "user" &&
+		(/用户请求启动或恢复当前建模工作流/.test(msg.content ?? "") ||
+			isInitialTaskPrompt(msg.content ?? ""))
+	) {
+		return null;
+	}
+	if (msg.msg_type === "user") return userEvent(msg);
 	if (msg.msg_type === "system") return systemEvent(msg);
 	if (msg.msg_type === "agent") return agentEvent(msg);
 	if (msg.msg_type === "tool") return toolEvent(msg as ToolMessage);
@@ -602,7 +888,27 @@ const rawEvents = computed(
 );
 const timelineEvents = computed(() => {
 	const out: TimelineEvent[] = [];
-	for (const ev of rawEvents.value) {
+	const seenImages = new Set<string>();
+	const seenChoiceKinds = new Set<NonNullable<TimelineEvent["choiceKind"]>>();
+	for (const rawEvent of rawEvents.value) {
+		const eventImages = imageArtifactNames(rawEvent.artifacts);
+		const unseenImages = eventImages.filter((image) => !seenImages.has(image));
+		if (eventImages.length && !unseenImages.length) continue;
+		for (const image of unseenImages) seenImages.add(image);
+		const ev =
+			eventImages.length === unseenImages.length
+				? rawEvent
+				: {
+						...rawEvent,
+						artifacts: [
+							...nonImageArtifactNames(rawEvent.artifacts),
+							...unseenImages,
+						],
+					};
+		if (ev.type === "choice" && ev.choiceKind) {
+			if (seenChoiceKinds.has(ev.choiceKind)) continue;
+			seenChoiceKinds.add(ev.choiceKind);
+		}
 		const prev = out[out.length - 1];
 		if (
 			prev &&
@@ -794,7 +1100,7 @@ function makeGroupEvent(key: string, ev: TimelineEvent): TimelineEvent {
 			? ev.questionIndex
 				? [`Q${ev.questionIndex}`, "子问题组"]
 				: ["子问题组"]
-			: [phaseLabel(phase)],
+			: [],
 		artifacts: [],
 		debugCount: 0,
 		isGroup: true,
@@ -805,23 +1111,17 @@ function makeGroupEvent(key: string, ev: TimelineEvent): TimelineEvent {
 	return group;
 }
 
-function updateGroupProgressText(
-	group: TimelineEvent,
-	latestProgressText?: string,
-) {
-	const pieces: string[] = [];
-	if (latestProgressText) pieces.push(`到这里 ${latestProgressText}`);
-	pieces.push(`${group.groupEvents?.length ?? 0} 条更新`);
-	if (group.debugCount)
-		pieces.push(`累计 ${group.debugCount} 次改错 / 重试记录`);
-	group.progressText = pieces.join(" · ");
+function updateGroupProgressText(group: TimelineEvent) {
+	if (group.status === "done") {
+		group.progressText = undefined;
+		return;
+	}
+	group.progressText = group.debugCount
+		? `累计 ${group.debugCount} 次改错 / 重试`
+		: undefined;
 }
 
-function updateGroup(
-	group: TimelineEvent,
-	ev: TimelineEvent,
-	latestProgressText?: string,
-) {
+function updateGroup(group: TimelineEvent, ev: TimelineEvent) {
 	group.groupEvents = [...(group.groupEvents ?? []), ev];
 	group.groupActors = pushUnique(group.groupActors, [ev.actor]);
 	group.badges = pushUnique(group.badges, ev.badges ?? []);
@@ -830,12 +1130,30 @@ function updateGroup(
 	group.timeLabel = ev.timeLabel || group.timeLabel;
 	group.status = groupStatus(group.groupEvents);
 	group.title = groupTitle(group);
-	const latest = group.groupEvents[group.groupEvents.length - 1];
 	const actors = group.groupActors
 		.map((actor) => roleMap[actor] ?? actor)
 		.join(" / ");
-	group.detail = `${actors || group.role} 正在协同推进；当前步骤：${latest.title}`;
-	updateGroupProgressText(group, latestProgressText);
+	group.detail =
+		group.status === "done"
+			? `${actors || group.role} 已完成本阶段，结果已汇总。`
+			: "";
+	updateGroupProgressText(group);
+}
+
+function latestGroupEvent(group: TimelineEvent) {
+	const events = group.groupEvents ?? [];
+	return events[events.length - 1];
+}
+
+function hasDistinctDetail(ev?: TimelineEvent) {
+	if (!ev?.detail) return false;
+	const detail = stripMarkdown(ev.detail);
+	const title = stripMarkdown(ev.title);
+	return Boolean(
+		detail &&
+			detail !== title &&
+			(ev.status === "warning" || ev.status === "error" || ev.type === "raw"),
+	);
 }
 
 function taskCompletedForDisplay() {
@@ -874,14 +1192,8 @@ function normalizeDisplayEvent(ev: TimelineEvent): TimelineEvent {
 const displayEvents = computed(() => {
 	const out: TimelineEvent[] = [];
 	const groupMap = new Map<string, TimelineEvent>();
-	let latestProgressText: string | undefined;
 	for (const ev of timelineEvents.value) {
 		if (ev.type === "progress") {
-			latestProgressText = ev.progressText ?? latestProgressText;
-			for (const group of groupMap.values()) {
-				updateGroupProgressText(group, latestProgressText);
-			}
-			out.push(ev);
 			continue;
 		}
 
@@ -890,13 +1202,14 @@ const displayEvents = computed(() => {
 			out.push(ev);
 			continue;
 		}
-		if (groupMap.has(key)) {
-			updateGroup(groupMap.get(key)!, ev, latestProgressText);
+		const existingGroup = groupMap.get(key);
+		if (existingGroup) {
+			updateGroup(existingGroup, ev);
 		} else {
 			const group = makeGroupEvent(key, ev);
 			groupMap.set(key, group);
 			out.push(group);
-			updateGroup(group, ev, latestProgressText);
+			updateGroup(group, ev);
 		}
 	}
 	return out.map(normalizeDisplayEvent);
@@ -914,11 +1227,18 @@ const hasSolvingStarted = computed(() =>
 const hasSolvingDone = computed(() =>
 	/代码手求解成功|子问题组#\d+.*完成/.test(allMessageText.value),
 );
+const hasSolvingPhaseDone = computed(() =>
+	/并行写作启动|开始终稿整体检查|论文生成完成|任务处理完成/.test(
+		allMessageText.value,
+	),
+);
 const hasWritingStarted = computed(() =>
 	/论文手开始写|并行写作启动|开始终稿整体检查/.test(allMessageText.value),
 );
 const hasWritingDone = computed(() =>
-	/论文手完成|论文生成完成|完成终稿整体检查/.test(allMessageText.value),
+	/开始终稿整体检查|论文生成完成|完成终稿整体检查|任务处理完成/.test(
+		allMessageText.value,
+	),
 );
 const hasFinalDone = computed(
 	() =>
@@ -1002,20 +1322,18 @@ const flowSteps = computed<FlowStep[]>(() => {
 		{
 			key: "solving",
 			label: "代码求解",
-			status:
-				hasWritingStarted.value || hasWritingDone.value
-					? "done"
-					: hasSolvingStarted.value
-						? hasFlowWarning.value
-							? "warning"
-							: "active"
-						: "pending",
-			detail:
-				hasWritingStarted.value || hasWritingDone.value
-					? "已移交写作"
-					: hasSolvingStarted.value
-						? solvingDetail
-						: "未开始",
+			status: hasSolvingPhaseDone.value
+				? "done"
+				: hasSolvingStarted.value
+					? hasFlowWarning.value
+						? "warning"
+						: "active"
+					: "pending",
+			detail: hasSolvingPhaseDone.value
+				? "已移交写作"
+				: hasSolvingStarted.value
+					? solvingDetail
+					: "未开始",
 		},
 		{
 			key: "writing",
@@ -1051,20 +1369,21 @@ const flowSteps = computed<FlowStep[]>(() => {
 const questionStatuses = computed<QuestionStatus[]>(() => {
 	const map = new Map<number, QuestionStatus>();
 	function ensure(index: number) {
-		if (!map.has(index)) {
-			map.set(index, {
-				index,
-				label: `Q${index}`,
-				status: "pending",
-				detail: "等待",
-				debugCount: 0,
-			});
-		}
-		return map.get(index)!;
+		const existing = map.get(index);
+		if (existing) return existing;
+		const created: QuestionStatus = {
+			index,
+			label: `Q${index}`,
+			status: "pending",
+			detail: "等待",
+			debugCount: 0,
+		};
+		map.set(index, created);
+		return created;
 	}
 	for (const msg of props.messages) {
 		const text = messageText(msg);
-		const q = detectQuestionIndex(text, msg as any);
+		const q = detectQuestionIndex(text, msg);
 		if (!q) continue;
 		const item = ensure(q);
 		const isDone = item.status === "done";
@@ -1115,18 +1434,31 @@ const questionStatuses = computed<QuestionStatus[]>(() => {
 		.slice(0, 8);
 });
 
-const currentStage = computed(
-	() =>
-		[...displayEvents.value]
-			.reverse()
-			.find(
-				(e) =>
-					e.status === "running" ||
-					e.status === "warning" ||
-					e.status === "waiting",
-			)?.title ??
-		(props.taskStatus === "completed" ? "任务已完成" : "等待开始"),
-);
+const activeWork = computed(() => {
+	const container = [...displayEvents.value]
+		.reverse()
+		.find(
+			(event) =>
+				event.status === "running" ||
+				event.status === "warning" ||
+				event.status === "waiting",
+		);
+	const latest = container?.isGroup ? latestGroupEvent(container) : container;
+	if (!container || !latest) {
+		return {
+			actor: "SystemMonitor",
+			role: "流程监控",
+			title: props.taskStatus === "completed" ? "任务已完成" : "等待任务启动",
+			status: props.taskStatus === "completed" ? "done" : "waiting",
+		};
+	}
+	return {
+		actor: latest.actor,
+		role: roleMap[latest.actor] ?? latest.role,
+		title: latest.title,
+		status: latest.status ?? container.status ?? "running",
+	};
+});
 const progressSummary = computed(() => {
 	const total = displayEvents.value.length;
 	const done = displayEvents.value.filter((e) => e.status === "done").length;
@@ -1178,14 +1510,6 @@ function questionStatusClass(status: QuestionStatusType) {
 	if (status === "failed") return "border-red-300 bg-red-100 text-red-800";
 	if (status === "plotting") return "border-cyan-200 bg-cyan-50 text-cyan-700";
 	return "border-slate-200 bg-slate-50 text-slate-400";
-}
-
-function groupSubStatusClass(status?: TimelineEvent["status"]) {
-	if (status === "done") return "bg-blue-50 text-blue-700 border-blue-100";
-	if (status === "warning")
-		return "bg-amber-50 text-amber-700 border-amber-100";
-	if (status === "error") return "bg-red-50 text-red-700 border-red-100";
-	return "bg-white/70 text-slate-600 border-slate-100";
 }
 
 function scrollStreamingDetailsToBottom() {
@@ -1244,47 +1568,80 @@ watch(
 
 <template>
 	<div class="flex h-full min-h-0 flex-col bg-slate-50/70">
-		<div class="border-b border-slate-200/80 bg-white/75 px-4 py-3 backdrop-blur">
-			<div class="flex items-center justify-between gap-3">
-				<div class="min-w-0">
-					<div class="flex items-center gap-2"><MessageSquareText class="h-4 w-4 text-blue-600" /><span class="text-sm font-semibold text-slate-900">Agent 对话流</span></div>
-					<p class="mt-1 truncate text-xs text-slate-500">当前：{{ currentStage }}</p>
+		<div class="border-b border-slate-200/80 bg-white/80 px-3 py-2.5 backdrop-blur">
+			<div class="flex min-w-0 items-center gap-2">
+				<div class="flex shrink-0 items-center gap-1.5 text-slate-800">
+					<MessageSquareText class="h-4 w-4 text-blue-600" />
+					<span class="text-xs font-bold">Agent 流程</span>
 				</div>
-				<div class="shrink-0 rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] text-slate-600">{{ progressSummary.done }}/{{ progressSummary.total }} 已完成<span v-if="progressSummary.warnings" class="ml-1 text-amber-600">· {{ progressSummary.warnings }} 个需关注</span></div>
+				<div class="h-4 w-px shrink-0 bg-slate-200" />
+				<div class="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-emerald-100 bg-emerald-50/70 px-2 py-1">
+					<LoaderCircle
+						v-if="activeWork.status === 'running'"
+						class="h-3.5 w-3.5 shrink-0 animate-spin text-emerald-600"
+					/>
+					<AlertTriangle
+						v-else-if="activeWork.status === 'warning' || activeWork.status === 'error'"
+						class="h-3.5 w-3.5 shrink-0 text-amber-600"
+					/>
+					<CheckCircle2
+						v-else-if="activeWork.status === 'done'"
+						class="h-3.5 w-3.5 shrink-0 text-blue-600"
+					/>
+					<Clock3 v-else class="h-3.5 w-3.5 shrink-0 text-slate-400" />
+					<span class="shrink-0 text-[10px] font-semibold text-emerald-700">
+						{{ activeWork.status === 'running' ? '正在工作' : activeWork.status === 'done' ? '已完成' : activeWork.status === 'waiting' ? '等待中' : '需关注' }}
+					</span>
+					<span class="shrink-0 text-[10px] text-slate-400">{{ activeWork.actor }}</span>
+					<span class="truncate text-[11px] font-semibold text-slate-800">{{ activeWork.title }}</span>
+				</div>
+				<div class="shrink-0 text-[10px] text-slate-500">
+					{{ progressSummary.done }}/{{ progressSummary.total }}
+					<span v-if="progressSummary.warnings" class="text-amber-600">· {{ progressSummary.warnings }} 提醒</span>
+				</div>
 			</div>
 
-			<div class="mt-3 rounded-2xl border border-slate-200 bg-white/80 p-2.5 shadow-sm">
-				<div class="mb-2 flex items-center justify-between gap-2">
-					<span class="text-[11px] font-semibold text-slate-600">当前流程</span>
-					<span class="truncate text-[10px] text-slate-400">确认、求解、写作与终稿状态集中显示</span>
+			<div class="mt-2 flex items-center gap-1 overflow-x-auto pb-0.5">
+				<div
+					v-for="step in flowSteps"
+					:key="step.key"
+					class="flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+					:class="flowStepClass(step.status)"
+					:title="step.detail"
+				>
+					<CheckCircle2 v-if="step.status === 'done'" class="h-3 w-3" />
+					<LoaderCircle v-else-if="step.status === 'active'" class="h-3 w-3 animate-spin" />
+					<AlertTriangle v-else-if="step.status === 'warning'" class="h-3 w-3" />
+					<span v-else class="h-1.5 w-1.5 rounded-full bg-current opacity-50" />
+					{{ step.label }}
 				</div>
-				<div class="grid grid-cols-3 gap-1.5 xl:grid-cols-6">
-					<div v-for="step in flowSteps" :key="step.key" class="rounded-xl border px-2 py-1.5" :class="flowStepClass(step.status)">
-						<div class="flex items-center justify-between gap-1">
-							<span class="text-[11px] font-bold">{{ step.label }}</span>
-							<span class="text-[9px] opacity-70">{{ step.status === 'done' ? '完成' : step.status === 'active' ? '进行中' : step.status === 'warning' ? '需关注' : '等待' }}</span>
-						</div>
-						<div class="mt-0.5 truncate text-[10px] opacity-75">{{ step.detail }}</div>
-					</div>
-				</div>
-				<div v-if="questionStatuses.length" class="mt-2 flex flex-wrap gap-1.5">
-					<div v-for="q in questionStatuses" :key="q.index" class="rounded-full border px-2 py-1 text-[10px] font-semibold" :class="questionStatusClass(q.status)">
-						{{ q.label }} · {{ q.detail }}
-					</div>
+				<div class="mx-1 h-3 w-px shrink-0 bg-slate-200" />
+				<div
+					v-for="q in questionStatuses"
+					:key="q.index"
+					class="shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+					:class="questionStatusClass(q.status)"
+				>
+					{{ q.label }} · {{ q.detail }}
 				</div>
 			</div>
 		</div>
 
-		<div ref="scrollRef" class="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5" @scroll="onScroll">
+		<div
+			ref="scrollRef"
+			data-agent-timeline-scroll="true"
+			class="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-3"
+			@scroll="onScroll"
+		>
 			<div v-if="displayEvents.length === 0" class="flex h-full items-center justify-center text-sm text-slate-400">任务消息会以对话流形式显示在这里。</div>
 
 			<div v-for="ev in displayEvents" :key="ev.id" class="flex" :class="{ 'justify-end': ev.side === 'right', 'justify-center': ev.side === 'center', 'justify-start': ev.side === 'left' }">
 				<div v-if="ev.side === 'center'" class="max-w-[90%] rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-500 shadow-sm">{{ ev.title }} <span v-if="ev.progressText" class="ml-1 font-mono text-blue-600">{{ ev.progressText }}</span></div>
 
-				<div v-else class="flex max-w-[96%] gap-2" :class="{ 'flex-row-reverse': ev.side === 'right' }">
-					<div class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-sm" :class="{ 'bg-blue-600 text-white': ev.side === 'left' && ev.status !== 'warning' && ev.status !== 'error', 'bg-amber-500 text-white': ev.status === 'warning', 'bg-red-500 text-white': ev.status === 'error', 'bg-slate-900 text-white': ev.side === 'right' }"><component :is="actorIcon(ev.actor)" class="h-4 w-4" /></div>
+				<div v-else class="flex max-w-[98%] gap-1.5" :class="{ 'flex-row-reverse': ev.side === 'right' }">
+					<div class="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full shadow-sm" :class="{ 'bg-blue-600 text-white': ev.side === 'left' && ev.status !== 'warning' && ev.status !== 'error', 'bg-amber-500 text-white': ev.status === 'warning', 'bg-red-500 text-white': ev.status === 'error', 'bg-slate-900 text-white': ev.side === 'right' }"><component :is="actorIcon(ev.actor)" class="h-3.5 w-3.5" /></div>
 
-					<div class="min-w-0 rounded-2xl border px-3.5 py-3 shadow-sm" :class="{ 'rounded-tl-md border-slate-200 bg-white text-slate-800': ev.side === 'left' && ev.status !== 'warning' && ev.status !== 'error', 'rounded-tr-md border-slate-800 bg-slate-900 text-white': ev.side === 'right', 'rounded-tl-md border-amber-200 bg-amber-50 text-amber-950': ev.status === 'warning', 'rounded-tl-md border-red-200 bg-red-50 text-red-950': ev.status === 'error', 'subproblem-group-card': ev.isGroup }">
+					<div class="min-w-0 rounded-2xl border px-3 py-2.5 shadow-sm" :class="{ 'rounded-tl-md border-slate-200 bg-white text-slate-800': ev.side === 'left' && ev.status !== 'warning' && ev.status !== 'error', 'rounded-tr-md border-slate-800 bg-slate-900 text-white': ev.side === 'right', 'rounded-tl-md border-amber-200 bg-amber-50 text-amber-950': ev.status === 'warning', 'rounded-tl-md border-red-200 bg-red-50 text-red-950': ev.status === 'error', 'subproblem-group-card': ev.isGroup }">
 						<div class="flex items-start justify-between gap-3">
 							<div class="min-w-0">
 								<div class="flex flex-wrap items-center gap-1.5"><span class="text-[11px] font-semibold opacity-70">{{ ev.actor }}</span><span class="text-[10px] opacity-45">{{ ev.role }}</span><span v-for="badge in ev.badges" :key="badge" class="rounded-full border px-1.5 py-0.5 text-[10px] opacity-80">{{ badge }}</span></div>
@@ -1293,22 +1650,24 @@ watch(
 							<span class="shrink-0 text-[10px] opacity-45">{{ ev.timeLabel }}</span>
 						</div>
 
-						<p v-if="ev.detail" class="mt-2 whitespace-pre-wrap text-xs leading-relaxed opacity-80" :class="{ 'streaming-detail': ev.status === 'running' && ev.type === 'raw' }" :data-streaming-detail="ev.status === 'running' && ev.type === 'raw' ? 'true' : undefined">{{ ev.detail }}</p>
-						<p v-if="ev.progressText" class="mt-2 rounded-xl border border-current/10 bg-white/45 px-2.5 py-1.5 text-xs opacity-90">{{ ev.progressText }}</p>
+						<p v-if="ev.detail && !ev.isGroup" class="message-detail mt-1.5 whitespace-pre-wrap break-words text-xs leading-relaxed opacity-80" :class="{ 'streaming-detail': ev.status === 'running' && ev.type === 'raw' }" :data-streaming-detail="ev.status === 'running' && ev.type === 'raw' ? 'true' : undefined">{{ ev.detail }}</p>
+						<p v-if="ev.progressText && !ev.isGroup" class="mt-1.5 rounded-lg border border-current/10 bg-white/45 px-2 py-1 text-[11px] opacity-90">{{ ev.progressText }}</p>
 
-						<div v-if="ev.groupEvents?.length && ev.status !== 'done'" class="mt-3 rounded-2xl border border-slate-200/70 bg-white/55 p-2 shadow-inner">
-							<div class="mb-2 flex items-center justify-between gap-2">
-								<span class="text-[11px] font-bold text-slate-600">组内进度</span>
-								<span class="text-[10px] text-slate-400">{{ ev.groupEvents.length }} 条更新</span>
+						<div v-if="ev.groupEvents?.length && ev.status !== 'done' && latestGroupEvent(ev)" class="mt-2 rounded-xl border border-slate-200/70 bg-white/60 px-2.5 py-2 shadow-inner">
+							<div class="flex items-center gap-1.5 text-[11px]">
+								<span class="flex shrink-0 items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 font-bold text-emerald-700">
+									<span class="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+									当前
+								</span>
+								<span class="min-w-0 flex-1 truncate font-semibold text-slate-700">{{ latestGroupEvent(ev)?.actor }} · {{ latestGroupEvent(ev)?.title }}</span>
+								<span class="shrink-0 text-[10px] text-slate-400">{{ latestGroupEvent(ev)?.timeLabel }}</span>
 							</div>
-							<div class="space-y-1.5">
-								<div v-for="sub in ev.groupEvents" :key="sub.id" class="rounded-xl border px-2.5 py-1.5 text-[11px]" :class="groupSubStatusClass(sub.status)">
-									<div class="flex items-center justify-between gap-2">
-										<span class="min-w-0 truncate font-semibold">{{ sub.actor }} · {{ sub.title }}</span>
-										<span class="shrink-0 opacity-60">{{ sub.timeLabel }}</span>
-									</div>
-									<div v-if="sub.detail" class="mt-0.5 opacity-75" :class="sub.status === 'running' ? 'streaming-detail whitespace-pre-wrap' : 'line-clamp-2'" :data-streaming-detail="sub.status === 'running' ? 'true' : undefined">{{ sub.detail }}</div>
-								</div>
+							<div
+								v-if="hasDistinctDetail(latestGroupEvent(ev))"
+								class="message-detail streaming-detail mt-1.5 whitespace-pre-line break-words text-[11px] leading-relaxed text-slate-500"
+								data-streaming-detail="true"
+							>
+								{{ latestGroupEvent(ev)?.detail }}
 							</div>
 						</div>
 
@@ -1322,7 +1681,7 @@ watch(
 									<p class="mt-0.5 truncate text-[10px] text-slate-500">
 										{{ ev.choiceKind === 'question'
 											? (questionConfirmed ? '问题划分已确认，流程会继续进入建模方案。' : '请确认题目拆成哪些子问题，可先修改再确认。')
-											: (modelingConfirmed ? '建模方案已确认，流程会继续进入代码求解。' : '请为每一问选择建模方案，可重新生成或自定义。') }}
+											: (modelingConfirmed ? '建模方案已确认，ModelerAgent 将先生成整体方案。' : '请为每一问选择建模方案，可重新生成或自定义。') }}
 									</p>
 								</div>
 								<div class="flex shrink-0 items-center gap-1.5">
@@ -1345,7 +1704,7 @@ watch(
 							</div>
 							<div v-else-if="ev.choiceKind === 'modeling' && modelingConfirmed" class="flex items-center gap-2 px-3 py-3 text-xs text-blue-700">
 								<CheckCircle2 class="h-4 w-4 shrink-0" />
-								<span>建模方案已确认，Coder 将按选定方案进入代码求解。</span>
+								<span>建模方案已确认，ModelerAgent 将先生成整体建模方案，再交给 Coder 求解。</span>
 							</div>
 							<div v-else class="agent-conversation-inline-panel p-2 text-xs text-slate-800">
 								<QuestionDiscussion
@@ -1368,8 +1727,33 @@ watch(
 							</div>
 						</div>
 
-						<div v-if="ev.artifacts?.length" class="mt-3 grid gap-1.5">
-							<div v-for="file in ev.artifacts" :key="file" class="flex items-center gap-2 rounded-xl border border-current/10 bg-white/55 px-2.5 py-1.5 text-xs"><FileText class="h-3.5 w-3.5 opacity-70" /><span class="truncate">{{ file }}</span></div>
+						<div v-if="imageArtifactNames(ev.artifacts).length" class="mt-3">
+							<div class="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold text-slate-500">
+								<ImageIcon class="h-3 w-3 text-blue-500" />
+								<span>图片产物</span>
+								<span class="rounded-full bg-blue-50 px-1.5 py-0.5 text-blue-600">{{ imageArtifactNames(ev.artifacts).length }} 张</span>
+							</div>
+							<div class="grid max-h-72 grid-cols-2 gap-2 overflow-y-auto pr-1">
+								<button
+									v-for="file in imageArtifactNames(ev.artifacts)"
+									:key="file"
+									type="button"
+									class="group/image overflow-hidden rounded-xl border border-slate-200 bg-white/80 text-left shadow-sm transition hover:border-blue-300 hover:shadow-md"
+									:title="`查看图片 ${file}`"
+									@click="emit('imageOpen', file)"
+								>
+									<div class="flex h-24 items-center justify-center overflow-hidden bg-slate-50">
+										<img :src="imageArtifactUrl(file)" :alt="normalizeImageFilename(file)" class="h-full w-full object-contain transition duration-200 group-hover/image:scale-[1.03]" loading="lazy" />
+									</div>
+									<div class="flex items-center gap-1.5 border-t border-slate-100 px-2 py-1.5 text-[10px] font-medium text-slate-600">
+										<ImageIcon class="h-3 w-3 shrink-0 text-blue-500" />
+										<span class="truncate">{{ normalizeImageFilename(file) }}</span>
+									</div>
+								</button>
+							</div>
+						</div>
+						<div v-if="nonImageArtifactNames(ev.artifacts).length" class="mt-3 grid gap-1.5">
+							<div v-for="file in nonImageArtifactNames(ev.artifacts)" :key="file" class="flex items-center gap-2 rounded-xl border border-current/10 bg-white/55 px-2.5 py-1.5 text-xs"><FileText class="h-3.5 w-3.5 opacity-70" /><span class="truncate">{{ file }}</span></div>
 						</div>
 					</div>
 				</div>
@@ -1414,15 +1798,9 @@ watch(
 	scrollbar-width: thin;
 }
 
-.streaming-detail::before {
-	content: "实时尾部";
-	display: inline-flex;
-	margin-right: 0.35rem;
-	border-radius: 999px;
-	background: rgba(59, 130, 246, 0.08);
-	padding: 0.12rem 0.42rem;
-	font-size: 0.62rem;
-	font-weight: 700;
-	color: rgba(37, 99, 235, 0.78);
+.message-detail {
+	overflow-wrap: anywhere;
+	word-break: break-word;
 }
+
 </style>

@@ -1,10 +1,12 @@
 """LLM 交互模块，封装大语言模型的调用、重试和消息发送。"""
 
 import asyncio
+import re
+import time
 from typing import Any
+
 from app.utils.common_utils import transform_link, split_footnotes
 from app.utils.log_util import logger
-import time
 from app.schemas.response import (
     AgentMessage,
     CoderMessage,
@@ -16,15 +18,77 @@ from app.schemas.response import (
 )
 from app.services.redis_manager import redis_manager
 from app.schemas.enums import AgentType
-from app.config.setting import ApiType
+from app.config.setting import ApiType, settings
 from app.core.llm.types import StandardResponse
 from app.core.llm.providers.base import BaseProvider
 from app.core.llm.providers.openai_chat import OpenAIChatProvider
 from app.core.llm.providers.openai_responses import OpenAIResponsesProvider
 from app.core.llm.providers.anthropic import AnthropicProvider
 
-# 流式发布节流间隔（秒）
-_STREAM_THROTTLE_SECONDS = 0.08
+# 流式发布节流间隔（秒）。前端只需要“看起来连续”，无需按 token 刷新。
+_STREAM_THROTTLE_SECONDS = max(
+    0.1,
+    float(getattr(settings, "STREAM_PUBLISH_INTERVAL", 0.4)),
+)
+
+_NON_RETRYABLE_STATUS_CODES = {400, 401, 402, 403, 404, 409, 422}
+_NON_RETRYABLE_ERROR_MARKERS = (
+    "insufficient balance",
+    "insufficient quota",
+    "invalid api key",
+    "incorrect api key",
+    "authentication",
+    "permission denied",
+    "billing",
+    "account suspended",
+)
+
+
+class LLMCallError(RuntimeError):
+    """LLM 调用已无法在当前 Agent 内继续尝试。"""
+
+
+class NonRetryableLLMError(LLMCallError):
+    """表示继续重试也无法恢复的 LLM 配置、鉴权或配额错误。"""
+
+
+class LLMRetryExhaustedError(LLMCallError):
+    """表示临时错误已经用完本次 LLM 调用的重试预算。"""
+
+
+def _extract_http_status(exc: Exception) -> int | None:
+    """从 SDK 异常或异常文本中提取 HTTP 状态码。"""
+    for attr in ("status_code", "http_status", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+
+    response = getattr(exc, "response", None)
+    response_status = getattr(response, "status_code", None)
+    if isinstance(response_status, int):
+        return response_status
+
+    match = re.search(r"(?:error\s+code|status(?:_code)?)\s*[:=]\s*(\d{3})", str(exc), re.I)
+    return int(match.group(1)) if match else None
+
+
+def _is_non_retryable_error(exc: Exception) -> bool:
+    """判断异常是否属于必须立即停止的永久错误。"""
+    status = _extract_http_status(exc)
+    if status in _NON_RETRYABLE_STATUS_CODES:
+        return True
+    text = str(exc).lower()
+    return any(marker in text for marker in _NON_RETRYABLE_ERROR_MARKERS)
+
+
+def _retry_limit(max_retries: int | None) -> int:
+    """返回本次调用允许的最大尝试次数，最少执行一次。"""
+    configured = (
+        max_retries
+        if max_retries is not None
+        else getattr(settings, "LLM_MAX_RETRIES", 3)
+    )
+    return max(1, int(configured or 1))
 
 
 class LLM:
@@ -94,6 +158,7 @@ class LLM:
         messages = history or []
 
         attempt = 0
+        retry_limit = _retry_limit(max_retries)
         while True:
             try:
                 response = await self.provider.call(
@@ -113,9 +178,15 @@ class LLM:
             except Exception as e:
                 attempt += 1
                 logger.error(f"第{attempt}次重试: {str(e)}")
-                if max_retries is not None and attempt >= max_retries:
-                    raise
-                time.sleep(retry_delay * min(attempt, 10))
+                if _is_non_retryable_error(e):
+                    raise NonRetryableLLMError(
+                        f"LLM 请求不可重试，请检查 API Key、账户余额或模型权限：{e}"
+                    ) from e
+                if attempt >= retry_limit:
+                    raise LLMRetryExhaustedError(
+                        f"LLM 请求连续失败 {attempt} 次，已停止当前 Agent 尝试：{e}"
+                    ) from e
+                await asyncio.sleep(retry_delay * min(attempt, 10))
 
     async def chat_stream(
         self,
@@ -144,12 +215,12 @@ class LLM:
         messages = history or []
 
         attempt = 0
+        retry_limit = _retry_limit(max_retries)
         while True:
             try:
                 accumulated: list[str] = []
                 accumulated_reasoning: list[str] = []
                 last_publish_time = 0.0
-                publish_task: asyncio.Task | None = None
 
                 async for chunk in self.provider.call_stream(
                     messages=messages,
@@ -200,9 +271,15 @@ class LLM:
             except Exception as e:
                 attempt += 1
                 logger.error(f"第{attempt}次重试 (stream): {str(e)}")
-                if max_retries is not None and attempt >= max_retries:
-                    raise
-                time.sleep(retry_delay * min(attempt, 10))
+                if _is_non_retryable_error(e):
+                    raise NonRetryableLLMError(
+                        f"LLM 请求不可重试，请检查 API Key、账户余额或模型权限：{e}"
+                    ) from e
+                if attempt >= retry_limit:
+                    raise LLMRetryExhaustedError(
+                        f"LLM 请求连续失败 {attempt} 次，已停止当前 Agent 尝试：{e}"
+                    ) from e
+                await asyncio.sleep(retry_delay * min(attempt, 10))
 
     async def _send_streaming_message(
         self,

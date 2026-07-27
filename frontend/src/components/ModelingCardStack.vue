@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { modelingDiscussionChat } from "@/apis/commonApi";
+import {
+	type ModelingDiscussionSuggestedOption,
+	modelingDiscussionChat,
+} from "@/apis/commonApi";
 import { useTaskStore } from "@/stores/task";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-vue-next";
 import { computed, ref, watch } from "vue";
@@ -17,6 +20,9 @@ interface ModelOption {
 	isRecommended?: boolean;
 	sources?: string[];
 	sourceDetails?: Array<Record<string, unknown>>;
+	origin?: "generated" | "discussion";
+	revisionNumber?: number;
+	discussionPrompt?: string;
 }
 
 interface ChatMessage {
@@ -57,21 +63,26 @@ const route = useRoute();
 const taskId = computed(() => route.params.task_id as string);
 const sendingQuestionIndex = ref<number | null>(null);
 
-const allOptionsReady = computed(() =>
-	props.questions.length > 0 && props.questions.every((q) => q.presetOptions.length > 0),
+const allOptionsReady = computed(
+	() =>
+		props.questions.length > 0 &&
+		props.questions.every((q) => q.presetOptions.length > 0),
 );
 
-const allConfirmed = computed(() =>
-	allOptionsReady.value &&
-	props.questions.every(
-		(q) =>
-			Boolean(q.selectedOptionId) &&
-			(q.selectedOptionId !== "__custom__" || Boolean(q.customInput.trim())),
-	),
+const allConfirmed = computed(
+	() =>
+		allOptionsReady.value &&
+		props.questions.every(
+			(q) =>
+				Boolean(q.selectedOptionId) &&
+				(q.selectedOptionId !== "__custom__" || Boolean(q.customInput.trim())),
+		),
 );
 
-const hasRecommendedOptions = computed(() =>
-	allOptionsReady.value && props.questions.some((q) => Boolean(getRecommendedOption(q))),
+const hasRecommendedOptions = computed(
+	() =>
+		allOptionsReady.value &&
+		props.questions.some((q) => Boolean(getRecommendedOption(q))),
 );
 
 watch(
@@ -119,17 +130,28 @@ watch(
 );
 
 function referenceStatusText() {
-	const tools = props.referenceSearchEnabled ? (props.referenceTools || []) : [];
-	return tools.length ? `参考文献工具：${tools.join("、")}` : "未使用参考文献检索工具";
+	const tools = props.referenceSearchEnabled ? props.referenceTools || [] : [];
+	return tools.length
+		? `参考文献工具：${tools.join("、")}`
+		: "未使用参考文献检索工具";
 }
 
 function handleSelectOption(questionIndex: number, optionId: string) {
 	if (!allOptionsReady.value) return;
-	const question = props.questions.find((q) => q.questionIndex === questionIndex);
-	const selectedOption = question?.presetOptions.find((option) => option.id === optionId);
+	const question = props.questions.find(
+		(q) => q.questionIndex === questionIndex,
+	);
+	const selectedOption = question?.presetOptions.find(
+		(option) => option.id === optionId,
+	);
 	const updated = props.questions.map((q) =>
 		q.questionIndex === questionIndex
-			? { ...q, selectedOptionId: optionId, confirmed: optionId === "__custom__" ? Boolean(q.customInput.trim()) : true }
+			? {
+					...q,
+					selectedOptionId: optionId,
+					confirmed:
+						optionId === "__custom__" ? Boolean(q.customInput.trim()) : true,
+				}
 			: q,
 	);
 	emit("update:questions", updated);
@@ -147,7 +169,12 @@ function handleCustomInput(questionIndex: number, value: string) {
 	if (!allOptionsReady.value) return;
 	const updated = props.questions.map((q) =>
 		q.questionIndex === questionIndex
-			? { ...q, customInput: value, selectedOptionId: value ? "__custom__" : q.selectedOptionId, confirmed: !!value }
+			? {
+					...q,
+					customInput: value,
+					selectedOptionId: value ? "__custom__" : q.selectedOptionId,
+					confirmed: !!value,
+				}
 			: q,
 	);
 	emit("update:questions", updated);
@@ -155,27 +182,30 @@ function handleCustomInput(questionIndex: number, value: string) {
 
 function getRecommendedOption(question: QuestionCard) {
 	if (!question.presetOptions.length) return null;
-	const explicit = question.recommendedOptionId ? question.presetOptions.find((option) => option.id === question.recommendedOptionId) : null;
+	const explicit = question.recommendedOptionId
+		? question.presetOptions.find(
+				(option) => option.id === question.recommendedOptionId,
+			)
+		: null;
 	if (explicit) return explicit;
 	const marked = question.presetOptions.find((option) => option.isRecommended);
 	if (marked) return marked;
-	return [...question.presetOptions].sort((left, right) => (right.score ?? -1) - (left.score ?? -1))[0];
+	return [...question.presetOptions].sort(
+		(left, right) => (right.score ?? -1) - (left.score ?? -1),
+	)[0];
 }
 
 function handleApplyRecommended() {
-	if (props.disabled || !hasRecommendedOptions.value || !allOptionsReady.value) return;
-	const applied = props.questions
-		.map((q) => {
-			const recommended = getRecommendedOption(q);
-			return recommended ? `第 ${q.questionIndex} 问：${recommended.label}` : "";
-		})
-		.filter(Boolean);
+	if (props.disabled || !hasRecommendedOptions.value || !allOptionsReady.value)
+		return;
 	const updated = props.questions.map((q) => {
 		const recommended = getRecommendedOption(q);
-		return recommended ? { ...q, selectedOptionId: recommended.id, confirmed: true } : q;
+		return recommended
+			? { ...q, selectedOptionId: recommended.id, confirmed: true }
+			: q;
 	});
 	emit("update:questions", updated);
-	taskStore.addUserAction("应用", "最优模型方案", `用户一键应用 AI 推荐的最优模型方案：${applied.join("；")}`, {
+	taskStore.addUserAction("选择", "最优模型方案", "选择最优模型方案", {
 		from: "User",
 		to: "ModelerAgent",
 		label: "采纳AI推荐",
@@ -188,7 +218,11 @@ function questionPayload(items: QuestionCard[]) {
 		questionTitle: q.questionTitle,
 		questionText: q.questionText,
 		selectedOptionId: q.selectedOptionId,
-		selectedModel: q.selectedOptionId === "__custom__" ? q.customInput : (q.presetOptions.find((option) => option.id === q.selectedOptionId)?.label ?? q.selectedOptionId),
+		selectedModel:
+			q.selectedOptionId === "__custom__"
+				? q.customInput
+				: (q.presetOptions.find((option) => option.id === q.selectedOptionId)
+						?.label ?? q.selectedOptionId),
 		customInput: q.customInput,
 		chatHistory: q.chatHistory,
 		presetOptions: q.presetOptions,
@@ -196,10 +230,55 @@ function questionPayload(items: QuestionCard[]) {
 	}));
 }
 
+function buildDiscussionOption(
+	question: QuestionCard,
+	suggested: ModelingDiscussionSuggestedOption | null | undefined,
+	reply: string,
+	prompt: string,
+): ModelOption {
+	const revisionNumber =
+		Math.max(
+			0,
+			...question.presetOptions
+				.filter((option) => option.origin === "discussion")
+				.map((option) => option.revisionNumber ?? 0),
+		) + 1;
+	const description =
+		suggested?.description?.trim() ||
+		reply.trim() ||
+		"根据本轮讨论生成的修订建模方案。";
+
+	return {
+		id: `discussion_revision_${question.questionIndex}_${revisionNumber}_${Date.now()}`,
+		label: suggested?.label?.trim() || `讨论修订方案 ${revisionNumber}`,
+		description,
+		reason:
+			suggested?.reason?.trim() || "根据本轮讨论对现有候选方案进行补充和调整。",
+		pros: suggested?.pros?.trim(),
+		cons: suggested?.cons?.trim(),
+		origin: "discussion",
+		revisionNumber,
+		discussionPrompt: prompt,
+	};
+}
+
 async function handleSendMessage(questionIndex: number, message: string) {
-	if (sendingQuestionIndex.value != null || props.disabled || !allOptionsReady.value) return;
+	if (
+		sendingQuestionIndex.value != null ||
+		props.disabled ||
+		!allOptionsReady.value
+	)
+		return;
 	const withUser = props.questions.map((q) =>
-		q.questionIndex === questionIndex ? { ...q, chatHistory: [...q.chatHistory, { role: "user" as const, content: message }] } : q,
+		q.questionIndex === questionIndex
+			? {
+					...q,
+					chatHistory: [
+						...q.chatHistory,
+						{ role: "user" as const, content: message },
+					],
+				}
+			: q,
 	);
 	emit("update:questions", withUser);
 	taskStore.addUserAction(
@@ -215,20 +294,52 @@ async function handleSendMessage(questionIndex: number, message: string) {
 			message,
 			questions: questionPayload(withUser),
 			reference_search_enabled: Boolean(props.referenceSearchEnabled),
-			reference_tools: props.referenceSearchEnabled ? (props.referenceTools || []) : [],
+			reference_tools: props.referenceSearchEnabled
+				? props.referenceTools || []
+				: [],
 		});
 		if (props.disabled) return;
+		const assistantContent = res.data.content || res.data.message;
 		const withAssistant = withUser.map((q) =>
 			q.questionIndex === questionIndex
-				? { ...q, chatHistory: [...q.chatHistory, { role: "assistant" as const, content: res.data.content || res.data.message }] }
+				? {
+						...q,
+						presetOptions: [
+							...q.presetOptions,
+							buildDiscussionOption(
+								q,
+								res.data.suggested_option,
+								assistantContent,
+								message,
+							),
+						],
+						chatHistory: [
+							...q.chatHistory,
+							{ role: "assistant" as const, content: assistantContent },
+						],
+					}
 				: q,
 		);
 		emit("update:questions", withAssistant);
 	} catch (error) {
-		const detail = typeof error === "object" && error && "response" in error && (error as { response?: { data?: { detail?: string } } }).response?.data?.detail;
+		const detail =
+			typeof error === "object" &&
+			error &&
+			"response" in error &&
+			(error as { response?: { data?: { detail?: string } } }).response?.data
+				?.detail;
 		const withError = withUser.map((q) =>
 			q.questionIndex === questionIndex
-				? { ...q, chatHistory: [...q.chatHistory, { role: "assistant" as const, content: detail || "建模讨论暂时失败，请稍后重试。" }] }
+				? {
+						...q,
+						chatHistory: [
+							...q.chatHistory,
+							{
+								role: "assistant" as const,
+								content: detail || "建模讨论暂时失败，请稍后重试。",
+							},
+						],
+					}
 				: q,
 		);
 		emit("update:questions", withError);

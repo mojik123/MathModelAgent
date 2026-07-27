@@ -20,4 +20,4 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host ">>> 完成!" -ForegroundColor Green
 }
 
-Read-Host "按回车关闭"
+Read-Host "Press Enter to close"

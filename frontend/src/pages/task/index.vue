@@ -32,6 +32,8 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useTaskStore } from "@/stores/task";
+import { AgentType } from "@/utils/enum";
+import { isImageFile, normalizeImageFilename } from "@/utils/imageConstants";
 import {
 	Archive,
 	ArrowLeft,
@@ -66,12 +68,74 @@ const router = useRouter();
 const writerSequence = ref<string[]>([]);
 const paperRefreshKey = ref(0);
 const galleryRefreshKey = ref(0);
+const knownTimelineImages = new Set<string>();
+let imageTimelineSyncTimer: ReturnType<typeof setTimeout> | null = null;
+let imageTimelinePollTimer: ReturnType<typeof setInterval> | null = null;
+let imageTimelineSyncing = false;
 
-// 新消息到达时自动刷新图片/代码预览
+function messageMentionsImage(filename: string) {
+	const baseName = normalizeImageFilename(filename);
+	return taskStore.messages.some((message) => {
+		const text = [
+			message.content ?? "",
+			message.action?.object ?? "",
+			message.action?.detail ?? "",
+		].join("\n");
+		return (
+			(text.includes(filename) || text.includes(baseName)) &&
+			/图片生成完成|已生成图片描述|图片修订完成|图片已重新生成/.test(text)
+		);
+	});
+}
+
+async function syncImageTimelineEvents() {
+	if (imageTimelineSyncing || !props.task_id) return;
+	imageTimelineSyncing = true;
+	try {
+		const response = await getFiles(props.task_id);
+		const imageFiles = (Array.isArray(response.data) ? response.data : [])
+			.map((file) => file.filename)
+			.filter(
+				(filename): filename is string =>
+					Boolean(filename) && isImageFile(filename),
+			);
+		for (const filename of imageFiles) {
+			if (knownTimelineImages.has(filename)) continue;
+			knownTimelineImages.add(filename);
+			if (messageMentionsImage(filename)) continue;
+			taskStore.addAgentAction(
+				AgentType.CODER,
+				"生成",
+				`图片 ${filename}`,
+				`图片生成完成：${filename}`,
+				{
+					from: "CoderAgent",
+					to: "User",
+					label: "展示图片产物",
+				},
+			);
+		}
+	} catch (error) {
+		console.warn("同步对话流图片事件失败:", error);
+	} finally {
+		imageTimelineSyncing = false;
+	}
+}
+
+function scheduleImageTimelineSync() {
+	if (imageTimelineSyncTimer) clearTimeout(imageTimelineSyncTimer);
+	imageTimelineSyncTimer = setTimeout(() => {
+		imageTimelineSyncTimer = null;
+		void syncImageTimelineEvents();
+	}, 450);
+}
+
+// 新消息到达时自动刷新图片/代码预览，并补齐图片产物事件
 watch(
 	() => taskStore.messages.length,
 	() => {
 		galleryRefreshKey.value += 1;
+		scheduleImageTimelineSync();
 	},
 );
 const startTime = ref<number>(Date.now());
@@ -117,6 +181,15 @@ const terminalRuntimeStatuses = new Set([
 	"interrupted",
 ]);
 const activeTab = ref<"modeler" | "writer" | "images" | "code">("modeler");
+const imageFocusFilename = ref("");
+const imageFocusRequest = ref(0);
+
+function openTimelineImage(filename: string) {
+	imageFocusFilename.value = filename;
+	imageFocusRequest.value += 1;
+	activeTab.value = "images";
+	galleryRefreshKey.value += 1;
+}
 
 // ---- 子任务进度追踪 ----
 
@@ -420,13 +493,13 @@ const overallProgress = computed(() => {
 	const runtimeProgress =
 		taskStore.currentProgress?.percentage ??
 		taskStore.taskRuntimeState?.progress;
-	if (runtimeStatus.value === "completed" || runtimeStatus.value === "failed") {
+	if (runtimeStatus.value === "completed") {
 		return 100;
 	}
 	if (latestSystemType.value === "success") return 100;
-	// 仅在任务未处于活跃运行状态时才用历史错误消息拉满进度
-	if (latestSystemType.value === "error" && !taskStore.isRunning) return 100;
-	if (isStoppedLike.value) return Math.round(runtimeProgress ?? 0);
+	if (runtimeStatus.value === "failed" || isStoppedLike.value) {
+		return Math.round(runtimeProgress ?? 0);
+	}
 	if (runtimeProgress != null) {
 		return Math.max(
 			Math.round(runtimeProgress),
@@ -748,8 +821,7 @@ async function downloadSingleFile(filename: string) {
 
 function getFileIcon(filename: string) {
 	const ext = filename.split(".").pop()?.toLowerCase() ?? "";
-	if (["png", "jpg", "jpeg", "gif", "bmp", "webp", "svg"].includes(ext))
-		return FileImage;
+	if (isImageFile(filename)) return FileImage;
 	if (["py", "ipynb", "js", "ts", "json", "vue"].includes(ext)) return FileCode;
 	if (["csv", "xlsx", "xls"].includes(ext)) return FileSpreadsheet;
 	if (["txt", "md", "xml", "yml", "yaml"].includes(ext)) return FileText;
@@ -779,6 +851,7 @@ async function loadCurrentTask(taskId: string) {
 	if (wasRunning) {
 		taskStore.connectWebSocket(taskId);
 	}
+	await syncImageTimelineEvents();
 	// 刷新后重新检查是否需要显示模型对比区（绕过 watcher 时序问题）
 	if (!discussionLocked.value) {
 		const hasWait = taskStore.messages.some(
@@ -939,6 +1012,7 @@ watch(
 watch(
 	() => props.task_id,
 	(taskId) => {
+		knownTimelineImages.clear();
 		questionDiscussionAvailable.value = false;
 		questionDiscussionExpanded.value = false;
 		questionDiscussionLocked.value = false;
@@ -984,11 +1058,15 @@ onMounted(async () => {
 		: [];
 	updateDuration();
 	timer = setInterval(updateDuration, 1000);
+	scheduleImageTimelineSync();
+	imageTimelinePollTimer = setInterval(scheduleImageTimelineSync, 5000);
 });
 
 onBeforeUnmount(() => {
 	taskStore.closeWebSocket();
 	if (timer) clearInterval(timer);
+	if (imageTimelineSyncTimer) clearTimeout(imageTimelineSyncTimer);
+	if (imageTimelinePollTimer) clearInterval(imageTimelinePollTimer);
 });
 </script>
 
@@ -1155,6 +1233,7 @@ onBeforeUnmount(() => {
             :taskId="props.task_id"
             @question-confirm="onQuestionConfirmed"
             @modeling-confirm="onModelingConfirmed"
+            @image-open="openTimelineImage"
           />
         </div>
       </ResizablePanel>
@@ -1185,7 +1264,12 @@ onBeforeUnmount(() => {
               />
             </TabsContent>
             <TabsContent value="images" class="h-full m-0 p-0 overflow-y-auto">
-              <ImageGallery :task_id="props.task_id" :refresh-key="galleryRefreshKey" />
+              <ImageGallery
+                :task_id="props.task_id"
+                :refresh-key="galleryRefreshKey"
+                :focus-filename="imageFocusFilename"
+                :focus-request="imageFocusRequest"
+              />
             </TabsContent>
             <TabsContent value="code" class="h-full m-0 p-0 overflow-y-auto">
               <CodeGallery :task_id="props.task_id" :refresh-key="galleryRefreshKey" />

@@ -54,11 +54,6 @@ def validate_section_output(
 
         cn = CN_NUM.get(n, str(n))
         heading_candidates = [f"5.{n}", f"问题{n}", f"第{n}问", f"问题{cn}", f"第{cn}问"]
-        required_tokens = [
-            *heading_candidates,
-            "模型",
-            "求解",
-        ]
         heading_ok = any(h in text for h in heading_candidates)
         if not heading_ok:
             issues.append(f"{key} 缺少章节标题标识（5.{n}/问题{n}/问题{cn}）")
