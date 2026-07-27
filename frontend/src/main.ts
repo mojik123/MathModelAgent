@@ -13,6 +13,7 @@ import { installImageGalleryTitleDomPatch } from "@/utils/imageGalleryTitleDom";
 import { installModelingDiscussionSync } from "@/utils/modelingDiscussionSync";
 import { installPaperPreviewDomPatch } from "@/utils/paperPreviewDom";
 import { installPaperPreviewLayoutDomPatch } from "@/utils/paperPreviewLayoutDom";
+import { installSmoothStreamingTextDomPatch } from "@/utils/smoothStreamingTextDom";
 import piniaPluginPersistedstate from "pinia-plugin-persistedstate";
 
 const pinia = createPinia();
@@ -33,3 +34,4 @@ installChatAgentDuplicateDomPatch();
 installChatChoiceCardDomPatch();
 installPaperPreviewDomPatch();
 installPaperPreviewLayoutDomPatch();
+installSmoothStreamingTextDomPatch();
