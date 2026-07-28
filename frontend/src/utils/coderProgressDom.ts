@@ -6,6 +6,8 @@ import { watch } from "vue";
 const STYLE_ID = "coder-progress-dom-style";
 const PANEL_ATTR = "data-coder-progress-panel";
 const HIDDEN_CURRENT_ATTR = "data-coder-default-current-hidden";
+const TIMELINE_SELECTOR = "[data-agent-timeline-scroll='true']";
+const CURRENT_ACTION_DOCK_SELECTOR = '[data-current-action-generated="dock"]';
 const MAX_ACTIONS = 5;
 
 let installed = false;
@@ -348,6 +350,46 @@ function createPanel() {
 	return panel;
 }
 
+function revealExpandedAction(node: HTMLDetailsElement) {
+	requestAnimationFrame(() => {
+		requestAnimationFrame(() => {
+			if (!node.open || !node.isConnected) return;
+			const timeline = node.closest(TIMELINE_SELECTOR);
+			if (!(timeline instanceof HTMLElement)) return;
+
+			const timelineRect = timeline.getBoundingClientRect();
+			const dock = document.querySelector<HTMLElement>(
+				CURRENT_ACTION_DOCK_SELECTOR,
+			);
+			const dockRect =
+				dock && dock.getClientRects().length > 0
+					? dock.getBoundingClientRect()
+					: null;
+			const safeTop = timelineRect.top + 10;
+			const safeBottom = Math.min(
+				timelineRect.bottom - 10,
+				dockRect ? dockRect.top - 12 : timelineRect.bottom - 10,
+			);
+			const actionRect = node.getBoundingClientRect();
+			const availableHeight = Math.max(80, safeBottom - safeTop);
+
+			let scrollDelta = 0;
+			if (actionRect.height >= availableHeight) {
+				scrollDelta = actionRect.top - safeTop;
+			} else if (actionRect.bottom > safeBottom) {
+				scrollDelta = actionRect.bottom - safeBottom;
+			} else if (actionRect.top < safeTop) {
+				scrollDelta = actionRect.top - safeTop;
+			}
+			if (Math.abs(scrollDelta) < 2) return;
+			timeline.scrollBy({
+				top: scrollDelta,
+				behavior: "smooth",
+			});
+		});
+	});
+}
+
 function createActionNode(key: string) {
 	const node = document.createElement("details");
 	node.className = "cp-action";
@@ -355,6 +397,9 @@ function createActionNode(key: string) {
 	node.innerHTML = `<summary><span class="cp-event-icon" aria-hidden="true"></span><span class="cp-title"></span><span class="cp-state"></span><span class="cp-arrow" aria-hidden="true">›</span></summary><pre class="cp-detail"></pre>`;
 	node.querySelector("summary")?.addEventListener("click", (event) => {
 		if (node.dataset.expandable !== "true") event.preventDefault();
+	});
+	node.addEventListener("toggle", () => {
+		if (node.open) revealExpandedAction(node);
 	});
 	return node;
 }
