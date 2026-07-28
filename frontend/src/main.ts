@@ -22,6 +22,7 @@ import { installSmoothStreamingTextDomPatch } from "@/utils/smoothStreamingTextD
 import { installStopLifecycleDomPatch } from "@/utils/stopLifecycleDom";
 import { installTimelineArtifactScope } from "@/utils/timelineArtifactScope";
 import { installTimelineWordingDomPatch } from "@/utils/timelineWordingDom";
+import { installUserConfirmationCardDomPatch } from "@/utils/userConfirmationCardDom";
 import { installWorkflowStageClarityDomPatch } from "@/utils/workflowStageClarityDom";
 import piniaPluginPersistedstate from "pinia-plugin-persistedstate";
 
@@ -44,6 +45,7 @@ installModelingDiscussionSync();
 installChatPhaseDividerDomPatch();
 installChatAgentDuplicateDomPatch();
 installChatChoiceCardDomPatch();
+installUserConfirmationCardDomPatch();
 installChatTimelineChronologyDomPatch();
 installPaperPreviewDomPatch();
 installPaperPreviewLayoutDomPatch();
