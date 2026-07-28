@@ -14,6 +14,7 @@ import { installModelingDiscussionSync } from "@/utils/modelingDiscussionSync";
 import { installPaperPreviewDomPatch } from "@/utils/paperPreviewDom";
 import { installPaperPreviewLayoutDomPatch } from "@/utils/paperPreviewLayoutDom";
 import { installSmoothStreamingTextDomPatch } from "@/utils/smoothStreamingTextDom";
+import { installTimelineWordingDomPatch } from "@/utils/timelineWordingDom";
 import piniaPluginPersistedstate from "pinia-plugin-persistedstate";
 
 const pinia = createPinia();
@@ -26,6 +27,7 @@ app.mount("#app");
 
 installArtifactEditChatDomPatch();
 installCompactTimelineDomPatch();
+installTimelineWordingDomPatch(pinia);
 installChatArtifactLinkDomPatch();
 installImageGalleryTitleDomPatch();
 installModelingDiscussionSync();
