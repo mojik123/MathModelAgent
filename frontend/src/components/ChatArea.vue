@@ -1051,10 +1051,16 @@ function groupStatus(events: TimelineEvent[]): TimelineEvent["status"] {
 		return latest.status;
 	if (latest?.status === "error" || latest?.status === "warning")
 		return latest.status;
-	if (latest && isExplicitGroupCompletion(latest)) return "done";
+
+	const lastActiveIndex = events.findLastIndex(
+		(ev) => ev.status === "running" || ev.status === "waiting",
+	);
+	const lastCompletionIndex = events.findLastIndex(isExplicitGroupCompletion);
+	if (lastCompletionIndex > lastActiveIndex) return "done";
 
 	// 单段代码/单次模型响应完成不代表整个阶段完成。只要此前进入过运行态，
 	// 在收到明确的“求解完成/写作完成”事件前都保持进行中，避免状态闪烁。
+	// 完成后的图片、代码附件只追加产物，不能把已经结束的阶段重新激活。
 	if (events.some((ev) => ev.status === "running")) return "running";
 	return latest?.status ?? "running";
 }
@@ -1608,18 +1614,6 @@ function questionStatusClass(status: QuestionStatusType) {
 	return "border-slate-200 bg-slate-50 text-slate-400";
 }
 
-function scrollStreamingDetailsToBottom() {
-	nextTick(() => {
-		const el = scrollRef.value;
-		if (!el) return;
-		for (const node of el.querySelectorAll<HTMLElement>(
-			"[data-streaming-detail='true']",
-		)) {
-			node.scrollTop = node.scrollHeight;
-		}
-	});
-}
-
 function scrollToBottom(force = false) {
 	const el = scrollRef.value;
 	if (!el) return;
@@ -1653,15 +1647,6 @@ watch(
 	() => {
 		if (!streamingSignature.value) return;
 		scrollToBottom();
-		scrollStreamingDetailsToBottom();
-	},
-	{ flush: "post" },
-);
-watch(
-	displayEvents,
-	() => {
-		if (!hasStreamingMessage.value) return;
-		scrollStreamingDetailsToBottom();
 	},
 	{ flush: "post" },
 );

@@ -81,7 +81,8 @@ function addStyle() {
 [${PANEL_ATTR}="true"] .cp-action[open]>summary{background:rgba(226,232,240,.48);color:rgb(30 41 59)}
 [${PANEL_ATTR}="true"] .cp-action[data-expandable="false"]>summary{cursor:default}
 [${PANEL_ATTR}="true"] .cp-action[data-expandable="false"] .cp-arrow{visibility:hidden}
-[${PANEL_ATTR}="true"] .cp-detail{margin:.12rem .2rem .38rem 1.42rem;max-height:13rem;overflow:auto;white-space:pre;word-break:normal;border-radius:.45rem;background:rgb(15 23 42);padding:.62rem .7rem;font:10px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:rgb(226 232 240);scrollbar-width:thin}
+[${PANEL_ATTR}="true"] .cp-action:not([open])>.cp-detail{display:none}
+[${PANEL_ATTR}="true"] .cp-detail{margin:.12rem .2rem .38rem 1.42rem;max-height:13rem;overflow:auto;overscroll-behavior:auto!important;scrollbar-gutter:stable;white-space:pre;word-break:normal;border-radius:.45rem;background:rgb(15 23 42);padding:.62rem .7rem;font:10px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:rgb(226 232 240);scrollbar-width:thin}
 [${PANEL_ATTR}="true"] .cp-action[data-expandable="false"] .cp-detail{display:none}
 [${PANEL_ATTR}="true"] .cp-action[data-active="true"] .cp-event-icon{color:rgb(16 185 129)}
 [${PANEL_ATTR}="true"] .cp-action[data-active="true"] .cp-event-icon::before{background:currentColor;animation:cpDotPulse 1.6s ease-in-out infinite}
