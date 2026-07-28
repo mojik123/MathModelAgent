@@ -81,6 +81,7 @@ interface TimelineEvent {
 	groupPhase?:
 		| "question"
 		| "writing"
+		| "eda-writing"
 		| "planning"
 		| "modeling"
 		| "coding"
@@ -333,7 +334,11 @@ function detectQuestionIndex(text: string, msg?: Message): number | null {
 	if (typeof msg?.question_index === "number") {
 		return msg.question_index > 0 ? msg.question_index : null;
 	}
-	const groupIdentity = msg?.group_id ?? msg?.agent_instance_id ?? "";
+	const groupIdentity = [
+		msg?.id ?? "",
+		msg?.group_id ?? "",
+		msg?.agent_instance_id ?? "",
+	].join(" ");
 	const fromGroup = String(groupIdentity).match(/q(?:ues)?(\d+)|组#(\d+)/i);
 	if (fromGroup) return Number(fromGroup[1] || fromGroup[2]);
 	const explicitQuestion = text.match(
@@ -995,6 +1000,14 @@ function groupKeyOf(ev: TimelineEvent) {
 		return "";
 	const text = `${ev.title}\n${ev.detail ?? ""}`;
 	if (
+		!ev.questionIndex &&
+		ev.actor === "WriterAgent" &&
+		(/writer-eda/i.test(ev.id) ||
+			/\bEDA\b|探索性数据分析|数据来源与质量审计/.test(text))
+	) {
+		return "writing-eda";
+	}
+	if (
 		ev.questionIndex &&
 		["SubCoordinatorAgent", "CoderAgent", "WriterAgent"].includes(ev.actor)
 	) {
@@ -1049,6 +1062,12 @@ function groupStatus(events: TimelineEvent[]): TimelineEvent["status"] {
 function groupTitle(group: TimelineEvent) {
 	const events = group.groupEvents ?? [];
 	const latest = events[events.length - 1];
+	if (group.groupPhase === "eda-writing") {
+		if (group.status === "done") return "EDA 分析章节写作 · 已完成";
+		if (group.status === "warning") return "EDA 分析章节写作 · 需关注";
+		if (group.status === "error") return "EDA 分析章节写作 · 已停止";
+		return "EDA 分析章节写作 · 进行中";
+	}
 	if (group.groupPhase === "writing") {
 		if (group.status === "done") return "并行写作组 · 已完成";
 		if (group.status === "warning") return "并行写作组 · 需关注";
@@ -1086,6 +1105,7 @@ function pushUnique<T>(source: T[] | undefined, values: T[]) {
 
 function groupPhaseFromKey(key: string): TimelineEvent["groupPhase"] {
 	if (key.startsWith("question-")) return "question";
+	if (key === "writing-eda") return "eda-writing";
 	if (key === "writing-parallel") return "writing";
 	if (key === "phase-planning") return "planning";
 	if (key === "phase-modeling") return "modeling";
@@ -1098,6 +1118,7 @@ function phaseLabel(phase?: TimelineEvent["groupPhase"]) {
 	if (phase === "planning") return "规划阶段";
 	if (phase === "modeling") return "建模阶段";
 	if (phase === "coding") return "代码求解";
+	if (phase === "eda-writing") return "EDA 章节";
 	if (phase === "final") return "终稿整合";
 	if (phase === "writing") return "并行写作组";
 	return "阶段过程";
@@ -1110,14 +1131,13 @@ function phaseActor(
 	if (phase === "planning" || phase === "final") return "CoordinatorAgent";
 	if (phase === "modeling") return "ModelerAgent";
 	if (phase === "coding") return "CoderAgent";
-	if (phase === "writing") return "WriterAgent";
+	if (phase === "writing" || phase === "eda-writing") return "WriterAgent";
 	if (phase === "question") return "SubCoordinatorAgent";
 	return fallback;
 }
 
 function makeGroupEvent(key: string, ev: TimelineEvent): TimelineEvent {
 	const phase = groupPhaseFromKey(key);
-	const isWriting = phase === "writing";
 	const isQuestion = phase === "question";
 	const actor = phaseActor(phase, ev.actor);
 	const group: TimelineEvent = {

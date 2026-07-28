@@ -297,6 +297,7 @@ function normalizeRole(card: HTMLElement) {
 		建模阶段: "方案细化",
 		代码求解: "模型计算",
 		并行写作组: "章节写作",
+		"EDA 章节": "章节写作",
 		终稿整合: "终稿检查",
 	};
 	const current = textOf(role);
