@@ -13,7 +13,6 @@ import { installChatTimelineChronologyDomPatch } from "@/utils/chatTimelineChron
 import { installCoderProgressDomPatch } from "@/utils/coderProgressDom";
 import { installCompactTimelineDomPatch } from "@/utils/compactTimelineDom";
 import { installCurrentActionDockDomPatch } from "@/utils/currentActionDockDom";
-import { installCurrentActionDockPositionDomPatch } from "@/utils/currentActionDockPositionDom";
 import { installImageGalleryTitleDomPatch } from "@/utils/imageGalleryTitleDom";
 import { installModelingDiscussionSync } from "@/utils/modelingDiscussionSync";
 import { installPaperPreviewDomPatch } from "@/utils/paperPreviewDom";
@@ -54,4 +53,3 @@ installCoderProgressDomPatch();
 installStopLifecycleDomPatch();
 installWorkflowStageClarityDomPatch();
 installCurrentActionDockDomPatch();
-installCurrentActionDockPositionDomPatch();
