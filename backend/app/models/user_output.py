@@ -4,6 +4,7 @@ import os
 import re
 from app.utils.data_recorder import DataRecorder
 from app.schemas.A2A import WriterResponse
+from app.utils.paper_internal_label_cleanup import clean_internal_metric_labels
 from app.utils.paper_math_cleanup import clean_empty_display_math_blocks
 import json
 import uuid
@@ -20,6 +21,7 @@ def clean_final_paper_markdown(text: str) -> str:
     if fence_match:
         cleaned = fence_match.group(1).strip()
     cleaned = clean_empty_display_math_blocks(cleaned)
+    cleaned = clean_internal_metric_labels(cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     try:
         from app.utils.paper_cleaner import clean_chinese_paper_markdown
@@ -27,6 +29,7 @@ def clean_final_paper_markdown(text: str) -> str:
         cleaned = clean_chinese_paper_markdown(cleaned)
     except Exception:
         cleaned = cleaned.strip() + "\n"
+    cleaned = clean_internal_metric_labels(cleaned)
     return clean_empty_display_math_blocks(cleaned)
 
 
@@ -176,6 +179,7 @@ class UserOutput:
 
             text_to_save = apply_artifact_patches_to_markdown(text_to_save, self.work_dir)
             text_to_save = clean_chinese_paper_markdown(text_to_save)
+            text_to_save = clean_internal_metric_labels(text_to_save)
             text_to_save = clean_empty_display_math_blocks(text_to_save)
         except Exception as exc:
             print(f"[artifact_edits] apply patches failed: {exc}")
