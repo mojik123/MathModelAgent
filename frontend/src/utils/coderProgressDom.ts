@@ -6,7 +6,7 @@ import { watch } from "vue";
 const STYLE_ID = "coder-progress-dom-style";
 const PANEL_ATTR = "data-coder-progress-panel";
 const HIDDEN_CURRENT_ATTR = "data-coder-default-current-hidden";
-const MAX_ACTIONS = 5;
+const MAX_ACTIONS = 4;
 
 let installed = false;
 let scheduled = false;
@@ -57,27 +57,29 @@ function addStyle() {
 	style.id = STYLE_ID;
 	style.textContent = `
 [${HIDDEN_CURRENT_ATTR}="true"]{display:none!important}
-[${PANEL_ATTR}="true"]{margin-top:.55rem;overflow:hidden;border:1px solid rgba(148,163,184,.28);border-radius:.8rem;background:rgba(255,255,255,.7);box-shadow:inset 0 1px 0 rgba(255,255,255,.75)}
-[${PANEL_ATTR}="true"] .cp-head{display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:.45rem .6rem;border-bottom:1px solid rgba(148,163,184,.16);font-size:10px;color:rgb(71 85 105)}
-[${PANEL_ATTR}="true"] .cp-count{border:1px solid rgba(59,130,246,.18);border-radius:999px;background:rgba(239,246,255,.88);padding:2px 7px;font-weight:750;color:rgb(29 78 216)}
-[${PANEL_ATTR}="true"] .cp-list{padding:.2rem .35rem .35rem}
-[${PANEL_ATTR}="true"] .cp-action{position:relative;border-radius:.65rem;transition:background .18s ease,box-shadow .18s ease}
-[${PANEL_ATTR}="true"] .cp-action+.cp-action{border-top:1px solid rgba(148,163,184,.12)}
-[${PANEL_ATTR}="true"] .cp-action>summary{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:.45rem;min-height:30px;padding:.35rem .42rem;cursor:pointer;list-style:none;font-size:11px;color:rgb(51 65 85)}
+[${PANEL_ATTR}="true"]{margin-top:.48rem;background:transparent}
+[${PANEL_ATTR}="true"] .cp-head{display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:0 .15rem .35rem;font-size:10px;color:rgb(100 116 139)}
+[${PANEL_ATTR}="true"] .cp-head>span:first-child{display:inline-flex;align-items:center;gap:.3rem;font-weight:700;color:rgb(71 85 105)}
+[${PANEL_ATTR}="true"] .cp-head>span:first-child::before{content:"";width:.4rem;height:.4rem;border-radius:999px;background:rgb(59 130 246);box-shadow:0 0 0 3px rgba(59,130,246,.1)}
+[${PANEL_ATTR}="true"] .cp-count{white-space:nowrap;font-weight:700;color:rgb(37 99 235)}
+[${PANEL_ATTR}="true"] .cp-list{display:flex;flex-direction:column;gap:.38rem;padding:0 .05rem .12rem}
+[${PANEL_ATTR}="true"] .cp-action{position:relative;width:calc(100% - 1.15rem);margin-left:1.15rem;transition:opacity .18s ease,transform .18s ease}
+[${PANEL_ATTR}="true"] .cp-action>summary{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.45rem;min-height:34px;padding:.45rem .55rem;cursor:pointer;list-style:none;border:1px solid rgba(96,165,250,.2);border-radius:.3rem .78rem .78rem .78rem;background:rgba(255,255,255,.82);box-shadow:0 3px 11px rgba(15,23,42,.055);font-size:11px;color:rgb(51 65 85)}
 [${PANEL_ATTR}="true"] .cp-action>summary::-webkit-details-marker{display:none}
-[${PANEL_ATTR}="true"] .cp-chevron{width:0;height:0;border-top:4px solid transparent;border-bottom:4px solid transparent;border-left:5px solid currentColor;opacity:.45;transition:transform .16s ease}
+[${PANEL_ATTR}="true"] .cp-chevron{position:absolute;left:-1.15rem;top:.45rem;display:grid;width:1.35rem;height:1.35rem;place-items:center;border:2px solid white;border-radius:999px;background:linear-gradient(145deg,rgb(59 130 246),rgb(20 184 166));box-shadow:0 2px 7px rgba(37,99,235,.2);color:white;transition:transform .16s ease}
+[${PANEL_ATTR}="true"] .cp-chevron::after{content:"›";font-size:12px;line-height:1;font-weight:850;transform:translateX(.5px)}
 [${PANEL_ATTR}="true"] .cp-action[open] .cp-chevron{transform:rotate(90deg)}
 [${PANEL_ATTR}="true"] .cp-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:650}
-[${PANEL_ATTR}="true"] .cp-state{border-radius:999px;padding:2px 6px;font-size:9px;font-weight:750}
-[${PANEL_ATTR}="true"] .cp-detail{margin:0 .45rem .45rem 1.35rem;max-height:9rem;overflow:auto;white-space:pre-wrap;word-break:break-word;border:1px solid rgba(148,163,184,.18);border-radius:.55rem;background:rgba(248,250,252,.92);padding:.48rem .55rem;font:10px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:rgb(71 85 105);scrollbar-width:thin}
-[${PANEL_ATTR}="true"] .cp-action[data-active="true"]{overflow:hidden;background:linear-gradient(105deg,rgba(236,253,245,.75),rgba(239,246,255,.78),rgba(250,245,255,.72));box-shadow:0 0 0 1px rgba(59,130,246,.08),0 5px 18px rgba(59,130,246,.08)}
-[${PANEL_ATTR}="true"] .cp-action[data-active="true"]::after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(105deg,transparent 30%,rgba(255,255,255,.72) 48%,transparent 66%);transform:translateX(-120%);animation:cpSweep 2.2s ease-in-out infinite}
+[${PANEL_ATTR}="true"] .cp-state{border-radius:999px;padding:2px 6px;white-space:nowrap;font-size:9px;font-weight:750}
+[${PANEL_ATTR}="true"] .cp-detail{margin:.28rem 0 0 .35rem;max-height:8rem;overflow:auto;white-space:pre-wrap;word-break:break-word;border-left:2px solid rgba(96,165,250,.2);border-radius:.2rem .65rem .65rem .65rem;background:rgba(248,250,252,.78);padding:.45rem .55rem;font:10px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:rgb(71 85 105);scrollbar-width:thin}
+[${PANEL_ATTR}="true"] .cp-action[data-active="true"]>summary{border-color:rgba(45,212,191,.3);background:linear-gradient(115deg,rgba(236,253,245,.92),rgba(239,246,255,.9));box-shadow:0 4px 14px rgba(13,148,136,.09)}
 [${PANEL_ATTR}="true"] .cp-action[data-active="true"] .cp-title{color:rgb(15 118 110)}
+[${PANEL_ATTR}="true"] .cp-action[data-active="true"] .cp-chevron{animation:cpAvatarPulse 1.7s ease-in-out infinite}
 [${PANEL_ATTR}="true"] .cp-active{background:rgb(236 253 245);color:rgb(4 120 87)}
 [${PANEL_ATTR}="true"] .cp-done{background:rgb(239 246 255);color:rgb(29 78 216)}
 [${PANEL_ATTR}="true"] .cp-warn{background:rgb(255 247 237);color:rgb(194 65 12)}
-@keyframes cpSweep{0%,22%{transform:translateX(-120%);opacity:0}42%{opacity:.75}68%,100%{transform:translateX(120%);opacity:0}}
-@media(prefers-reduced-motion:reduce){[${PANEL_ATTR}="true"] .cp-action[data-active="true"]::after{animation:none}}
+@keyframes cpAvatarPulse{0%,100%{box-shadow:0 2px 7px rgba(37,99,235,.2),0 0 0 0 rgba(20,184,166,.16)}50%{box-shadow:0 2px 7px rgba(37,99,235,.2),0 0 0 5px rgba(20,184,166,0)}}
+@media(prefers-reduced-motion:reduce){[${PANEL_ATTR}="true"] .cp-action[data-active="true"] .cp-chevron{animation:none}}
 `;
 	document.head.appendChild(style);
 }
@@ -87,7 +89,10 @@ function compactText(node: Element | null) {
 }
 
 function messageScope(message: Message) {
-	if (typeof message.question_index === "number" && message.question_index > 0) {
+	if (
+		typeof message.question_index === "number" &&
+		message.question_index > 0
+	) {
 		return `q${message.question_index}`;
 	}
 	const identity = `${message.group_id ?? ""}\n${message.agent_instance_id ?? ""}`;
@@ -146,7 +151,8 @@ function progressAction(message: Message, order: number): CodeAction | null {
 	const codeIndex = Number(content.match(/代码序号[：:]\s*(\d+)/)?.[1] || 0);
 	const label = content.match(/代码名称[：:]\s*([^\n]+)/)?.[1]?.trim() || "";
 	const key =
-		codeIndex && ["generating", "executing", "completed", "error"].includes(state)
+		codeIndex &&
+		["generating", "executing", "completed", "error"].includes(state)
 			? `code-${codeIndex}`
 			: state === "thinking"
 				? `thinking-${count}`
@@ -164,7 +170,10 @@ function progressAction(message: Message, order: number): CodeAction | null {
 	};
 }
 
-function codeStreamAction(message: AgentMessage, order: number): CodeAction | null {
+function codeStreamAction(
+	message: AgentMessage,
+	order: number,
+): CodeAction | null {
 	if (message.feedback_kind !== "coder_code_stream") return null;
 	const scope = messageScope(message);
 	if (!scope) return null;
@@ -245,7 +254,10 @@ function collectProgress(messages: Message[]) {
 			const map = maps.get(progress.scope) ?? new Map<string, CodeAction>();
 			mergeAction(map, progress);
 			maps.set(progress.scope, map);
-			counts.set(progress.scope, Math.max(counts.get(progress.scope) ?? 0, progress.count));
+			counts.set(
+				progress.scope,
+				Math.max(counts.get(progress.scope) ?? 0, progress.count),
+			);
 			return;
 		}
 		if (message.msg_type !== "agent") return;
@@ -275,7 +287,10 @@ function collectProgress(messages: Message[]) {
 			.sort((left, right) => left.order - right.order)
 			.slice(-MAX_ACTIONS);
 		result.set(scope, {
-			count: Math.max(counts.get(scope) ?? 0, ...actions.map((action) => action.count)),
+			count: Math.max(
+				counts.get(scope) ?? 0,
+				...actions.map((action) => action.count),
+			),
 			actions,
 		});
 	}
@@ -301,7 +316,7 @@ function stateClass(state: CodeAction["state"]) {
 function createPanel() {
 	const panel = document.createElement("div");
 	panel.setAttribute(PANEL_ATTR, "true");
-	panel.innerHTML = `<div class="cp-head"><span>代码求解动态</span><span class="cp-count">已生成 0 段代码</span></div><div class="cp-list"></div>`;
+	panel.innerHTML = `<div class="cp-head"><span>代码求解对话</span><span class="cp-count">已生成 0 段代码</span></div><div class="cp-list"></div>`;
 	return panel;
 }
 
@@ -318,17 +333,20 @@ function updateActionNode(
 	action: CodeAction,
 	isLatest: boolean,
 ) {
-	node.dataset.active = isLatest && ACTIVE_STATES.has(action.state) ? "true" : "false";
+	node.dataset.active =
+		isLatest && ACTIVE_STATES.has(action.state) ? "true" : "false";
 	const title = node.querySelector<HTMLElement>(".cp-title");
 	const status = node.querySelector<HTMLElement>(".cp-state");
 	const detail = node.querySelector<HTMLElement>(".cp-detail");
-	if (title && title.textContent !== action.title) title.textContent = action.title;
+	if (title && title.textContent !== action.title)
+		title.textContent = action.title;
 	if (status) {
 		status.className = `cp-state ${stateClass(action.state)}`;
 		status.textContent = stateLabel(action.state);
 	}
 	if (detail) {
-		const value = action.detail || `${action.title}\n已生成 ${action.count} 段代码`;
+		const value =
+			action.detail || `${action.title}\n已生成 ${action.count} 段代码`;
 		if (detail.textContent !== value) detail.textContent = value;
 		if (isLatest && action.streaming) {
 			detail.setAttribute("data-streaming-detail", "true");
@@ -342,7 +360,8 @@ function updateActionNode(
 
 function hideDefaultCurrent(card: HTMLElement, hidden: boolean) {
 	for (const node of card.querySelectorAll<HTMLElement>("div.mt-2")) {
-		if (node.hasAttribute(PANEL_ATTR) || !compactText(node).startsWith("当前")) continue;
+		if (node.hasAttribute(PANEL_ATTR) || !compactText(node).startsWith("当前"))
+			continue;
 		if (hidden) node.setAttribute(HIDDEN_CURRENT_ATTR, "true");
 		else node.removeAttribute(HIDDEN_CURRENT_ATTR);
 	}
@@ -371,9 +390,9 @@ function renderCard(card: HTMLElement, progress?: ScopeProgress) {
 	if (!list) return;
 
 	const existing = new Map(
-		Array.from(list.querySelectorAll<HTMLDetailsElement>("details[data-action-key]")).map(
-			(node) => [node.dataset.actionKey || "", node],
-		),
+		Array.from(
+			list.querySelectorAll<HTMLDetailsElement>("details[data-action-key]"),
+		).map((node) => [node.dataset.actionKey || "", node]),
 	);
 	const wanted = new Set(progress.actions.map((action) => action.key));
 	for (const [key, node] of existing) {
@@ -422,7 +441,7 @@ export function installCoderProgressDomPatch() {
 			taskStore.messages
 				.map((message) => {
 					const streamState =
-						message.msg_type === "agent" ? message.stream_state ?? "" : "";
+						message.msg_type === "agent" ? (message.stream_state ?? "") : "";
 					return `${message.id}:${message.content?.length ?? 0}:${message.feedback_kind ?? ""}:${streamState}`;
 				})
 				.join("|"),
