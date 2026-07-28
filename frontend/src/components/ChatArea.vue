@@ -330,17 +330,17 @@ function detectQuestionIndex(text: string, msg?: Message): number | null {
 	) {
 		return null;
 	}
-	if (msg?.msg_type === "agent" && typeof msg.question_index === "number") {
-		return msg.question_index;
+	if (typeof msg?.question_index === "number") {
+		return msg.question_index > 0 ? msg.question_index : null;
 	}
-	const groupIdentity =
-		msg?.msg_type === "agent"
-			? (msg.group_id ?? msg.agent_instance_id ?? "")
-			: "";
+	const groupIdentity = msg?.group_id ?? msg?.agent_instance_id ?? "";
 	const fromGroup = String(groupIdentity).match(/q(?:ues)?(\d+)|组#(\d+)/i);
 	if (fromGroup) return Number(fromGroup[1] || fromGroup[2]);
-	const m = text.match(/(?:\[组#|子问题组#|第\s*)(\d+)/);
-	if (m) return Number(m[1]);
+	const explicitQuestion = text.match(
+		/(?:\[组#|子问题组#|问题\s*)(\d+)|第\s*(\d+)\s*问/,
+	);
+	if (explicitQuestion)
+		return Number(explicitQuestion[1] || explicitQuestion[2]);
 	const q = text.match(/q(?:ues)?(\d+)/i);
 	if (q) return Number(q[1]);
 	return null;
@@ -1022,15 +1022,28 @@ function groupKeyOf(ev: TimelineEvent) {
 	return "";
 }
 
+function isExplicitGroupCompletion(ev: TimelineEvent) {
+	const text = `${ev.title}\n${ev.detail ?? ""}`;
+	return (
+		ev.status === "done" &&
+		/问题划分.*完成|建模方案.*(?:完成|已确认)|代码求解完成|求解完成|写作完成|子问题组\s*\d+\s*完成|论文终稿完成|任务已完成|结果已移交给写作阶段/.test(
+			text,
+		)
+	);
+}
+
 function groupStatus(events: TimelineEvent[]): TimelineEvent["status"] {
-	if (events.some((ev) => ev.status === "error")) return "error";
-	if (events.some((ev) => ev.status === "warning")) return "warning";
 	const latest = events[events.length - 1];
 	if (latest?.status === "running" || latest?.status === "waiting")
 		return latest.status;
-	return events.length && events.every((ev) => ev.status === "done")
-		? "done"
-		: (latest?.status ?? "running");
+	if (latest?.status === "error" || latest?.status === "warning")
+		return latest.status;
+	if (latest && isExplicitGroupCompletion(latest)) return "done";
+
+	// 单段代码/单次模型响应完成不代表整个阶段完成。只要此前进入过运行态，
+	// 在收到明确的“求解完成/写作完成”事件前都保持进行中，避免状态闪烁。
+	if (events.some((ev) => ev.status === "running")) return "running";
+	return latest?.status ?? "running";
 }
 
 function groupTitle(group: TimelineEvent) {

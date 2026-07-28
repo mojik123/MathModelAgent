@@ -1,10 +1,13 @@
 const STYLE_ID = "current-action-dock-style";
 const TIMELINE_SELECTOR = "[data-agent-timeline-scroll='true']";
 const GENERATED_ATTR = "data-current-action-generated";
-const COMPACT_ATTR = "data-history-compact-row";
+const LEGACY_COMPACT_ATTR = "data-history-compact-row";
 const DOCK_ATTR = "data-current-action-dock";
 const HIDDEN_ATTR = "data-current-action-hidden";
 const ORIGINAL_ORDER_ATTR = "data-current-action-original-order";
+const SOURCE_ATTR = "data-current-action-source";
+
+let sourceSequence = 0;
 
 let installed = false;
 let scheduled = false;
@@ -21,81 +24,7 @@ ${TIMELINE_SELECTOR} {
 	padding-bottom: var(--current-action-dock-space, .75rem) !important;
 }
 
-[${COMPACT_ATTR}="true"] { min-height: 0 !important; }
-
-[${COMPACT_ATTR}="true"] [data-agent-card] {
-	min-width: 0 !important;
-	width: auto !important;
-	max-width: min(36rem, calc(100vw - 5rem)) !important;
-	padding: .55rem .7rem !important;
-	border-radius: .8rem !important;
-}
-
-[${COMPACT_ATTR}="true"] [data-agent-card] > *:not([data-history-compact-label="true"]) {
-	display: none !important;
-}
-
-[data-history-compact-label="true"] {
-	display: flex;
-	align-items: center;
-	gap: .45rem;
-	min-width: 0;
-	font-size: .75rem;
-	line-height: 1.15rem;
-	font-weight: 650;
-	color: rgb(51 65 85);
-}
-
-[data-history-status-dot] {
-	width: .45rem;
-	height: .45rem;
-	flex: 0 0 auto;
-	border-radius: 999px;
-	background: rgb(59 130 246);
-	box-shadow: 0 0 0 3px rgba(59,130,246,.10);
-}
-
-[data-history-state="running"] [data-history-status-dot] {
-	background: rgb(16 185 129);
-	box-shadow: 0 0 0 3px rgba(16,185,129,.12), 0 0 10px rgba(16,185,129,.24);
-	animation: currentActionHistoryPulse 1.45s ease-in-out infinite;
-}
-
-[data-history-state="stopped"] [data-history-status-dot],
-[data-history-state="warning"] [data-history-status-dot] {
-	background: rgb(245 158 11);
-	box-shadow: 0 0 0 3px rgba(245,158,11,.12);
-}
-
-[data-history-label-text] {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-[data-history-label-time] {
-	margin-left: auto;
-	flex: 0 0 auto;
-	font-size: .625rem;
-	font-weight: 500;
-	color: rgb(148 163 184);
-}
-
-[${GENERATED_ATTR}="placeholder"] {
-	display: flex;
-	justify-content: flex-start;
-	width: 100%;
-}
-
-[${GENERATED_ATTR}="placeholder"] > div {
-	max-width: min(36rem, calc(100vw - 4rem));
-	padding: .55rem .75rem;
-	border: 1px solid rgba(148,163,184,.22);
-	border-radius: .85rem;
-	background: rgba(255,255,255,.82);
-	box-shadow: 0 5px 16px rgba(15,23,42,.045);
-	backdrop-filter: blur(12px);
-}
+[${GENERATED_ATTR}="placeholder"] { pointer-events: none; }
 
 [${DOCK_ATTR}="true"] {
 	position: fixed !important;
@@ -162,14 +91,6 @@ ${TIMELINE_SELECTOR} {
 	color: rgb(100 116 139);
 }
 
-@keyframes currentActionHistoryPulse {
-	0%, 100% { opacity: .62; transform: scale(.88); }
-	50% { opacity: 1; transform: scale(1.08); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-	[data-history-status-dot] { animation: none !important; }
-}
 `;
 	document.head.appendChild(style);
 }
@@ -191,23 +112,8 @@ function getRows(scroll: HTMLElement) {
 	);
 }
 
-function cardOf(row: HTMLElement) {
-	return row.querySelector<HTMLElement>("[data-agent-card]");
-}
-
-function displayedTime(row: HTMLElement) {
-	const matches = Array.from(
-		textOf(row).matchAll(/\b([01]\d|2[0-3]):([0-5]\d)\b/g),
-	);
-	return matches.at(-1)?.[0] || "";
-}
-
 function isChoiceRow(row: HTMLElement) {
 	return Boolean(row.querySelector(".choice-attachment"));
-}
-
-function isInitialProblemRow(row: HTMLElement) {
-	return /已确定题目信息|题目信息题目文本/.test(textOf(row));
 }
 
 function isUserStop(row: HTMLElement) {
@@ -240,140 +146,28 @@ function isEda(row: HTMLElement) {
 	);
 }
 
-function isModelingRefinement(row: HTMLElement) {
-	return /详细建模方案细化|方案细化|整体建模方案/.test(textOf(row));
-}
-
 function stateOf(row: HTMLElement): "running" | "done" | "stopped" | "warning" {
 	const text = textOf(row);
 	if (/已停止|任务已停止|停止指令|已中断/.test(text)) return "stopped";
+	if (
+		row.querySelector(
+			"[data-running-card='true'], .cp-action[data-active='true'], .animate-spin",
+		)
+	)
+		return "running";
 	if (/失败|错误|需关注|改错/.test(text)) return "warning";
 	if (/已完成|完成|成功|已确认/.test(text)) return "done";
-	if (
-		row.querySelector("[data-running-card='true'], .animate-spin") ||
-		/正在|进行中|开始|生成中|执行中/.test(text)
-	)
+	if (/正在|进行中|开始|生成中|执行中/.test(text))
 		return "running";
 	return "done";
 }
 
-function filenameOf(text: string) {
-	return (
-		text.match(/([\w\-\u4e00-\u9fff]+\.(?:png|jpe?g|webp|svg))/i)?.[1] || ""
-	);
-}
-
-function questionSubject(text: string) {
-	const match = text.match(/(?:问题|第|Q)\s*(\d+)\s*(?:问)?/i);
-	if (!match) return "";
-	if (/写作/.test(text)) return `问题 ${match[1]} 的论文写作`;
-	if (/改错|调试|重写/.test(text)) return `问题 ${match[1]} 的代码调试`;
-	return `问题 ${match[1]} 的模型求解`;
-}
-
-function conciseLabel(row: HTMLElement, forceStart = false) {
-	const text = textOf(row);
-	const state = stateOf(row);
-	const suffix =
-		state === "done"
-			? "已完成"
-			: state === "stopped"
-				? "已停止"
-				: state === "warning"
-					? "需关注"
-					: "进行中";
-
-	if (isUserStop(row)) return "用户请求停止任务";
-	if (isFinalSystemStop(row)) return "任务已停止";
-	if (isSystemStop(row)) return "正在安全停止当前任务";
-	if (isImageRevision(row)) {
-		const filename = filenameOf(text);
-		const subject = filename ? `图片：${filename}` : "图片";
-		return /完成|成功|已生成/.test(text)
-			? `${subject}修改完成`
-			: `开始修改${subject}`;
-	}
-	if (isTextRevision(row))
-		return /完成|成功|已应用/.test(text)
-			? "论文文本修改完成"
-			: "开始修改论文文本";
-	if (isEda(row))
-		return forceStart || state === "running"
-			? "开始 EDA 数据探索与代码求解"
-			: `EDA 数据探索与代码求解${suffix}`;
-	if (isModelingRefinement(row))
-		return forceStart || state === "running"
-			? "开始详细建模方案细化"
-			: `详细建模方案细化${suffix}`;
-
-	const question = questionSubject(text);
-	if (question)
-		return forceStart || state === "running"
-			? `开始${question}`
-			: `${question}${suffix}`;
-	if (/论文终稿|终稿整合|整体检查/.test(text))
-		return state === "running"
-			? "开始论文终稿整合与质量检查"
-			: `论文终稿整合与质量检查${suffix}`;
-	if (/并行写作|章节写作/.test(text))
-		return state === "running"
-			? "开始论文各章节写作"
-			: `论文各章节写作${suffix}`;
-
-	const title = Array.from(row.querySelectorAll<HTMLElement>("span"))
-		.map(textOf)
-		.find((value) =>
-			/开始|正在|进行中|已完成|已停止|已确认|修改|求解|写作|建模|EDA/.test(
-				value,
-			),
-		);
-	return title || text.slice(0, 72) || "任务状态更新";
-}
-
-function shouldCompact(row: HTMLElement) {
-	if (!cardOf(row) || isChoiceRow(row) || isInitialProblemRow(row)) return false;
-	return (
-		isUserStop(row) ||
-		isSystemStop(row) ||
-		isImageRevision(row) ||
-		isTextRevision(row) ||
-		isEda(row) ||
-		isModelingRefinement(row) ||
-		/子问题组|模型求解|代码求解|章节写作|并行写作|终稿整合|论文终稿/.test(
-			textOf(row),
-		)
-	);
-}
-
-function ensureCompactLabel(row: HTMLElement, value?: string) {
-	const card = cardOf(row);
-	if (!card) return;
-	let label = card.querySelector<HTMLElement>("[data-history-compact-label='true']");
-	if (!label) {
-		label = document.createElement("div");
-		label.dataset.historyCompactLabel = "true";
-		label.innerHTML = `
-			<span data-history-status-dot></span>
-			<span data-history-label-text></span>
-			<span data-history-label-time></span>
-		`;
-		card.appendChild(label);
-	}
-	label.dataset.historyState = stateOf(row);
-	const textNode = label.querySelector<HTMLElement>("[data-history-label-text]");
-	const timeNode = label.querySelector<HTMLElement>("[data-history-label-time]");
-	const nextText = value || conciseLabel(row);
-	if (textNode && textOf(textNode) !== nextText) textNode.textContent = nextText;
-	const time = displayedTime(row);
-	if (timeNode && textOf(timeNode) !== time) timeNode.textContent = time;
-}
-
-function setCompact(row: HTMLElement, compact: boolean, value?: string) {
-	if (compact) {
-		row.setAttribute(COMPACT_ATTR, "true");
-		ensureCompactLabel(row, value);
-	} else {
-		row.removeAttribute(COMPACT_ATTR);
+function restoreFullCard(row: HTMLElement) {
+	row.removeAttribute(LEGACY_COMPACT_ATTR);
+	for (const label of row.querySelectorAll<HTMLElement>(
+		"[data-history-compact-label='true']",
+	)) {
+		label.remove();
 	}
 }
 
@@ -452,29 +246,30 @@ function ensurePlaceholder(scroll: HTMLElement, row: HTMLElement, order: number)
 	let placeholder = scroll.querySelector<HTMLElement>(
 		`[${GENERATED_ATTR}='placeholder']`,
 	);
-	if (!placeholder) {
-		placeholder = document.createElement("div");
+	let source = row.getAttribute(SOURCE_ATTR);
+	if (!source) {
+		sourceSequence += 1;
+		source = `action-${sourceSequence}`;
+		row.setAttribute(SOURCE_ATTR, source);
+	}
+	if (!placeholder || placeholder.getAttribute(SOURCE_ATTR) !== source) {
+		placeholder?.remove();
+		placeholder = row.cloneNode(true) as HTMLElement;
 		placeholder.setAttribute(GENERATED_ATTR, "placeholder");
-		placeholder.innerHTML = `
-			<div>
-				<div data-history-compact-label="true" data-history-state="running">
-					<span data-history-status-dot></span>
-					<span data-history-label-text></span>
-					<span data-history-label-time></span>
-				</div>
-			</div>
-		`;
+		placeholder.setAttribute(SOURCE_ATTR, source);
+		placeholder.removeAttribute(DOCK_ATTR);
+		placeholder.removeAttribute(ORIGINAL_ORDER_ATTR);
+		placeholder.removeAttribute("data-current-action-heading");
+		placeholder.style.cssText = "";
+		for (const node of [
+			placeholder,
+			...placeholder.querySelectorAll<HTMLElement>("[id]"),
+		]) {
+			node.removeAttribute("id");
+		}
 		scroll.appendChild(placeholder);
 	}
 	placeholder.style.order = String(order);
-	const label = placeholder.querySelector<HTMLElement>("[data-history-compact-label]");
-	if (label) label.dataset.historyState = stateOf(row);
-	const textNode = placeholder.querySelector<HTMLElement>("[data-history-label-text]");
-	const timeNode = placeholder.querySelector<HTMLElement>("[data-history-label-time]");
-	const value = conciseLabel(row, true);
-	if (textNode && textOf(textNode) !== value) textNode.textContent = value;
-	const time = displayedTime(row);
-	if (timeNode && textOf(timeNode) !== time) timeNode.textContent = time;
 }
 
 function ensureIdle(scroll: HTMLElement) {
@@ -534,7 +329,6 @@ function applyDock(scroll: HTMLElement, rows: HTMLElement[], selected: HTMLEleme
 		"data-current-action-heading",
 		stateOf(selected) === "running" ? "当前动作 · 正在执行" : "当前动作 · 最近结果",
 	);
-	setCompact(selected, false);
 	ensurePlaceholder(scroll, selected, order);
 	positionDock(scroll, selected);
 }
@@ -546,14 +340,12 @@ function normalizeTimeline() {
 	applying = true;
 	try {
 		const rows = getRows(scroll);
-		for (const row of rows) row.setAttribute(HIDDEN_ATTR, "false");
+		for (const row of rows) {
+			row.setAttribute(HIDDEN_ATTR, "false");
+			restoreFullCard(row);
+		}
 		const stops = dedupeStops(rows);
 		const selected = activeRichRow(rows);
-
-		for (const row of rows) {
-			if (row === selected) continue;
-			setCompact(row, shouldCompact(row));
-		}
 
 		const ordinary = rows.filter(
 			(row) =>

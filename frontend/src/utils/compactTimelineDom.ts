@@ -185,10 +185,13 @@ function isTerminalCard(text: string) {
 
 function isActiveProgressCard(row: HTMLElement) {
 	const text = textOf(row);
-	if (!text || isTerminalCard(text)) return false;
-	return (
+	if (!text) return false;
+	const active =
 		Boolean(row.querySelector(".animate-spin")) ||
-		/正在|开始|进行中|生成中|检索文献/.test(text)
+		/正在|开始|进行中|生成中|检索文献/.test(text);
+	if (active) return true;
+	return (
+		!isTerminalCard(text) && Boolean(row.querySelector("[data-running-card]"))
 	);
 }
 
@@ -227,6 +230,7 @@ function getTimelineRows(panel: HTMLElement) {
 		.map((node) => closestTimelineRow(node, scroll))
 		.filter((node): node is HTMLElement => Boolean(node))
 		.filter((node, index, arr) => arr.indexOf(node) === index)
+		.filter((node) => !node.hasAttribute("data-current-action-generated"))
 		.filter((node) => textOf(node).length > 0);
 }
 
