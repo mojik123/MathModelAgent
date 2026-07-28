@@ -4,6 +4,7 @@ import "@/assets/style.css";
 import App from "@/App.vue";
 import router from "@/router";
 import { installArtifactEditChatDomPatch } from "@/utils/artifactEditChatDom";
+import { installArtifactEditSelectionCleanupDomPatch } from "@/utils/artifactEditSelectionCleanupDom";
 import { installChatAgentDuplicateDomPatch } from "@/utils/chatAgentDuplicateDom";
 import { installChatArtifactLinkDomPatch } from "@/utils/chatArtifactLinkDom";
 import { installChatChoiceCardDomPatch } from "@/utils/chatChoiceCardDom";
@@ -26,6 +27,7 @@ app.use(pinia);
 app.mount("#app");
 
 installArtifactEditChatDomPatch();
+installArtifactEditSelectionCleanupDomPatch();
 installCompactTimelineDomPatch();
 installTimelineWordingDomPatch(pinia);
 installChatArtifactLinkDomPatch();
