@@ -22,14 +22,11 @@ def _response_calls_task_complete(response: Any) -> bool:
 
 
 class CoderAgent(BaseCoderAgent):
-    """Coder that cannot hand work to Writer without explicit completion.
+    """Coder that cannot hand incomplete work to Writer.
 
-    The base Coder historically allowed a no-tool text response to end an attempt after
-    any successful ``execute_code`` call. That could promote a partially explored
-    question into Writer. This guard gives the same Coder one lightweight verification
-    round while preserving its interpreter, files and chat history. If it still does not
-    explicitly call ``task_complete``, the attempt fails and the workflow can switch to
-    its normal fallback Coder.
+    Every question Coder and every fallback Coder keeps its own original execution
+    budget. A plain text response never opens an additional budget and never starts
+    Writer; the current attempt fails so the workflow can use its normal fallback path.
     """
 
     _last_model_response: Any = None
@@ -63,34 +60,8 @@ class CoderAgent(BaseCoderAgent):
         await self._publish_completion_guard(
             subtask_title,
             (
-                f"{subtask_title} 的 {identity} 尚未显式确认求解完成，"
-                "暂不启动论文写作；保留当前代码和数据，进入本问轻量核验。"
-            ),
-        )
-
-        verification_prompt = f"""
-【完成门禁：仅核验，不重新完整求解】
-你刚才在子任务 {subtask_title} 中以普通文字结束，尚未显式调用 task_complete。
-当前已经生成的代码、变量、数据文件和图片全部保留。
-
-请执行以下动作：
-1. 复用现有结果，不重新读取大文件，不重新进行完整搜索或大规模计算；
-2. 调用一次 execute_code 做轻量核验，确认核心结果文件、关键数值或模型输出真实存在；
-3. 若核验失败，直接修复当前缺口；
-4. 核验通过后，必须调用 task_complete；
-5. 禁止仅输出文字总结后结束。
-""".strip()
-
-        self._last_model_response = None
-        verified_result = await super().run(verification_prompt, subtask_title)
-        if _response_calls_task_complete(self._last_model_response):
-            return verified_result
-
-        await self._publish_completion_guard(
-            subtask_title,
-            (
-                f"{subtask_title} 的 {identity} 在核验轮次后仍未调用 task_complete，"
-                "本次 Coder 尝试判定失败，禁止进入 Writer。"
+                f"{subtask_title} 的 {identity} 已执行代码，但未显式调用 task_complete；"
+                "本次 Coder 尝试判定未完成，禁止启动论文写作，将按当前小问的备用流程处理。"
             ),
         )
         raise RuntimeError(
