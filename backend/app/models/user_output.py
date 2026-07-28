@@ -4,6 +4,7 @@ import os
 import re
 from app.utils.data_recorder import DataRecorder
 from app.schemas.A2A import WriterResponse
+from app.utils.paper_math_cleanup import clean_empty_display_math_blocks
 import json
 import uuid
 
@@ -18,17 +19,20 @@ def clean_final_paper_markdown(text: str) -> str:
     )
     if fence_match:
         cleaned = fence_match.group(1).strip()
+    cleaned = clean_empty_display_math_blocks(cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     try:
         from app.utils.paper_cleaner import clean_chinese_paper_markdown
+
         cleaned = clean_chinese_paper_markdown(cleaned)
     except Exception:
         cleaned = cleaned.strip() + "\n"
-    return cleaned
+    return clean_empty_display_math_blocks(cleaned)
 
 
 class UserOutput:
     """管理建模任务的输出结果，处理引用编号、脚注和最终论文拼接。"""
+
     def __init__(
         self, work_dir: str, ques_count: int, data_recorder: DataRecorder | None = None
     ):
@@ -169,13 +173,16 @@ class UserOutput:
         try:
             from app.utils.artifact_edits import apply_artifact_patches_to_markdown
             from app.utils.paper_cleaner import clean_chinese_paper_markdown
+
             text_to_save = apply_artifact_patches_to_markdown(text_to_save, self.work_dir)
             text_to_save = clean_chinese_paper_markdown(text_to_save)
+            text_to_save = clean_empty_display_math_blocks(text_to_save)
         except Exception as exc:
             print(f"[artifact_edits] apply patches failed: {exc}")
         # 修正仅用 basename 引用的图片路径，确保持久化后路径包含子目录
         try:
             from app.utils.common_utils import normalize_markdown_image_paths
+
             text_to_save = normalize_markdown_image_paths(text_to_save, self.work_dir)
         except Exception as exc:
             print(f"[normalize_image_paths] failed: {exc}")
