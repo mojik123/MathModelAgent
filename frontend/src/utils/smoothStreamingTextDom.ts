@@ -10,14 +10,18 @@ interface StreamAnimationState {
 	textRafId: number | null;
 	scrollRafId: number | null;
 	lastFrameAt: number;
+	stableScrollTop: number;
 }
 
 let installed = false;
-let scanRaf: number | null = null;
+let scanning = false;
+let rescanRequested = false;
 const states = new WeakMap<HTMLElement, StreamAnimationState>();
 const followTimeline = new WeakMap<HTMLElement, boolean>();
 const followDetail = new WeakMap<HTMLElement, boolean>();
 const timelineScrollRafs = new WeakMap<HTMLElement, number>();
+const timelineStableTops = new WeakMap<HTMLElement, number>();
+const userScrollIntentAt = new WeakMap<HTMLElement, number>();
 
 function addStyle() {
 	if (document.getElementById(STYLE_ID)) return;
@@ -41,6 +45,10 @@ ${STREAM_SELECTOR}[data-smooth-streaming="true"][data-stream-height-locked="true
 	height: var(--stream-locked-height) !important;
 	min-height: var(--stream-locked-height) !important;
 	max-height: var(--stream-locked-height) !important;
+}
+
+${TIMELINE_SELECTOR}:has(${STREAM_SELECTOR}[data-stream-height-locked="true"]) {
+	overflow-anchor: none;
 }
 
 ${STREAM_SELECTOR}[data-smooth-streaming="true"]::after {
@@ -105,6 +113,13 @@ function suffixPrefixOverlapLength(left: string, right: string) {
 	return 0;
 }
 
+function rememberTimelinePosition(node: HTMLElement) {
+	const timeline = timelineFor(node);
+	if (timeline && !timelineStableTops.has(timeline)) {
+		timelineStableTops.set(timeline, timeline.scrollTop);
+	}
+}
+
 function lockHeightIfNeeded(node: HTMLElement) {
 	if (node.dataset.streamHeightLocked === "true") return;
 	const computed = window.getComputedStyle(node);
@@ -115,6 +130,19 @@ function lockHeightIfNeeded(node: HTMLElement) {
 	const lockedHeight = Math.max(1, Math.round(Math.min(height, maxHeight)));
 	node.style.setProperty("--stream-locked-height", `${lockedHeight}px`);
 	node.dataset.streamHeightLocked = "true";
+	rememberTimelinePosition(node);
+}
+
+function restoreLockedScrollPositions(
+	node: HTMLElement,
+	state: StreamAnimationState,
+) {
+	if (node.dataset.streamHeightLocked !== "true") return;
+	const maxNodeTop = Math.max(0, node.scrollHeight - node.clientHeight);
+	node.scrollTop = Math.min(state.stableScrollTop, maxNodeTop);
+	const timeline = timelineFor(node);
+	const timelineTop = timeline ? timelineStableTops.get(timeline) : undefined;
+	if (timeline && timelineTop != null) timeline.scrollTop = timelineTop;
 }
 
 function scheduleTimelineFollow(node: HTMLElement) {
@@ -127,10 +155,12 @@ function scheduleTimelineFollow(node: HTMLElement) {
 		const remaining = timeline.scrollHeight - timeline.clientHeight - timeline.scrollTop;
 		if (remaining <= 0.75 || followTimeline.get(timeline) === false) {
 			timeline.scrollTop = Math.max(0, timeline.scrollHeight - timeline.clientHeight);
+			timelineStableTops.set(timeline, timeline.scrollTop);
 			timelineScrollRafs.delete(timeline);
 			return;
 		}
 		timeline.scrollTop += Math.max(1, remaining * 0.24);
+		timelineStableTops.set(timeline, timeline.scrollTop);
 		const rafId = requestAnimationFrame(tick);
 		timelineScrollRafs.set(timeline, rafId);
 	};
@@ -150,10 +180,12 @@ function scheduleDetailFollow(node: HTMLElement, state: StreamAnimationState) {
 		const remaining = node.scrollHeight - node.clientHeight - node.scrollTop;
 		if (remaining <= 0.5) {
 			node.scrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+			state.stableScrollTop = node.scrollTop;
 			state.scrollRafId = null;
 			return;
 		}
 		node.scrollTop += Math.max(0.75, remaining * 0.3);
+		state.stableScrollTop = node.scrollTop;
 		state.scrollRafId = requestAnimationFrame(tick);
 	};
 
@@ -165,9 +197,13 @@ function writeDisplayed(
 	state: StreamAnimationState,
 	text: string,
 ) {
+	const locked = node.dataset.streamHeightLocked === "true";
 	state.displayed = text;
 	if (node.textContent !== text) node.textContent = text;
 	lockHeightIfNeeded(node);
+	if (locked || node.dataset.streamHeightLocked === "true") {
+		restoreLockedScrollPositions(node, state);
+	}
 	scheduleDetailFollow(node, state);
 	scheduleTimelineFollow(node);
 }
@@ -185,7 +221,7 @@ function reconcileRollingWindow(
 	node: HTMLElement,
 	state: StreamAnimationState,
 ) {
-	if (state.target.startsWith(state.displayed)) return true;
+	if (state.target.startsWith(state.displayed)) return;
 
 	const displayedParts = rollingParts(state.displayed);
 	const targetParts = rollingParts(state.target);
@@ -196,7 +232,7 @@ function reconcileRollingWindow(
 	if (overlapLength > 0) {
 		const retained = targetParts.body.slice(0, overlapLength);
 		writeDisplayed(node, state, `${targetParts.prefix}${retained}`);
-		return true;
+		return;
 	}
 
 	const commonLength = commonPrefixLength(state.displayed, state.target);
@@ -205,7 +241,7 @@ function reconcileRollingWindow(
 		Math.max(1, Math.min(state.displayed.length, state.target.length));
 	if (commonLength >= 12 || sharedRatio >= 0.35) {
 		writeDisplayed(node, state, state.target.slice(0, commonLength));
-		return true;
+		return;
 	}
 
 	// A genuine rewrite is rare. Soften the replacement instead of exposing a large jump.
@@ -218,7 +254,6 @@ function reconcileRollingWindow(
 	);
 	const seedLength = Math.min(12, state.target.length);
 	writeDisplayed(node, state, state.target.slice(0, seedLength));
-	return true;
 }
 
 function animateNode(
@@ -288,10 +323,12 @@ function syncNode(node: HTMLElement) {
 			textRafId: null,
 			scrollRafId: null,
 			lastFrameAt: performance.now(),
+			stableScrollTop: node.scrollTop,
 		};
 		states.set(node, state);
 		followDetail.set(node, true);
 		node.dataset.smoothStreaming = "true";
+		rememberTimelinePosition(node);
 		if (!reducedMotion && incoming) {
 			node.textContent = "";
 			setTimeout(() => {
@@ -304,6 +341,9 @@ function syncNode(node: HTMLElement) {
 	}
 
 	if (incoming !== state.displayed && incoming !== state.target) {
+		if (node.dataset.streamHeightLocked === "true") {
+			restoreLockedScrollPositions(node, state);
+		}
 		state.target = incoming;
 		if (!reducedMotion) node.textContent = state.displayed;
 	}
@@ -335,29 +375,83 @@ function cleanupInactiveNodes() {
 }
 
 function scanStreamingNodes() {
-	scanRaf = null;
-	cleanupInactiveNodes();
-	for (const node of Array.from(
-		document.querySelectorAll<HTMLElement>(STREAM_SELECTOR),
-	)) {
-		syncNode(node);
+	if (scanning) {
+		rescanRequested = true;
+		return;
+	}
+	scanning = true;
+	try {
+		cleanupInactiveNodes();
+		for (const node of Array.from(
+			document.querySelectorAll<HTMLElement>(STREAM_SELECTOR),
+		)) {
+			syncNode(node);
+		}
+	} finally {
+		scanning = false;
+		if (rescanRequested) {
+			rescanRequested = false;
+			queueMicrotask(scanStreamingNodes);
+		}
 	}
 }
 
-function scheduleScan() {
-	if (scanRaf != null) return;
-	scanRaf = requestAnimationFrame(scanStreamingNodes);
+function markUserScrollIntent(event: Event) {
+	const target = event.target as Element | null;
+	if (!target) return;
+	const detail = target.closest<HTMLElement>(STREAM_SELECTOR);
+	const timeline = target.closest<HTMLElement>(TIMELINE_SELECTOR);
+	const now = performance.now();
+	if (detail) userScrollIntentAt.set(detail, now);
+	if (timeline) userScrollIntentAt.set(timeline, now);
+}
+
+function hasRecentUserIntent(node: HTMLElement) {
+	return performance.now() - (userScrollIntentAt.get(node) ?? -10_000) < 240;
 }
 
 function handleScroll(event: Event) {
 	const target = event.target as HTMLElement | null;
 	if (!target) return;
+
 	if (target.matches?.(TIMELINE_SELECTOR)) {
+		const hasLockedStream = Boolean(
+			target.querySelector(
+				`${STREAM_SELECTOR}[data-stream-height-locked="true"]`,
+			),
+		);
+		const stableTop = timelineStableTops.get(target);
+		if (
+			hasLockedStream &&
+			stableTop != null &&
+			!hasRecentUserIntent(target) &&
+			Math.abs(target.scrollTop - stableTop) > 1.5
+		) {
+			target.scrollTop = stableTop;
+			return;
+		}
 		followTimeline.set(target, isNearBottom(target, 120));
+		timelineStableTops.set(target, target.scrollTop);
 		return;
 	}
+
 	if (target.matches?.(STREAM_SELECTOR)) {
+		const state = states.get(target);
+		if (!state) return;
+		if (
+			target.dataset.streamHeightLocked === "true" &&
+			!hasRecentUserIntent(target) &&
+			Math.abs(target.scrollTop - state.stableScrollTop) > 1.5
+		) {
+			target.scrollTop = Math.min(
+				state.stableScrollTop,
+				Math.max(0, target.scrollHeight - target.clientHeight),
+			);
+			scheduleDetailFollow(target, state);
+			return;
+		}
 		followDetail.set(target, isNearBottom(target, 24));
+		state.stableScrollTop = target.scrollTop;
 	}
 }
 
@@ -372,13 +466,16 @@ export function installSmoothStreamingTextDomPatch() {
 	installed = true;
 	addStyle();
 
+	document.addEventListener("wheel", markUserScrollIntent, true);
+	document.addEventListener("touchstart", markUserScrollIntent, true);
+	document.addEventListener("pointerdown", markUserScrollIntent, true);
 	document.addEventListener("scroll", handleScroll, true);
-	document.addEventListener("visibilitychange", scheduleScan);
-	const observer = new MutationObserver(scheduleScan);
+	document.addEventListener("visibilitychange", scanStreamingNodes);
+	const observer = new MutationObserver(scanStreamingNodes);
 	observer.observe(document.body, {
 		childList: true,
 		characterData: true,
 		subtree: true,
 	});
-	scheduleScan();
+	scanStreamingNodes();
 }
