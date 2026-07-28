@@ -17,6 +17,7 @@ import { installPaperPreviewLayoutDomPatch } from "@/utils/paperPreviewLayoutDom
 import { installPaperPreviewMathCleanupDomPatch } from "@/utils/paperPreviewMathCleanupDom";
 import { installSmoothStreamingTextDomPatch } from "@/utils/smoothStreamingTextDom";
 import { installTimelineWordingDomPatch } from "@/utils/timelineWordingDom";
+import { installWorkflowStageClarityDomPatch } from "@/utils/workflowStageClarityDom";
 import piniaPluginPersistedstate from "pinia-plugin-persistedstate";
 
 const pinia = createPinia();
@@ -41,3 +42,4 @@ installPaperPreviewDomPatch();
 installPaperPreviewLayoutDomPatch();
 installPaperPreviewMathCleanupDomPatch();
 installSmoothStreamingTextDomPatch();
+installWorkflowStageClarityDomPatch();
