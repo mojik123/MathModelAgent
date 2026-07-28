@@ -102,11 +102,25 @@ def _code_label(response_content: str, code: str, subtask_title: str, index: int
 class CoderAgent(BaseCoderAgent):
     """Coder with explicit completion and observable code-generation progress."""
 
+    _scope_code_counts: dict[tuple[str, str], int] = {}
     _last_model_response: Any = None
     _progress_subtask_title: str = ""
     _generated_code_count: int = 0
     _active_code_index: int = 0
     _active_code_label: str = ""
+
+    def _counter_key(self, subtask_title: str) -> tuple[str, str]:
+        """Keep code numbering continuous across main and fallback Coders."""
+        return self.task_id, subtask_title.strip().lower()
+
+    def _scope_count(self, subtask_title: str) -> int:
+        return self._scope_code_counts.get(self._counter_key(subtask_title), 0)
+
+    def _reserve_code_index(self, subtask_title: str) -> int:
+        key = self._counter_key(subtask_title)
+        next_index = self._scope_code_counts.get(key, 0) + 1
+        self._scope_code_counts[key] = next_index
+        return next_index
 
     def _identity(self, subtask_title: str) -> tuple[str, int | None, str]:
         question_index = getattr(self.model, "question_index", None)
@@ -118,7 +132,10 @@ class CoderAgent(BaseCoderAgent):
             instance_id = f"q{question_index}.coder.main"
         else:
             instance_id = f"process.{subtask_title}.coder"
-        group_id = str(model_group or (f"q{question_index}.coder" if question_index else instance_id))
+        group_id = str(
+            model_group
+            or (f"q{question_index}.coder" if question_index else instance_id)
+        )
         return instance_id, question_index, group_id
 
     async def _publish_code_progress(
@@ -206,12 +223,16 @@ class CoderAgent(BaseCoderAgent):
 
     async def _chat(self, *args: Any, **kwargs: Any) -> Any:
         subtask_title = self._progress_subtask_title
-        next_index = self._generated_code_count + 1
+        next_index = self._scope_count(subtask_title) + 1 if subtask_title else 1
         if subtask_title:
+            self._generated_code_count = self._scope_count(subtask_title)
             await self._publish_code_progress(
                 subtask_title=subtask_title,
                 state="thinking",
-                action=f"正在思考 {_scope_label(subtask_title)} 的下一步，并准备第 {next_index} 段代码",
+                action=(
+                    f"正在思考 {_scope_label(subtask_title)} 的下一步，"
+                    f"并准备第 {next_index} 段代码"
+                ),
                 code_count=self._generated_code_count,
             )
 
@@ -220,7 +241,7 @@ class CoderAgent(BaseCoderAgent):
 
         code = _tool_code(response)
         if code and subtask_title:
-            self._generated_code_count += 1
+            self._generated_code_count = self._reserve_code_index(subtask_title)
             self._active_code_index = self._generated_code_count
             self._active_code_label = _code_label(
                 getattr(response, "content", "") or "",
@@ -261,7 +282,7 @@ class CoderAgent(BaseCoderAgent):
     async def run(self, prompt: str, subtask_title: str) -> CoderToWriter:  # type: ignore[override]
         self._last_model_response = None
         self._progress_subtask_title = subtask_title
-        self._generated_code_count = 0
+        self._generated_code_count = self._scope_count(subtask_title)
         self._active_code_index = 0
         self._active_code_label = ""
 
