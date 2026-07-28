@@ -9,6 +9,7 @@ import { installChatAgentDuplicateDomPatch } from "@/utils/chatAgentDuplicateDom
 import { installChatArtifactLinkDomPatch } from "@/utils/chatArtifactLinkDom";
 import { installChatChoiceCardDomPatch } from "@/utils/chatChoiceCardDom";
 import { installChatPhaseDividerDomPatch } from "@/utils/chatPhaseDividerDom";
+import { installChatTimelineChronologyDomPatch } from "@/utils/chatTimelineChronologyDom";
 import { installCompactTimelineDomPatch } from "@/utils/compactTimelineDom";
 import { installImageGalleryTitleDomPatch } from "@/utils/imageGalleryTitleDom";
 import { installModelingDiscussionSync } from "@/utils/modelingDiscussionSync";
@@ -38,6 +39,7 @@ installModelingDiscussionSync();
 installChatPhaseDividerDomPatch();
 installChatAgentDuplicateDomPatch();
 installChatChoiceCardDomPatch();
+installChatTimelineChronologyDomPatch();
 installPaperPreviewDomPatch();
 installPaperPreviewLayoutDomPatch();
 installPaperPreviewMathCleanupDomPatch();
