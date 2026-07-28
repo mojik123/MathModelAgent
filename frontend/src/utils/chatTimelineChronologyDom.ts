@@ -41,13 +41,47 @@ function getRows(scroll: HTMLElement) {
 	);
 }
 
-function displayedMinute(row: HTMLElement) {
+function displayedTimeLabel(row: HTMLElement) {
 	const matches = Array.from(
 		textOf(row).matchAll(/\b([01]\d|2[0-3]):([0-5]\d)\b/g),
 	);
-	const last = matches.at(-1);
-	if (!last) return -1;
-	return Number(last[1]) * 60 + Number(last[2]);
+	return matches.at(-1)?.[0] ?? "";
+}
+
+function displayedMinute(row: HTMLElement) {
+	const label = displayedTimeLabel(row);
+	if (!label) return -1;
+	const [hour, minute] = label.split(":").map(Number);
+	return hour * 60 + minute;
+}
+
+function setDisplayedTimeLabel(row: HTMLElement, label: string) {
+	if (!label) return;
+	const candidates = Array.from(row.querySelectorAll<HTMLElement>("span, time")).filter(
+		(node) =>
+			node.children.length === 0 &&
+			/^([01]\d|2[0-3]):[0-5]\d$/.test(textOf(node)),
+	);
+	const target = candidates.at(-1);
+	if (target && textOf(target) !== label) target.textContent = label;
+}
+
+function isModelingSelection(row: HTMLElement) {
+	const text = textOf(row);
+	return (
+		/User|用户确认/.test(text) &&
+		/选择最优模型方案|选择模型方案|应用.*推荐.*模型|确认全部问题的建模方案/.test(
+			text,
+		)
+	);
+}
+
+function isModelingConfirmation(row: HTMLElement) {
+	const text = textOf(row);
+	return (
+		/建模方案已确认|已确认建模方案/.test(text) ||
+		(/建模方案附件/.test(text) && /已确认/.test(text))
+	);
 }
 
 function isModelingRefinement(row: HTMLElement) {
@@ -82,20 +116,25 @@ function stageOrder(row: HTMLElement): StageOrder {
 		return { key: "question-confirmation", rank: 200 };
 	}
 	if (
-		/建模方案已确认|已确认建模方案/.test(text) ||
-		(/建模方案附件/.test(text) && /已确认/.test(text))
-	) {
-		return { key: "modeling-confirmation", rank: 400 };
-	}
-	if (
 		/CoordinatorAgent/.test(text) &&
 		/任务规划|规划阶段|问题划分|题目解析|问题拆解/.test(text)
 	) {
 		return { key: "planning", rank: 100 };
 	}
+
+	// 建模阶段严格按业务语义排列：候选方案 → 用户选择 → 系统确认 → 详细细化。
+	if (isModelingSelection(row)) {
+		return { key: "modeling-selection", rank: 390 };
+	}
+	if (isModelingConfirmation(row)) {
+		return { key: "modeling-confirmation", rank: 400 };
+	}
+	if (isModelingRefinement(row)) {
+		return { key: "modeling-refinement", rank: 460 };
+	}
 	if (
 		/ModelerAgent/.test(text) &&
-		/方案细化|建模阶段|整体建模方案|候选建模方案/.test(text)
+		/建模阶段|候选建模方案|生成建模方案|模型比选/.test(text)
 	) {
 		return { key: "modeling", rank: 300 };
 	}
@@ -168,6 +207,16 @@ function hideSupersededRefinements(rows: HTMLElement[]) {
 	for (const row of refinements) setHidden(row, row !== latest);
 }
 
+function syncModelingConfirmationTime(rows: HTMLElement[]) {
+	const selections = rows.filter(isModelingSelection);
+	const confirmations = rows.filter(isModelingConfirmation);
+	const selection = selections.at(-1);
+	const confirmation = confirmations.at(-1);
+	if (!selection || !confirmation) return;
+	const selectionTime = displayedTimeLabel(selection);
+	if (selectionTime) setDisplayedTimeLabel(confirmation, selectionTime);
+}
+
 function normalizeTimelineChronology() {
 	const scroll = getTimelineScroll();
 	if (!scroll) return;
@@ -181,11 +230,11 @@ function normalizeTimelineChronology() {
 		setHidden(row, false);
 		const stage = stageOrder(row);
 		setStage(row, stage.key);
-		// 阶段权重决定主要顺序，原始 DOM 下标只负责同阶段内稳定排序。
-		// 因此实时消息更新不会把 EDA 或其他前置阶段推到问题卡之后。
+		// 阶段权重决定业务顺序，原始 DOM 下标只负责同阶段内稳定排序。
 		setOrder(row, stage.rank * 10_000 + sourceIndex);
 	}
 	hideSupersededRefinements(rows);
+	syncModelingConfirmationTime(rows);
 }
 
 function scheduleNormalize() {
