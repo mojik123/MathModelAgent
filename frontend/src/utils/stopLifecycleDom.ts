@@ -12,36 +12,36 @@ function addStyle() {
 	const style = document.createElement("style");
 	style.id = STYLE_ID;
 	style.textContent = `
-+[${HIDDEN_ATTR}="true"] {
-+	display: none !important;
-+}
-+
-+[${TERMINAL_ATTR}="true"] [data-agent-card],
-+[${TERMINAL_ATTR}="true"] [data-running-card],
-+[${TERMINAL_ATTR}="true"] [data-stale-running-card] {
-+	animation: none !important;
-+	border-color: rgb(203 213 225) !important;
-+	background: linear-gradient(135deg, rgba(248, 250, 252, .98), rgba(241, 245, 249, .94)) !important;
-+	box-shadow: 0 1px 3px rgba(15, 23, 42, .08) !important;
-+}
-+
-+[${TERMINAL_ATTR}="true"] .animate-spin,
-+[${TERMINAL_ATTR}="true"] [class*="animate-pulse"] {
-+	display: none !important;
-+}
-+
-+[${TERMINAL_ATTR}="true"] [data-stop-lifecycle-status="true"] {
-+	border-color: rgb(203 213 225) !important;
-+	background: rgb(241 245 249) !important;
-+	color: rgb(71 85 105) !important;
-+}
-+
-+[${STOPPING_ATTR}="true"] [data-stop-lifecycle-status="true"] {
-+	border-color: rgb(253 230 138) !important;
-+	background: rgb(254 252 232) !important;
-+	color: rgb(161 98 7) !important;
-+}
-+`;
+[${HIDDEN_ATTR}="true"] {
+	display: none !important;
+}
+
+[${TERMINAL_ATTR}="true"] [data-agent-card],
+[${TERMINAL_ATTR}="true"] [data-running-card],
+[${TERMINAL_ATTR}="true"] [data-stale-running-card] {
+	animation: none !important;
+	border-color: rgb(203 213 225) !important;
+	background: linear-gradient(135deg, rgba(248, 250, 252, .98), rgba(241, 245, 249, .94)) !important;
+	box-shadow: 0 1px 3px rgba(15, 23, 42, .08) !important;
+}
+
+[${TERMINAL_ATTR}="true"] .animate-spin,
+[${TERMINAL_ATTR}="true"] [class*="animate-pulse"] {
+	display: none !important;
+}
+
+[${TERMINAL_ATTR}="true"] [data-stop-lifecycle-status="true"] {
+	border-color: rgb(203 213 225) !important;
+	background: rgb(241 245 249) !important;
+	color: rgb(71 85 105) !important;
+}
+
+[${STOPPING_ATTR}="true"] [data-stop-lifecycle-status="true"] {
+	border-color: rgb(253 230 138) !important;
+	background: rgb(254 252 232) !important;
+	color: rgb(161 98 7) !important;
+}
+`;
 	document.head.appendChild(style);
 }
 
