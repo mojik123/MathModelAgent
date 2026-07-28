@@ -1,5 +1,6 @@
 const STYLE_ID = "chat-timeline-chronology-style";
 const HIDDEN_ATTR = "data-timeline-chronology-hidden";
+const STAGE_ATTR = "data-timeline-chronology-stage";
 
 let installed = false;
 let scheduled = false;
@@ -57,6 +58,14 @@ function isModelingRefinement(row: HTMLElement) {
 	return /详细建模方案细化|方案细化|整体建模方案/.test(text);
 }
 
+function isEdaStage(row: HTMLElement) {
+	const text = textOf(row);
+	if (!/CoderAgent|代码求解|模型计算/.test(text)) return false;
+	return /\bEDA\b|探索性数据分析|数据探索与代码求解|数据预处理与探索|启动\s*EDA/i.test(
+		text,
+	);
+}
+
 function isLaterThanConfirmation(
 	row: HTMLElement,
 	confirmation: HTMLElement,
@@ -65,7 +74,7 @@ function isLaterThanConfirmation(
 	const confirmationMinute = displayedMinute(confirmation);
 	if (rowMinute == null || confirmationMinute == null) return false;
 	const delta = rowMinute - confirmationMinute;
-	return delta > 0 && delta < 12 * 60;
+	return delta >= 0 && delta < 12 * 60;
 }
 
 function setHidden(row: HTMLElement, hidden: boolean) {
@@ -83,6 +92,14 @@ function setOrder(row: HTMLElement, order: number) {
 	if (row.style.order !== value) row.style.order = value;
 }
 
+function setStage(row: HTMLElement, stage: string | null) {
+	if (!stage) {
+		if (row.hasAttribute(STAGE_ATTR)) row.removeAttribute(STAGE_ATTR);
+		return;
+	}
+	if (row.getAttribute(STAGE_ATTR) !== stage) row.setAttribute(STAGE_ATTR, stage);
+}
+
 function latestRow(rows: HTMLElement[]) {
 	return [...rows].sort((left, right) => {
 		const leftMinute = displayedMinute(left) ?? -1;
@@ -90,6 +107,10 @@ function latestRow(rows: HTMLElement[]) {
 		if (leftMinute !== rightMinute) return rightMinute - leftMinute;
 		return rows.indexOf(right) - rows.indexOf(left);
 	})[0];
+}
+
+function stableRows(rows: HTMLElement[], source: HTMLElement[]) {
+	return [...rows].sort((left, right) => source.indexOf(left) - source.indexOf(right));
 }
 
 function normalizeTimelineChronology() {
@@ -104,25 +125,44 @@ function normalizeTimelineChronology() {
 	const rows = getRows(scroll);
 	for (const [index, row] of rows.entries()) {
 		setHidden(row, false);
+		setStage(row, null);
 		setOrder(row, index * 10);
 	}
 
 	const confirmation = rows.filter(isModelingConfirmation).at(-1);
 	if (!confirmation) return;
+	setStage(confirmation, "modeling-confirmation");
+
+	const confirmationIndex = rows.indexOf(confirmation);
+	const stageBaseOrder = confirmationIndex * 10;
 
 	const refinements = rows.filter(isModelingRefinement);
 	const postConfirmationRefinements = refinements.filter((row) =>
 		isLaterThanConfirmation(row, confirmation),
 	);
-	if (!postConfirmationRefinements.length) return;
+	const currentRefinement = postConfirmationRefinements.length
+		? latestRow(postConfirmationRefinements)
+		: null;
 
-	const currentRefinement = latestRow(postConfirmationRefinements);
-	for (const row of refinements) {
-		setHidden(row, row !== currentRefinement);
+	if (currentRefinement) {
+		for (const row of refinements) {
+			setHidden(row, row !== currentRefinement);
+		}
+		setStage(currentRefinement, "modeling-refinement");
+		setOrder(currentRefinement, stageBaseOrder + 1);
 	}
 
-	const confirmationIndex = rows.indexOf(confirmation);
-	setOrder(currentRefinement, confirmationIndex * 10 + 1);
+	// EDA depends on the confirmed and refined modeling plan. Its start message can
+	// arrive before the refinement-complete message, so never leave it in its raw
+	// arrival position above those cards. Keep multiple EDA rows stable if they exist.
+	const edaRows = stableRows(
+		rows.filter(isEdaStage).filter((row) => row !== currentRefinement),
+		rows,
+	);
+	for (const [index, row] of edaRows.entries()) {
+		setStage(row, "eda");
+		setOrder(row, stageBaseOrder + 2 + index);
+	}
 }
 
 function scheduleNormalize() {
