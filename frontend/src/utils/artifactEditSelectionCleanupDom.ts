@@ -10,6 +10,7 @@ const ACTIVATION_GRACE_MS = 500;
 
 let installed = false;
 let activeChangedAt = 0;
+let selectionModeAtActivation: "writer" | "fallback" = "fallback";
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
 function isTransientTargetMessage(message: Message) {
@@ -22,11 +23,28 @@ function isTransientTargetMessage(message: Message) {
 	);
 }
 
-function removeTransientTargetMessages() {
+function transientMessages() {
 	const taskStore = useTaskStore();
-	const messages = taskStore.messages as Message[];
+	return taskStore.messages as Message[];
+}
+
+function removeTransientTargetMessages() {
+	const messages = transientMessages();
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
 		if (isTransientTargetMessage(messages[index])) messages.splice(index, 1);
+	}
+}
+
+function keepOnlyLatestTransientTargetMessage() {
+	const messages = transientMessages();
+	let keptLatest = false;
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		if (!isTransientTargetMessage(messages[index])) continue;
+		if (!keptLatest) {
+			keptLatest = true;
+			continue;
+		}
+		messages.splice(index, 1);
 	}
 }
 
@@ -38,20 +56,21 @@ function hideEditInputImmediately() {
 	delete root.dataset.renderKey;
 }
 
+function removeFallbackSelectionMarkers() {
+	for (const element of document.querySelectorAll<HTMLElement>(
+		".paper-preview [data-artifact-edit-selected='true']",
+	)) {
+		element.removeAttribute("data-artifact-edit-selected");
+	}
+}
+
 function selectionNodeInsidePaper(node: Node | null) {
 	const element =
 		node instanceof HTMLElement ? node : node?.parentElement || null;
 	return Boolean(element?.closest(".paper-preview"));
 }
 
-function hasVisiblePaperTextSelection() {
-	if (
-		document.querySelector(
-			".paper-preview .sentence-selected, .paper-preview [data-artifact-edit-selected='true']",
-		)
-	) {
-		return true;
-	}
+function hasNativePaperTextSelection() {
 	const selection = window.getSelection();
 	return Boolean(
 		selection &&
@@ -62,7 +81,19 @@ function hasVisiblePaperTextSelection() {
 	);
 }
 
+function hasVisiblePaperTextSelection() {
+	if (selectionModeAtActivation === "writer") {
+		return Boolean(document.querySelector(".paper-preview .sentence-selected"));
+	}
+	return Boolean(
+		document.querySelector(
+			".paper-preview [data-artifact-edit-selected='true']",
+		) || hasNativePaperTextSelection(),
+	);
+}
+
 function clearCancelledTextTarget() {
+	keepOnlyLatestTransientTargetMessage();
 	const editStore = useArtifactEditStore();
 	const context = editStore.activeContext;
 	if (!context || context.targetType !== "text") return;
@@ -72,6 +103,7 @@ function clearCancelledTextTarget() {
 
 	editStore.clearActive();
 	removeTransientTargetMessages();
+	removeFallbackSelectionMarkers();
 	hideEditInputImmediately();
 }
 
@@ -83,6 +115,7 @@ function installClearButtonFallback() {
 			if (!target?.closest(".artifact-edit-chat-clear")) return;
 			queueMicrotask(() => {
 				removeTransientTargetMessages();
+				removeFallbackSelectionMarkers();
 				hideEditInputImmediately();
 			});
 		},
@@ -107,6 +140,11 @@ export function installArtifactEditSelectionCleanupDomPatch() {
 		() => activeContext.value?.sessionId || "",
 		(nextSessionId, previousSessionId) => {
 			activeChangedAt = Date.now();
+			selectionModeAtActivation = document.querySelector(
+				".paper-preview .sentence-selected",
+			)
+				? "writer"
+				: "fallback";
 			if (nextSessionId !== previousSessionId) {
 				removeTransientTargetMessages();
 			}
