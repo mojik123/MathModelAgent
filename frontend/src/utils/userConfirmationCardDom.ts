@@ -4,7 +4,15 @@ const NORMALIZED_ATTR = "data-user-confirmation-card-normalized";
 let installed = false;
 let scheduled = false;
 
-function confirmationMarkup() {
+function nearbyTimeLabel(row: HTMLElement) {
+	const source = row.previousElementSibling?.textContent ?? "";
+	const matches = Array.from(
+		source.matchAll(/\b([01]\d|2[0-3]):([0-5]\d)\b/g),
+	);
+	return matches.at(-1)?.[0] ?? "";
+}
+
+function confirmationMarkup(timeLabel: string) {
 	return `
 		<div class="flex max-w-[98%] gap-1.5 flex-row-reverse">
 			<div class="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-900 text-white shadow-sm" aria-hidden="true">
@@ -28,6 +36,7 @@ function confirmationMarkup() {
 							<span>已确认问题划分</span>
 						</div>
 					</div>
+					${timeLabel ? `<span class="shrink-0 text-[10px] opacity-45">${timeLabel}</span>` : ""}
 				</div>
 				<p class="message-detail mt-1.5 whitespace-pre-wrap break-words text-xs leading-relaxed opacity-80">确认当前问题结构，继续进入建模方案选择阶段。</p>
 			</div>
@@ -40,8 +49,9 @@ function normalizeConfirmationCards() {
 		`[${CONFIRMATION_ROW_ATTR}="true"]`,
 	)) {
 		if (row.getAttribute(NORMALIZED_ATTR) === "true") continue;
+		const timeLabel = nearbyTimeLabel(row);
 		row.className = "flex w-full justify-end";
-		row.innerHTML = confirmationMarkup();
+		row.innerHTML = confirmationMarkup(timeLabel);
 		row.setAttribute(NORMALIZED_ATTR, "true");
 	}
 }
