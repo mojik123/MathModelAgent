@@ -43,9 +43,17 @@ def clean_empty_display_math_blocks(text: str) -> str:
         body = "\n".join(lines[index + 1 : closing]).strip()
         if body:
             output.extend(lines[index : closing + 1])
+        elif (
+            output
+            and output[-1].strip()
+            and closing + 1 < len(lines)
+            and lines[closing + 1].strip()
+        ):
+            output.append("")
         index = closing + 1
 
     cleaned = "\n".join(output)
+    cleaned = re.sub(r"(?m)^[ \t]*\${4}[ \t]*$", "", cleaned)
     cleaned = re.sub(r"(?m)^[ \t]*\$\$[ \t]+\$\$[ \t]*$", "", cleaned)
     cleaned = re.sub(r"\\\[\s*\\\]", "", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
