@@ -14,7 +14,11 @@ from app.core.prompts import CODER_PROMPT
 from app.utils.common_utils import get_current_files
 from app.core.prompts import get_reflection_prompt
 from app.core.functions import coder_tools
-from app.utils.repeat_error_judge import judge_repeated_error, error_signature
+from app.utils.repeat_error_judge import (
+    error_recovery_advice,
+    error_signature,
+    judge_repeated_error,
+)
 
 
 class CoderAgent(Agent):
@@ -84,6 +88,10 @@ class CoderAgent(Agent):
         max_total_steps = int(getattr(settings, "CODER_MAX_TOTAL_STEPS", 0) or 0)
         max_total_errors = int(
             getattr(settings, "CODER_MAX_TOTAL_ERRORS", 8) or 0
+        )
+        max_same_error = max(
+            2,
+            int(getattr(settings, "CODER_MAX_SAME_ERROR", 2) or 2),
         )
         last_error_type = ""
         has_executed_code = False
@@ -155,6 +163,8 @@ class CoderAgent(Agent):
 
         def _should_start_judge() -> bool:
             if not getattr(settings, "CODER_REPEAT_ERROR_JUDGE_ENABLED", True):
+                return False
+            if restart_requested:
                 return False
             if pending_judge_task is not None and not pending_judge_task.done():
                 return False
@@ -380,6 +390,15 @@ class CoderAgent(Agent):
                                 consecutive_same_error_count = 1
                             last_error_type = current_signature
 
+                            recovery_advice = error_recovery_advice(error_message)
+                            if consecutive_same_error_count >= max_same_error:
+                                restart_requested = True
+                                restart_reason = (
+                                    f"同类错误“{current_signature}”连续出现 "
+                                    f"{consecutive_same_error_count} 次，已达到切换阈值；"
+                                    f"建议：{recovery_advice}"
+                                )
+
                             if _should_start_judge():
                                 await redis_manager.publish_message(
                                     self.task_id,
@@ -403,7 +422,11 @@ class CoderAgent(Agent):
                                     )
                                 )
 
-                            reflection_prompt = get_reflection_prompt(error_message, code)
+                            reflection_prompt = get_reflection_prompt(
+                                error_message,
+                                code,
+                                recovery_advice,
+                            )
                             if pending_judge_task is not None and not pending_judge_task.done():
                                 reflection_prompt = (
                                     "【系统提示】协调者正在后台判断错误是否重复；你不要等待协调者结果，"

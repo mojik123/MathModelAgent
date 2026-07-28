@@ -1,33 +1,46 @@
 """共享的提示词工具函数。"""
 
 
-def get_reflection_prompt(error_message, code) -> str:
+def get_reflection_prompt(
+    error_message: str,
+    code: str,
+    recovery_advice: str = "",
+) -> str:
     """生成代码错误反思提示词。
 
     Args:
         error_message: 错误信息。
         code: 出错的代码。
+        recovery_advice: 系统根据错误族生成的定向修复建议。
 
     Returns:
         反思提示词字符串。
     """
+    advice_block = (
+        f"\nSystem-diagnosed recovery path (must follow):\n{recovery_advice}\n"
+        if recovery_advice
+        else ""
+    )
     return f"""The code execution encountered an error:
 {error_message}
+{advice_block}
 
-Please analyze the error, identify the cause, and provide a corrected version of the code. 
+Please analyze the error, identify the cause, and execute a corrected version of the code.
 Consider:
 1. Syntax errors
 2. Missing imports
 3. Incorrect variable names or types
 4. File path issues
 5. Any other potential issues
-6. If a task repeatedly fails to complete, try breaking down the code, changing your approach, or simplifying the model. If you still can't do it, I'll "chop" you 🪓 and cut your power 😡.
-7. Don't ask user any thing about how to do and next to do,just do it by yourself.
+6. Do not execute the unchanged failing code again. Validate the failed assumption
+   with one small inspection, then apply one concrete fix.
+7. If a task repeatedly fails, change the approach or simplify the model.
+8. Do not ask the user what to do next; use the available files and traceback.
 
 Previous code:
 {code}
 
-Please provide an explanation of what went wrong and Remenber call the function tools to retry 
+Briefly explain the root cause, then call the appropriate tool to execute the fix.
 """
 
 

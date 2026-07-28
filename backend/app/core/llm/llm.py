@@ -148,7 +148,24 @@ class LLM:
         top_p: float | None = None,
         agent_name: str = "SystemAgent",
         sub_title: str | None = None,
+        publish_response: bool = True,
     ) -> StandardResponse:
+        """调用模型并按需发布最终响应。
+
+        Args:
+            history: 对话历史。
+            tools: 可供模型调用的工具。
+            tool_choice: 工具选择策略。
+            max_retries: 模型请求最大尝试次数。
+            retry_delay: 重试基础等待时间。
+            top_p: 核采样参数。
+            agent_name: 前端展示的 Agent 类型。
+            sub_title: 前端展示的子标题。
+            publish_response: 是否将响应发布到任务消息流。
+
+        Returns:
+            标准化模型响应。
+        """
         self._validate_config(agent_name)
 
         # 验证和修复工具调用完整性（仅对 OpenAI 格式的历史有效）
@@ -172,9 +189,7 @@ class LLM:
                     top_p=top_p,
                 )
                 logger.info(f"API返回: content={response.content!r}, tool_calls={len(response.tool_calls or [])}")
-                self.chat_count += 1
-                await self.send_message(response, agent_name, sub_title)
-                return response
+                break
             except Exception as e:
                 attempt += 1
                 logger.error(f"第{attempt}次重试: {str(e)}")
@@ -188,6 +203,12 @@ class LLM:
                     ) from e
                 await asyncio.sleep(retry_delay * min(attempt, 10))
 
+        self.chat_count += 1
+        if publish_response:
+            # 发布失败不属于模型请求失败，不能因此重复产生同一份模型响应。
+            await self.send_message(response, agent_name, sub_title)
+        return response
+
     async def chat_stream(
         self,
         history: list | None = None,
@@ -198,6 +219,7 @@ class LLM:
         top_p: float | None = None,
         agent_name: str = "SystemAgent",
         sub_title: str | None = None,
+        publish_response: bool = True,
     ) -> StandardResponse:
         """流式调用 LLM，逐块发布增量内容到前端。
 
@@ -242,7 +264,11 @@ class LLM:
                     if chunk.delta:
                         accumulated.append(chunk.delta)
                         now_ts = time.monotonic()
-                        if now_ts - last_publish_time >= _STREAM_THROTTLE_SECONDS:
+                        if (
+                            publish_response
+                            and now_ts - last_publish_time
+                            >= _STREAM_THROTTLE_SECONDS
+                        ):
                             # 发布中间增量
                             partial_content = "".join(accumulated)
                             await self._send_streaming_message(
@@ -264,9 +290,7 @@ class LLM:
                 )
 
                 logger.info(f"流式返回完成: content_len={len(full_content)}, tool_calls={len(tool_calls or [])}")
-                self.chat_count += 1
-                await self.send_message(response, agent_name, sub_title)
-                return response
+                break
 
             except Exception as e:
                 attempt += 1
@@ -280,6 +304,12 @@ class LLM:
                         f"LLM 请求连续失败 {attempt} 次，已停止当前 Agent 尝试：{e}"
                     ) from e
                 await asyncio.sleep(retry_delay * min(attempt, 10))
+
+        self.chat_count += 1
+        if publish_response:
+            # 与非流式调用一致，消息发布不参与模型请求重试。
+            await self.send_message(response, agent_name, sub_title)
+        return response
 
     async def _send_streaming_message(
         self,

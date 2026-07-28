@@ -98,6 +98,17 @@ class _AlwaysTransientProvider:
         raise _StatusError(503, "temporary unavailable")
 
 
+class _SuccessfulProvider:
+    """始终成功并记录调用次数的 Provider。"""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def call(self, **_kwargs) -> StandardResponse:
+        self.calls += 1
+        return StandardResponse(content="ok")
+
+
 def _llm(provider) -> LLM:
     model = LLM(
         api_type=None,
@@ -146,6 +157,35 @@ def test_exhausted_transient_error_is_marked_fatal_for_current_agent() -> None:
         asyncio.run(model.chat(max_retries=3))
 
     assert provider.calls == 3
+
+
+def test_hidden_llm_call_does_not_publish_task_message() -> None:
+    """内部判定调用应复用 LLM，但不能生成无效 Agent 消息。"""
+    provider = _SuccessfulProvider()
+    model = _llm(provider)
+
+    response = asyncio.run(
+        model.chat(
+            agent_name="CoordinatorRepeatErrorJudge",
+            publish_response=False,
+        )
+    )
+
+    assert response.content == "ok"
+    assert provider.calls == 1
+    model.send_message.assert_not_awaited()
+
+
+def test_message_publish_failure_does_not_repeat_model_request() -> None:
+    """模型已成功后即使消息发布失败，也不能重新请求并重复计费。"""
+    provider = _SuccessfulProvider()
+    model = _llm(provider)
+    model.send_message = AsyncMock(side_effect=ValueError("unsupported agent"))
+
+    with pytest.raises(ValueError, match="unsupported agent"):
+        asyncio.run(model.chat(max_retries=3))
+
+    assert provider.calls == 1
 
 
 def test_concurrent_message_writes_remain_valid_json(tmp_path) -> None:

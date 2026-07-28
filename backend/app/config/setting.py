@@ -71,7 +71,8 @@ class Settings(BaseSettings):
     CODE_EXECUTION_TIMEOUT: int = 300
     CODER_MAX_RETRIES: int | None = 6
     CODER_MAX_TOTAL_ERRORS: int = 8
-    CODER_MAX_SAME_ERROR: int = 3
+    # 同一错误族允许一次定向修复；第二次仍失败就切换备用 Coder。
+    CODER_MAX_SAME_ERROR: int = 2
     CODER_ATTEMPT_TIMEOUT: int = 2700
     CODER_MAX_TOTAL_STEPS: int = 30
     CODER_REPEAT_ERROR_JUDGE_ENABLED: bool = True

@@ -73,6 +73,9 @@ df['\\u5a74\\u513f\\u884c\\u4e3a\\u7279\\u5f81']  # No unicode escapes
 - **列名和字符串字段必须先 strip()**：所有 DataFrame 的 columns 必须 `[str(c).strip() for c in df.columns]`。所有 object 列的值必须 `.astype(str).str.strip()`。这可以防止 `普通大棚 ` 尾随空格导致的 KeyError。
 - **绘图排序必须使用 reindex，禁止 loc 硬索引**：如果要对分类排序，用 `reindex(order_list)` 而非 `.loc[order_list]`，前者对缺失类别优雅降级，后者直接 KeyError。
 - **value_counts / groupby 前先确认列存在**：用 `if '列名' in df.columns` 守卫，或从其他表 merge 补齐。缺失时打印 warning 并跳过该分析，不要假设列一定存在。
+- **Excel 标识列禁止直接 `astype(int)`**：编号列可能混入空行、合并单元格或“注：”等页脚文本。必须先保留原始列，使用 `pd.to_numeric(series, errors="coerce")`，打印“原值非空但转换后为 NaN”的被拒绝行，过滤后再转为 pandas 可空整数 `Int64`。`dropna()` 不能替代这一步，因为“注：”不是空值。
+- **merge 后禁止假设同名列仍是原名**：合并前检查除键以外的重名列；显式删除/重命名一侧，或设置 `suffixes=("_left", "_right")` 后再用 `combine_first` 合并。若两侧都有“作物类型”，merge 后不能继续直接访问无后缀的 `作物类型`。
+- **首次读取必须做数据区/尾注审计**：逐表打印 shape、columns、末尾若干行和关键编号列的数值转换失败行，先划定真实数据行，再进入 EDA 或建模；不得让页脚说明参与排序、类型转换、合并和优化。
 
 ## 数据泄露防范（关键！）
 - 时序特征：用 `shift(1)` 获取上一期，禁止 `shift(-1)`
