@@ -17,6 +17,10 @@ $$
 保留正文。
 
 $$
+
+$$$$
+
+$$  $$
 """
 
         cleaned = clean_empty_display_math_blocks(raw)
