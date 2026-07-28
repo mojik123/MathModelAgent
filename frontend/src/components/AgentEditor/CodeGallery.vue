@@ -7,7 +7,9 @@ import { useTaskStore } from "@/stores/task";
 import {
 	ChevronsDown,
 	ChevronsUp,
+	Check,
 	Code2,
+	Copy,
 	ExternalLink,
 	FolderOpen,
 	ListTree,
@@ -70,11 +72,13 @@ const fileContentCache = ref<Record<string, string>>({});
 const loadingCodeFiles = ref<Set<string>>(new Set());
 const codeFileErrors = ref<Record<string, string>>({});
 const expandedCodeFiles = ref<Set<string>>(new Set());
+const codeCopyStates = ref<Record<string, "copied" | "error">>({});
 const highlightedFilePath = ref("");
 const codeScrollHost = ref<HTMLElement | null>(null);
 let workspaceSyncTimer: ReturnType<typeof setTimeout> | null = null;
 let workspaceSyncInFlight = false;
 let codeScrollFrame: number | null = null;
+const copyResetTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 const currentTaskId = computed(
 	() =>
@@ -383,6 +387,57 @@ function toggleCodeFileExpanded(filePath: string) {
 	expandedCodeFiles.value = next;
 }
 
+function fallbackCopyText(text: string) {
+	const textarea = document.createElement("textarea");
+	textarea.value = text;
+	textarea.setAttribute("readonly", "");
+	textarea.style.position = "fixed";
+	textarea.style.left = "-9999px";
+	document.body.appendChild(textarea);
+	textarea.select();
+	const copied = document.execCommand("copy");
+	textarea.remove();
+	if (!copied) throw new Error("浏览器拒绝复制");
+}
+
+function setCodeCopyState(filePath: string, state: "copied" | "error") {
+	codeCopyStates.value = { ...codeCopyStates.value, [filePath]: state };
+	const previousTimer = copyResetTimers.get(filePath);
+	if (previousTimer) clearTimeout(previousTimer);
+	copyResetTimers.set(
+		filePath,
+		setTimeout(() => {
+			const next = { ...codeCopyStates.value };
+			delete next[filePath];
+			codeCopyStates.value = next;
+			copyResetTimers.delete(filePath);
+		}, 1800),
+	);
+}
+
+async function copyCodeFile(filePath: string) {
+	const content = codeFileContent(filePath);
+	if (!content) {
+		setCodeCopyState(filePath, "error");
+		return;
+	}
+	try {
+		if (navigator.clipboard?.writeText) {
+			await navigator.clipboard.writeText(content);
+		} else {
+			fallbackCopyText(content);
+		}
+		setCodeCopyState(filePath, "copied");
+	} catch {
+		try {
+			fallbackCopyText(content);
+			setCodeCopyState(filePath, "copied");
+		} catch {
+			setCodeCopyState(filePath, "error");
+		}
+	}
+}
+
 function keepActiveCodeTocVisible() {
 	if (!selectedFilePath.value) return;
 	nextTick(() => {
@@ -524,6 +579,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
 	if (workspaceSyncTimer) clearTimeout(workspaceSyncTimer);
 	if (codeScrollFrame !== null) window.cancelAnimationFrame(codeScrollFrame);
+	for (const timer of copyResetTimers.values()) clearTimeout(timer);
+	copyResetTimers.clear();
 	codeScrollHost.value?.removeEventListener("scroll", handleCodeScroll);
 	window.removeEventListener("chat-artifact-open", handleChatArtifactOpen);
 });
@@ -753,24 +810,46 @@ onBeforeUnmount(() => {
 											}}
 										</span>
 									</div>
-									<button
-										v-if="codeFileHasMoreThan10Lines(file.path)"
-										type="button"
-										:aria-expanded="isCodeFileExpanded(file.path)"
-										class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-100 px-3 text-xs font-bold text-blue-950 shadow-sm transition hover:border-white hover:bg-white hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
-										@click="toggleCodeFileExpanded(file.path)"
-									>
-										<ChevronsUp
-											v-if="isCodeFileExpanded(file.path)"
-											class="h-4 w-4"
-										/>
-										<ChevronsDown v-else class="h-4 w-4" />
-										{{
-											isCodeFileExpanded(file.path)
-												? "收起到 10 行"
-												: "展开全部代码"
-										}}
-									</button>
+									<div class="flex shrink-0 items-center gap-2">
+										<button
+											type="button"
+											:disabled="!codeFileContent(file.path) || loadingCodeFiles.has(file.path)"
+											class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-slate-600 bg-slate-800 px-3 text-xs font-bold text-slate-100 shadow-sm transition hover:border-cyan-300 hover:bg-slate-700 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 disabled:cursor-not-allowed disabled:opacity-45"
+											:title="codeCopyStates[file.path] === 'copied' ? '完整代码已复制' : '复制完整代码'"
+											@click="copyCodeFile(file.path)"
+										>
+											<Check
+												v-if="codeCopyStates[file.path] === 'copied'"
+												class="h-4 w-4 text-emerald-300"
+											/>
+											<Copy v-else class="h-4 w-4" />
+											{{
+												codeCopyStates[file.path] === "copied"
+													? "已复制"
+													: codeCopyStates[file.path] === "error"
+														? "复制失败"
+														: "复制代码"
+											}}
+										</button>
+										<button
+											v-if="codeFileHasMoreThan10Lines(file.path)"
+											type="button"
+											:aria-expanded="isCodeFileExpanded(file.path)"
+											class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-blue-300 bg-blue-100 px-3 text-xs font-bold text-blue-950 shadow-sm transition hover:border-white hover:bg-white hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+											@click="toggleCodeFileExpanded(file.path)"
+										>
+											<ChevronsUp
+												v-if="isCodeFileExpanded(file.path)"
+												class="h-4 w-4"
+											/>
+											<ChevronsDown v-else class="h-4 w-4" />
+											{{
+												isCodeFileExpanded(file.path)
+													? "收起到 10 行"
+													: "展开全部代码"
+											}}
+										</button>
+									</div>
 								</div>
 								<div
 									v-if="loadingCodeFiles.has(file.path)"
