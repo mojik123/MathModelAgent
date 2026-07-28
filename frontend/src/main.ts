@@ -17,6 +17,7 @@ import { installPaperPreviewDomPatch } from "@/utils/paperPreviewDom";
 import { installPaperPreviewLayoutDomPatch } from "@/utils/paperPreviewLayoutDom";
 import { installPaperPreviewMathCleanupDomPatch } from "@/utils/paperPreviewMathCleanupDom";
 import { installSmoothStreamingTextDomPatch } from "@/utils/smoothStreamingTextDom";
+import { installTimelineArtifactScope } from "@/utils/timelineArtifactScope";
 import { installTimelineWordingDomPatch } from "@/utils/timelineWordingDom";
 import { installWorkflowStageClarityDomPatch } from "@/utils/workflowStageClarityDom";
 import piniaPluginPersistedstate from "pinia-plugin-persistedstate";
@@ -29,6 +30,7 @@ app.use(router);
 app.use(pinia);
 app.mount("#app");
 
+installTimelineArtifactScope();
 installArtifactEditChatDomPatch();
 installArtifactEditSelectionCleanupDomPatch();
 installCompactTimelineDomPatch();
