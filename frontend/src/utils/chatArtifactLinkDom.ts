@@ -22,17 +22,6 @@ function addStyle() {
 	box-shadow: 0 8px 20px rgba(37, 99, 235, 0.12) !important;
 }
 
-[data-chat-artifact-link="true"]::after {
-	content: "点击定位";
-	margin-left: auto;
-	border-radius: 999px;
-	background: rgba(37, 99, 235, 0.08);
-	padding: 1px 6px;
-	font-size: 10px;
-	font-weight: 700;
-	color: rgba(37, 99, 235, 0.72);
-}
-
 [data-chat-artifact-link-highlight="true"] {
 	animation: chatArtifactLinkPulse 1.4s ease-out 1;
 }
@@ -117,6 +106,7 @@ function openArtifact(file: string) {
 }
 
 function isLikelyArtifactChip(node: HTMLElement) {
+	if (node.closest("[data-chat-artifact-link-ignore='true']")) return false;
 	const text = node.textContent || "";
 	if (!FILE_RE.test(text)) return false;
 	const cls = node.getAttribute("class") || "";

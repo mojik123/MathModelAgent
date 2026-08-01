@@ -1,31 +1,148 @@
-# CUMCM LaTeX Skill
+---
+name: cumcm-latex
+description: 将赛题、数据、建模方案、代码结果和图表组织为高教社杯全国大学生数学建模竞赛风格的中文论文，并完成 Markdown、LaTeX 与 PDF 的结构和质量校验。适用于撰写或重写摘要、问题分析、模型建立与求解、验证、敏感性分析、模型评价、参考文献和附录，以及检查 CUMCM 论文是否形成逐问闭环；用户提到国赛论文、数学建模论文、CUMCM、优秀论文模板、论文润色或 LaTeX 排版时使用。
+---
 
-Use this project skill when MathModelAgent needs to turn the final Markdown
-paper into a China Undergraduate Mathematical Contest in Modeling style
-LaTeX/PDF paper.
+# CUMCM 论文写作与 LaTeX
 
-The intended pipeline is:
+把论文写成一份可核验的建模报告，而不是算法名词和通用句式的集合。始终围绕赛题逐问建立“任务—证据—模型—结果—验证—结论”闭环。
 
-1. Writer agent outputs `res.md` in a complete modeling-paper structure.
-2. Backend converts `res.md` to `res.tex` with the CUMCM Pandoc template.
-3. Backend compiles `res.tex` with XeLaTeX to `res.pdf`.
+## 按需读取资源
 
-Formatting goals:
+- 新建论文或重构全文时，复制并裁剪 [assets/paper-template.md](assets/paper-template.md)。
+- 写作、审稿或修订任一章节时，读取 [references/quality-contracts.md](references/quality-contracts.md)。
+- 需要解释模板依据、比较优秀论文常见写法或继续更新本技能时，读取 [references/corpus-patterns.md](references/corpus-patterns.md)。
+- 不要为了套齐目录而保留无内容的可选章节。
 
-- Chinese mathematical-modeling paper style for CUMCM / national contest use.
-- One title page signal, abstract, keywords, problem restatement, analysis,
-  assumptions, notation, model construction and solution, sensitivity analysis,
-  model evaluation, and references.
-- Chinese typography through `ctex` and Noto CJK fonts.
-- Pandoc-friendly Markdown only: standard headings, tables, images, and
-  `$...$` / `$$...$$` math.
+## 先建立证据台账
 
-Upstream template reference:
+写正文前，按每一问登记以下内容：
 
-- `latexstudio/CUMCMThesis` on GitHub is the preferred third-party CUMCM
-  LaTeX template reference.
-- If the repository is available locally, place it under
-  `third_party/CUMCMThesis/` for documentation/reference.
-- The backend uses `backend/app/config/cumcm_pandoc_template.tex` as the
-  integrated runtime template so Docker can run without reaching GitHub.
+| 字段 | 必须回答的问题 |
+|---|---|
+| 任务 | 这一问究竟要求计算、预测、评价、优化还是解释什么？ |
+| 输入 | 使用哪些原始数据、题设常量、外部资料和上一问结果？ |
+| 变量 | 决策变量、状态变量、参数、指标及其单位是什么？ |
+| 模型 | 数学关系、目标函数、约束或统计假设是什么？ |
+| 算法 | 如何估计、求解、搜索、仿真或验证？关键参数是什么？ |
+| 结果 | 最终数值、区间、排序、方案或判断是什么？ |
+| 验证 | 用何种指标、基线、约束检查或扰动试验证明结果可信？ |
+| 产物 | 对应哪张表、哪幅图、哪段代码和哪个附件？ |
 
+仅使用题目、数据、真实运行结果和可追溯资料中的证据。缺少证据时写 `[待补：具体证据]`，不要猜测数值、拟合优度、样本量、文献或算法参数。
+
+## 选择论文主线
+
+1. 将赛题拆成有依赖关系的问题链，明确哪些结果会传给后续问题。
+2. 选定一条主要叙事线：
+   - 机理类：规律与假设 → 方程 → 初边值条件 → 数值离散 → 校验。
+   - 优化类：变量 → 目标 → 约束 → 求解器 → 可行性 → 方案与敏感性。
+   - 统计预测类：数据审计 → 特征 → 划分与基线 → 模型 → 误差与泛化。
+   - 评价决策类：指标 → 标准化 → 权重/规则 → 排序 → 稳定性。
+   - 仿真策略类：状态与事件 → 转移规则 → 重复试验 → 策略比较 → 不确定性。
+3. 允许混合主线，但必须说明模块之间的数据流和因果关系。
+4. 只保留支撑解题的模型。若简单基线已足够，不要为了显得复杂而堆叠算法。
+
+## 组织正文
+
+默认采用以下顺序，并按赛题实际情况合并或拆分：
+
+1. 标题、摘要、关键词
+2. 问题重述
+3. 问题分析与总体思路
+4. 模型假设
+5. 符号说明与数据预处理
+6. 各问题的模型建立、求解、结果、验证和结论
+7. 综合检验、敏感性或不确定性分析
+8. 模型评价、改进与推广
+9. 参考文献
+10. 附录和支撑材料说明
+
+问题数量较多时，优先按“问题一”“问题二”组织主章节；同一基础模型服务多问时，先建立公共模型，再在各问中说明新增变量、约束和输出，避免整段重复。
+
+## 撰写各章节
+
+### 标题
+
+用“核心对象 + 主要目标/方法”概括论文。避免只写赛题原名，也避免罗列三种以上算法。
+
+### 摘要
+
+最后撰写摘要，但放在全文最前。按以下顺序压缩：
+
+1. 用一至两句界定对象、矛盾和总体方法。
+2. 每一问用独立语义单元说明“建立什么模型—怎样求解—得到什么关键结果—如何验证”。
+3. 报告能直接回答题目的数值、区间、排序、方案和误差；带单位并控制有效数字。
+4. 末句给出总体稳健性、适用范围或支撑材料。
+5. 选取 3–5 个能够检索论文核心内容的关键词。
+
+摘要中不得出现正文没有证明的结论，不写空泛背景，不只罗列算法名，不使用“结果良好”“具有一定价值”等无指标判断。
+
+### 问题重述
+
+忠实压缩题意，保留对象、条件、输入、输出和逐问要求。不要大段照抄原题，不要提前展开公式推导。
+
+### 问题分析
+
+解释“为什么这样建模”。逐问说明任务类型、可用信息、关键难点、模型选择、问题间依赖和预期输出。把总体流程图放在本章或第一处需要的位置，并在正文中解释图中的数据流。
+
+### 模型假设
+
+只提出后文真正使用的近似。每条假设说明对象、成立范围、采用理由和对模型的影响；能由题设或数据直接确认的事实不要伪装成假设。
+
+### 符号与数据
+
+为符号给出含义、单位、类型或取值域。相同符号全文保持一致。说明数据来源、缺失值、异常值、时间/空间对齐、单位换算、特征构造和数据划分，并量化处理前后的样本变化。
+
+### 模型建立与求解
+
+对每一问依次完成：
+
+1. 写出目标和可交付答案。
+2. 定义变量、参数、集合与单位。
+3. 给出关键规律、目标函数、约束、损失函数或转移规则。
+4. 解释每个核心公式的含义、来源和适用条件。
+5. 说明求解算法、初始化、停止条件、参数设置和软件环境。
+6. 用表或图呈现结果，并在正文中解释结果，而不是只说“见图”。
+7. 做与模型类型匹配的验证。
+8. 用一段“本问结论”直接回答题目，并说明结果如何进入下一问。
+
+不要把代码当成数学模型。正文写可复现的数学与算法逻辑，完整代码放附录或支撑材料。
+
+### 验证与敏感性
+
+验证模型是否正确地实现了假设和约束；敏感性分析研究输入或参数扰动对结论的影响；二者不可混为一谈。优先选择会影响竞赛结论的关键参数，给出扰动范围、对比基线、评价指标和结论稳定区间。
+
+### 模型评价
+
+优点必须对应已展示的证据，例如精度、计算量、可解释性或约束适应能力。缺点说明会在哪些条件下失效以及产生什么偏差。改进方案必须对应缺点并说明新增数据或方法成本。
+
+### 参考文献与附录
+
+只引用真实查阅且正文实际使用的资料。正文首次使用处标注引用，条目包含足以定位来源的信息。附录列出必要代码、额外推导、长表和支撑材料清单；正文仍需保留核心公式和关键结果。
+
+## 保持版式可复现
+
+- 公式、图、表按出现顺序编号并在正文交叉引用。
+- 图题置于图下，表题置于表上；坐标轴、图例、单位和字号必须可读。
+- 表格保留必要有效数字，统一小数位或说明精度。
+- 变量和单位采用一致写法，避免同一字母承担多个含义。
+- 不用截图代替可排版的公式和表格。
+- 目录只根据最终保留的章节生成；不要在正文尚未定稿时锁死标题和页码，页码以最终 PDF 为准。
+
+## 执行项目流水线
+
+本项目的正常产物链为：
+
+`WriterAgent → res.md → common_utils.md_2_tex() → res.tex → common_utils.tex_2_pdf() → res.pdf`
+
+转换与编译函数位于 `backend/app/utils/common_utils.py`；`md_2_docx()` 可并行生成 `res.docx`。排版规则以 `backend/app/config/cumcm_latex_rules.md` 为准，LaTeX 模板以 `backend/app/config/cumcm_pandoc_template.tex` 为准。若只修改论文内容，优先修改 Markdown 或生成它的上游提示词，不直接在最终 TeX 上做不可复现的补丁。
+
+## 交付前验收
+
+1. 用 [references/quality-contracts.md](references/quality-contracts.md) 逐项检查。
+2. 搜索并清除所有 `[待补：...]`、虚构引用、无来源数值和未被正文引用的图表。
+3. 核对摘要与正文数值、单位、问题编号和结论完全一致。
+4. 检查每一问是否都有直接答案、对应证据和至少一种合理验证。
+5. 生成 PDF 后逐页检查首页、目录、跨页表格、公式、图像清晰度、页码和附录。
+6. 发现内容证据不足时返回缺口清单；不要用润色掩盖缺口。

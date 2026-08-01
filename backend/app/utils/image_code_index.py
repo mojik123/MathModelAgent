@@ -259,14 +259,31 @@ def update_image_code_index(
     image_map = index.setdefault("images", {})
     now = datetime.now(timezone.utc).isoformat()
     for image in images:
-        image_key = normalize_image_key(image)
+        resolved_image = _resolve_image_path(work_dir, image)
+        image_key = (
+            _rel_to_work_dir(work_dir, resolved_image)
+            if resolved_image
+            else normalize_image_key(image)
+        )
+        image_code = code
+        if (
+            resolved_image
+            and not str(section or "").startswith("image_revision")
+        ):
+            paired_code = resolved_image.with_suffix(".py")
+            if paired_code.exists():
+                image_code = paired_code.read_text(
+                    encoding="utf-8",
+                    errors="ignore",
+                )
+
         existing = image_map.get(image_key, {})
-        metadata = build_image_description(image_key, code, section)
+        metadata = build_image_description(image_key, image_code, section)
         preserve_metadata = existing.get("metadata_source") == "ai_revision"
         image_map[image_key] = {
             "filename": image_key,
             "basename": Path(image_key).name,
-            "code": code,
+            "code": image_code,
             "cell_index": cell_index,
             "section": section or "",
             "description": existing.get("description") if preserve_metadata else metadata["description"],
@@ -344,7 +361,30 @@ def get_image_code_entry(work_dir: str, filename: str) -> dict[str, Any] | None:
         or image_map.get(image_path.name)
     )
     if entry and str(entry.get("code") or "").strip():
-        _ensure_entry_metadata(entry)
+        changed = False
+        paired_code_path = image_path.with_suffix(".py")
+        is_manual_revision = (
+            entry.get("metadata_source") == "ai_revision"
+            or str(entry.get("section") or "").startswith("image_revision")
+        )
+        if paired_code_path.exists() and not is_manual_revision:
+            paired_code = paired_code_path.read_text(
+                encoding="utf-8",
+                errors="ignore",
+            )
+            if paired_code.strip() and entry.get("code") != paired_code:
+                entry["code"] = paired_code
+                changed = True
+        if entry.get("filename") != image_key:
+            entry["filename"] = image_key
+            changed = True
+        if _ensure_entry_metadata(entry):
+            changed = True
+        if image_map.get(image_key) != entry:
+            image_map[image_key] = entry
+            changed = True
+        if changed:
+            save_image_code_index(work_dir, index)
         return entry
 
     # 策略 2：同名 .py 配对文件

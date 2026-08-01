@@ -106,13 +106,16 @@ async function handleConfirm() {
 	confirming.value = true;
 	confirmError.value = "";
 	try {
+		await confirmQuestions(props.task_id, questions.value);
+		const questionSummary = questions.value
+			.map((question) => `问题 ${question.questionIndex}：${question.questionText.trim()}`)
+			.join("；");
 		taskStore.addUserAction(
 			"确认",
 			"问题划分",
-			"用户确认了最终的问题划分方案",
+			`用户确认了最终的问题划分方案：共 ${questions.value.length} 个小问。${questionSummary}`,
 			{ from: "User", to: "CoordinatorAgent", label: "确认问题划分" },
 		);
-		await confirmQuestions(props.task_id, questions.value);
 		emit("confirm");
 	} catch (e: unknown) {
 		confirmError.value =
@@ -240,7 +243,7 @@ watch(
 </script>
 
 <template>
-	<div class="question-discussion flex flex-col glass-root max-h-[55%]">
+	<div class="question-discussion flex w-full flex-col glass-root max-h-[80%]">
 		<!-- 标题栏（始终可见，折叠/展开共用同一背景） -->
 		<button
 			class="glass-header border-b border-white/20 px-4 py-2 flex items-center gap-2 w-full text-left cursor-pointer hover:bg-white/40 transition-colors"

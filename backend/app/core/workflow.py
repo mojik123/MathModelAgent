@@ -11,14 +11,19 @@ import json
 import os
 from app.core.agents import WriterAgent, CoderAgent, CoordinatorAgent, ModelerAgent
 from app.schemas.request import Problem
-from app.schemas.response import SystemMessage, ProgressMessage, SubCoordinatorMessage
+from app.schemas.response import (
+    ProgressMessage,
+    SubCoordinatorMessage,
+    SystemMessage,
+)
 from app.tools.openalex_scholar import OpenAlexScholar
 from app.utils.log_util import logger
 from app.utils.common_utils import create_work_dir, get_config_template
 from app.models.user_output import UserOutput, clean_final_paper_markdown
 from app.utils.paper_validator import validate_markdown_image_refs
 from app.utils.final_output_validator import validate_final_paper, validate_saved_files
-from app.schemas.A2A import CoordinatorToModeler, ModelerToCoder
+from app.utils.paper_evidence_validator import validate_paper_evidence
+from app.schemas.A2A import CoderToWriter, CoordinatorToModeler, ModelerToCoder
 from app.config.setting import settings
 from app.tools.interpreter_factory import create_interpreter
 from app.services.redis_manager import redis_manager
@@ -30,7 +35,28 @@ from app.core.llm.llm_factory import LLMFactory
 from app.utils.image_code_index import update_image_metadata
 from app.utils.image_describer import generate_image_description
 from app.utils.section_validator import validate_section_output
-from app.utils.image_constants import get_all_section_keys, section_dir_name, set_section_labels
+from app.utils.image_constants import (
+    get_all_section_keys,
+    section_dir_name,
+    set_section_labels,
+)
+
+
+def recover_unconfirmed_modeling_checkpoint(checkpoint: dict) -> bool:
+    """清理旧版关闭 HIL 时产生的空建模选择及其下游结果。"""
+    if "modeling_selections" not in checkpoint or checkpoint.get(
+        "modeling_selections"
+    ):
+        return False
+
+    preserved = {
+        key: checkpoint[key]
+        for key in ("coordinator", "question_selections")
+        if key in checkpoint
+    }
+    checkpoint.clear()
+    checkpoint.update(preserved)
+    return True
 
 
 class WorkFlow:
@@ -57,24 +83,8 @@ class MathModelWorkFlow(WorkFlow):
     - 集成 CoordinatorAgent 进行终稿审查
     """
 
-    QUESTION_REQUIRED_FILES = {
-        "ques1": ["result1_1.xlsx", "result1_2.xlsx"],
-        "ques2": ["result2.xlsx"],
-        "ques3": [],
-    }
-
-    def _has_required_result_files(self, key: str) -> bool:
-        from pathlib import Path
-
-        required = self.QUESTION_REQUIRED_FILES.get(key, [])
-        if not required:
-            return True
-        work = Path(self.work_dir)
-        for filename in required:
-            matches = list(work.rglob(filename))
-            if not matches:
-                return False
-        return True
+    def __init__(self) -> None:
+        self._managed_interpreters: set = set()
 
     task_id: str
     work_dir: str
@@ -104,11 +114,20 @@ class MathModelWorkFlow(WorkFlow):
 
     def _save_checkpoint(self, checkpoint: dict) -> None:
         path = self._checkpoint_path()
+        temp_path = f"{path}.tmp"
         try:
-            with open(path, "w", encoding="utf-8") as f:
+            with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(checkpoint, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, path)
         except Exception as e:
             logger.warning(f"保存任务断点失败 {self.task_id}: {e}")
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except OSError:
+                pass
 
     def _save_writer_checkpoint(
         self,
@@ -121,6 +140,111 @@ class MathModelWorkFlow(WorkFlow):
             "footnotes": writer_response.footnotes,
         }
         self._save_checkpoint(checkpoint)
+
+    def _save_coder_stage_checkpoint(
+        self,
+        checkpoint: dict,
+        key: str,
+        coder_response: CoderToWriter,
+        code_interpreter,
+    ) -> None:
+        """保存已通过产物检查的 Coder 阶段，供 Writer 失败后直接续跑。
+
+        Args:
+            checkpoint: 当前工作流断点。
+            key: 求解阶段键。
+            coder_response: Coder 的结构化响应。
+            code_interpreter: 当前阶段代码解释器。
+        """
+        checkpoint.setdefault("coder_stage_cache", {})[key] = {
+            "response": coder_response.model_dump(),
+            "code_output": code_interpreter.get_code_output(key),
+            "artifact_tag": getattr(code_interpreter, "artifact_tag", "") or None,
+        }
+        self._save_checkpoint(checkpoint)
+
+    def _restore_coder_stage_checkpoint(
+        self,
+        checkpoint: dict,
+        key: str,
+        code_interpreter,
+    ) -> CoderToWriter | None:
+        """恢复已经通过检查的 Coder 阶段，并再次核验落盘产物。
+
+        Args:
+            checkpoint: 当前工作流断点。
+            key: 求解阶段键。
+            code_interpreter: 新建的代码解释器。
+
+        Returns:
+            产物仍有效时返回恢复后的响应，否则返回 ``None``。
+        """
+        from pathlib import Path
+
+        from app.utils.artifact_checker import check_section_artifacts
+
+        cached = checkpoint.get("coder_stage_cache", {}).get(key)
+        if not isinstance(cached, dict):
+            return None
+
+        try:
+            response = CoderToWriter.model_validate(cached.get("response") or {})
+        except Exception as exc:
+            logger.warning(f"{key} Coder 阶段断点格式无效，将重新求解: {exc}")
+            checkpoint.get("coder_stage_cache", {}).pop(key, None)
+            self._save_checkpoint(checkpoint)
+            return None
+
+        artifact_check = check_section_artifacts(
+            self.work_dir,
+            section_key=key,
+            section_dir=section_dir_name(key),
+            created_images=response.created_images or [],
+            require_image=False,
+            artifact_tag=cached.get("artifact_tag"),
+        )
+        if artifact_check.blocking_issues:
+            logger.warning(
+                f"{key} Coder 阶段断点产物已失效，将重新求解: "
+                + "；".join(artifact_check.blocking_issues)
+            )
+            checkpoint.get("coder_stage_cache", {}).pop(key, None)
+            self._save_checkpoint(checkpoint)
+            return None
+
+        code_interpreter.add_section(key)
+        restored_output = str(cached.get("code_output") or "").strip()
+        if restored_output:
+            code_interpreter.section_output[key]["content"] = [restored_output]
+        code_interpreter.created_images_by_section[key] = set(
+            response.created_images or []
+        )
+
+        restored_codes: list[str] = []
+        for relative_path in artifact_check.code_files:
+            path = Path(self.work_dir) / relative_path
+            try:
+                restored_codes.append(path.read_text(encoding="utf-8", errors="ignore"))
+            except OSError:
+                continue
+        if restored_codes:
+            code_interpreter.section_codes[key] = restored_codes
+
+        return response
+
+    async def cleanup_interpreters(self) -> None:
+        """清理工作流创建过的全部解释器，允许重复调用。"""
+        if not self._managed_interpreters:
+            return
+        interpreters = list(self._managed_interpreters)
+        self._managed_interpreters.clear()
+        results = await asyncio.gather(
+            *(interpreter.cleanup() for interpreter in interpreters),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(f"代码解释器清理失败: {result}")
 
     def _create_llm(
         self,
@@ -161,12 +285,13 @@ class MathModelWorkFlow(WorkFlow):
             max_tokens=settings.WRITER_MAX_TOKENS,
             agent_index=agent_index,
         )
-        assert settings.OPENALEX_EMAIL is not None, "OPENALEX_EMAIL 未配置"
-        scholar = OpenAlexScholar(
-            task_id=self.task_id,
-            email=settings.OPENALEX_EMAIL,
-            api_key=settings.OPENALEX_API_KEY,
-        )
+        scholar = None
+        if settings.OPENALEX_EMAIL:
+            scholar = OpenAlexScholar(
+                task_id=self.task_id,
+                email=settings.OPENALEX_EMAIL,
+                api_key=settings.OPENALEX_API_KEY,
+            )
         return WriterAgent(
             task_id=problem.task_id,
             model=writer_llm,
@@ -209,7 +334,10 @@ class MathModelWorkFlow(WorkFlow):
         )
 
     async def _create_code_interpreter(
-        self, key: str, worker_suffix: str = "", artifact_tag: str = "",
+        self,
+        key: str,
+        worker_suffix: str = "",
+        artifact_tag: str = "",
     ):
         """创建代码解释器。
 
@@ -235,6 +363,7 @@ class MathModelWorkFlow(WorkFlow):
             timeout=3000,
         )
         interpreter.artifact_tag = artifact_tag
+        self._managed_interpreters.add(interpreter)
         return interpreter
 
     def _section_image_prefix(self, key: str) -> str:
@@ -252,8 +381,7 @@ class MathModelWorkFlow(WorkFlow):
     ) -> str:
         tag_prefix = f"{artifact_tag}_" if artifact_tag else ""
         examples = (
-            f"{tag_prefix}prediction_result.png, "
-            f"{tag_prefix}model_diagnostics.png"
+            f"{tag_prefix}prediction_result.png, {tag_prefix}model_diagnostics.png"
         )
         return f"""{coder_prompt}
 
@@ -351,12 +479,48 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             except Exception as exc:
                 logger.warning(f"图片描述生成失败 {filename}: {exc}")
 
+    async def _publish_created_image_events(
+        self,
+        image_filenames: list[str] | None,
+        section_key: str,
+        group_index: int | None = None,
+    ) -> None:
+        """将新生成图片作为独立对话流事件发布。
+
+        Args:
+            image_filenames: Coder 本轮新生成的图片相对路径。
+            section_key: 图片所属的流程节点。
+            group_index: 子问题组编号；共享阶段为空。
+        """
+        if not image_filenames:
+            return
+
+        identity = (
+            f"q{group_index}.coder"
+            if group_index is not None
+            else f"process.{section_key}.coder"
+        )
+        for filename in dict.fromkeys(image_filenames):
+            await redis_manager.publish_message(
+                self.task_id,
+                SystemMessage(
+                    content=f"图片生成完成：{filename}",
+                    type="success",
+                    agent_instance_id=identity,
+                    question_index=group_index,
+                    phase="coding",
+                    group_id=identity,
+                ),
+            )
+
     async def _check_cancelled(self) -> None:
         """检查是否收到取消信号，若已取消则发布通知并抛出 CancelledError。"""
         if self.cancel_event and self.cancel_event.is_set():
             raise asyncio.CancelledError("任务被用户停止")
 
-    async def _publish_progress(self, current: int, total: int, description: str) -> None:
+    async def _publish_progress(
+        self, current: int, total: int, description: str
+    ) -> None:
         """发布结构化进度消息到前端。"""
         pct = round(current / total * 100) if total > 0 else 0
         await mark_task_running(
@@ -391,9 +555,9 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             agent_index=group_index,
         )
         msg.question_index = group_index
-        msg.agent_instance_id = f'q{group_index}.sub_coordinator'
-        msg.group_id = f'q{group_index}.sub_coordinator'
-        msg.phase = 'coordinating'
+        msg.agent_instance_id = f"q{group_index}.sub_coordinator"
+        msg.group_id = f"q{group_index}.sub_coordinator"
+        msg.phase = "coordinating"
 
         await redis_manager.publish_message(self.task_id, msg)
 
@@ -411,15 +575,10 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         clean_detail = str(detail or "").strip()
         if len(clean_detail) > 1200:
             clean_detail = (
-                clean_detail[:600]
-                + "\n...（中间省略）...\n"
-                + clean_detail[-500:]
+                clean_detail[:600] + "\n...（中间省略）...\n" + clean_detail[-500:]
             )
 
-        content = (
-            f"{group_text}{agent_name} 已停止：{reason}\n"
-            f"子任务：{key}"
-        )
+        content = f"{group_text}{agent_name} 已停止：{reason}\n子任务：{key}"
         if clean_detail:
             content += f"\n停止详情：{clean_detail}"
 
@@ -479,54 +638,125 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
         await self._check_cancelled()
 
-        # Coder 阶段：并发执行受上限约束，每组使用独立 kernel
-        async with coder_semaphore:
-            await self._check_cancelled()
-
-            step_counter[0] += 1
-            await self._publish_progress(
-                step_counter[0], total_steps, f"{group_tag}正在求解: {key}"
-            )
-            await redis_manager.publish_message(
-                self.task_id,
-                SystemMessage(content=f"{group_tag}代码手开始求解{key}"),
-            )
-
-            coder_response = await coder_agent.run(
-                prompt=self._with_image_position_hint(coder_prompt, key, group_index),
-                subtask_title=key,
-            )
-
-            step_counter[0] += 1
-            await self._publish_progress(
-                step_counter[0], total_steps, f"{group_tag}求解完成: {key}，正在撰写"
-            )
-            await redis_manager.publish_message(
-                self.task_id,
-                SystemMessage(content=f"{group_tag}代码手求解成功{key}", type="success"),
-            )
-
-        # 产物检查（覆盖 EDA / sensitivity_analysis 等共享阶段）
-        from app.utils.artifact_checker import check_section_artifacts
-
-        section_dir = section_dir_name(key)
-        artifact_check = check_section_artifacts(
-            self.work_dir,
-            section_key=key,
-            section_dir=section_dir,
-            created_images=coder_response.created_images,
-            require_image=False,
-            artifact_tag=None,
+        cached_coder_response = self._restore_coder_stage_checkpoint(
+            checkpoint,
+            key,
+            code_interpreter,
         )
-        if not artifact_check.passed:
-            raise RuntimeError(
-                f"{key} 产物检查失败：" + "；".join(artifact_check.issues)
+        restored_coder_stage = cached_coder_response is not None
+
+        if cached_coder_response is not None:
+            coder_response = cached_coder_response
+            step_counter[0] += 2
+            await self._publish_progress(
+                step_counter[0],
+                total_steps,
+                f"{group_tag}已恢复 {key} 的代码与图片，直接继续写作",
+            )
+            await redis_manager.publish_message(
+                self.task_id,
+                SystemMessage(
+                    content=f"{group_tag}已复用通过检查的 {key} 代码产物",
+                    type="success",
+                ),
+            )
+        else:
+            # Coder 阶段：并发执行受上限约束，每组使用独立 kernel
+            async with coder_semaphore:
+                await self._check_cancelled()
+
+                step_counter[0] += 1
+                await self._publish_progress(
+                    step_counter[0], total_steps, f"{group_tag}正在求解: {key}"
+                )
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(content=f"{group_tag}代码手开始求解{key}"),
+                )
+
+                coder_coro = coder_agent.run(
+                    prompt=self._with_image_position_hint(
+                        coder_prompt,
+                        key,
+                        group_index,
+                    ),
+                    subtask_title=key,
+                )
+                coder_timeout = max(
+                    0,
+                    int(getattr(settings, "CODER_ATTEMPT_TIMEOUT", 0)),
+                )
+                if coder_timeout:
+                    coder_response = await asyncio.wait_for(
+                        coder_coro,
+                        timeout=coder_timeout,
+                    )
+                else:
+                    coder_response = await coder_coro
+
+                step_counter[0] += 1
+                await self._publish_progress(
+                    step_counter[0],
+                    total_steps,
+                    f"{group_tag}求解完成: {key}，正在撰写",
+                )
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=f"{group_tag}代码手求解成功{key}",
+                        type="success",
+                    ),
+                )
+
+            # 产物检查（覆盖 EDA / sensitivity_analysis 等共享阶段）
+            from app.utils.artifact_checker import check_section_artifacts
+
+            section_dir = section_dir_name(key)
+            artifact_check = check_section_artifacts(
+                self.work_dir,
+                section_key=key,
+                section_dir=section_dir,
+                created_images=coder_response.created_images or [],
+                require_image=False,
+                artifact_tag=None,
+            )
+            if artifact_check.blocking_issues:
+                raise RuntimeError(
+                    f"{key} 产物检查失败："
+                    + "；".join(artifact_check.blocking_issues)
+                )
+            if artifact_check.issues:
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=(
+                            f"{group_tag}{key} 产物存在非致命问题，继续写作："
+                            + "；".join(artifact_check.issues[:5])
+                        ),
+                        type="warning",
+                    ),
+                )
+            self._save_coder_stage_checkpoint(
+                checkpoint,
+                key,
+                coder_response,
+                code_interpreter,
+            )
+            await self._publish_created_image_events(
+                coder_response.created_images or [],
+                section_key=key,
+                group_index=group_index,
             )
 
         # 图片描述（在 coder_semaphore 外执行，不阻塞下一个 coder）
         if (
-            coder_response.created_images
-            and getattr(settings, "IMAGE_DESCRIPTION_ENABLED", False)
+            not restored_coder_stage
+            and coder_response.created_images
+            and getattr(
+                settings,
+                "IMAGE_DESCRIPTION_ENABLED",
+                False,
+            )
         ):
             desc_coro_eda = self._describe_images(
                 image_filenames=coder_response.created_images,
@@ -549,11 +779,22 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             SystemMessage(content=f"{group_tag}论文手开始写{key}部分"),
         )
 
-        writer_response = await writer_agent.run(
+        writer_coro = writer_agent.run(
             writer_prompt,
             available_images=coder_response.created_images,
             sub_title=key,
         )
+        writer_timeout = max(
+            0,
+            int(getattr(settings, "WRITER_ATTEMPT_TIMEOUT", 0) or 0),
+        )
+        if writer_timeout:
+            writer_response = await asyncio.wait_for(
+                writer_coro,
+                timeout=writer_timeout,
+            )
+        else:
+            writer_response = await writer_coro
 
         await redis_manager.publish_message(
             self.task_id,
@@ -562,9 +803,12 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
         # 检查 Coder 生成的图片是否被 Writer 引用，缺图则自动修复一次
         missing_images = []
-        for img in (coder_response.created_images or []):
+        for img in coder_response.created_images or []:
             basename = os.path.basename(img)
-            if img not in writer_response.response_content and basename not in writer_response.response_content:
+            if (
+                img not in writer_response.response_content
+                and basename not in writer_response.response_content
+            ):
                 missing_images.append(img)
 
         if missing_images:
@@ -692,6 +936,17 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         self.task_id = problem.task_id
         self.work_dir = create_work_dir(self.task_id)
         checkpoint = self._load_checkpoint()
+        if settings.HIL_ENABLED and recover_unconfirmed_modeling_checkpoint(
+            checkpoint
+        ):
+            self._save_checkpoint(checkpoint)
+            await redis_manager.publish_message(
+                self.task_id,
+                SystemMessage(
+                    content="检测到未确认的建模方案，已回到建模方案选择阶段",
+                    type="warning",
+                ),
+            )
         checkpoint.setdefault("section_ledger", {})
 
         llm_factory = LLMFactory(self.task_id)
@@ -700,17 +955,20 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         # 广播各 Agent 使用的模型配置
         await redis_manager.publish_message(
             self.task_id,
-            SystemMessage(content=(
-                "Agent 模型配置：\n"
-                f"Coordinator: {coordinator_llm.api_type.value if coordinator_llm.api_type else '?'} / {coordinator_llm.model}\n"
-                f"Modeler:     {modeler_llm.api_type.value if modeler_llm.api_type else '?'} / {modeler_llm.model}\n"
-                f"Coder:       {coder_llm.api_type.value if coder_llm.api_type else '?'} / {coder_llm.model}\n"
-                f"Writer:      {writer_llm.api_type.value if writer_llm.api_type else '?'} / {writer_llm.model}"
-            )),
+            SystemMessage(
+                content=(
+                    "Agent 模型配置：\n"
+                    f"Coordinator: {coordinator_llm.api_type.value if coordinator_llm.api_type else '?'} / {coordinator_llm.model}\n"
+                    f"Modeler:     {modeler_llm.api_type.value if modeler_llm.api_type else '?'} / {modeler_llm.model}\n"
+                    f"Coder:       {coder_llm.api_type.value if coder_llm.api_type else '?'} / {coder_llm.model}\n"
+                    f"Writer:      {writer_llm.api_type.value if writer_llm.api_type else '?'} / {writer_llm.model}"
+                )
+            ),
         )
 
         coordinator_agent = CoordinatorAgent(
-            self.task_id, coordinator_llm,
+            self.task_id,
+            coordinator_llm,
             context_window=settings.COORDINATOR_CONTEXT_WINDOW,
             cancel_event=self.cancel_event,
         )
@@ -746,61 +1004,83 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         # coordinator(1) + modeler(1) + eda coder+writer(2)
         # + N*[sub_coord_start + modeler + coder + writer + sub_coord_end](5 per group)
         # + sensitivity coder+writer(2) + write_flows(6) + final_review(1) + save(1)
-        n = self.ques_count
         write_flow_count = 7  # firstPage, toc, RepeatQues, analysisQues, modelAssumption, symbol, judge
-        total_steps = (
-            1                       # coordinator
-            + 1                     # modeler
-            + 2                     # EDA coder + writer
-            + n * 5                 # per-group: sub_coord_start + modeler + coder + writer + sub_coord_end
-            + 2                     # sensitivity coder + writer
-            + write_flow_count      # final write sections
-            + 2                     # final review + save
-        )
-        step_counter = [1]  # coordinator done; mutable container for closures
 
-        await self._publish_progress(step_counter[0], total_steps, "问题拆解完成，开始问题划分讨论")
-        await redis_manager.publish_message(
-            self.task_id,
-            SystemMessage(content="识别用户意图和拆解问题完成，等待用户确认问题划分"),
-        )
-
-        # ── 等待用户确认问题划分 ─────────────────────────────────────────────
-        if not checkpoint.get("question_selections"):
-            await self._publish_progress(step_counter[0], total_steps, "等待用户确认问题划分")
-            await redis_manager.publish_message(
-                self.task_id,
-                SystemMessage(content="等待用户确认问题划分"),
+        def calculate_total_steps(question_count: int) -> int:
+            return (
+                1  # coordinator
+                + 1  # modeler
+                + 2  # EDA coder + writer
+                + question_count
+                * 5  # sub_coord_start + modeler + coder + writer + sub_coord_end
+                + 2  # sensitivity coder + writer
+                + write_flow_count  # final write sections
+                + 2  # final review + save
             )
 
-            from app.routers.modeling_router import _active_tasks
+        total_steps = calculate_total_steps(self.ques_count)
+        step_counter = [1]  # coordinator done; mutable container for closures
 
-            entry = _active_tasks.setdefault(self.task_id, {})
-            self.question_ready_event = asyncio.Event()
-            entry["question_ready_event"] = self.question_ready_event
-            entry["question_selections_ref"] = self
+        await self._publish_progress(
+            step_counter[0], total_steps, "问题拆解完成，开始问题划分讨论"
+        )
+        # ── 等待用户确认问题划分 ─────────────────────────────────────────────
+        if "question_selections" not in checkpoint:
+            if settings.HIL_ENABLED:
+                await self._publish_progress(
+                    step_counter[0], total_steps, "等待用户确认问题划分"
+                )
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(content="等待用户确认问题划分"),
+                )
 
-            try:
-                tasks = [asyncio.create_task(self.question_ready_event.wait())]
-                if self.cancel_event:
-                    tasks.append(asyncio.create_task(self.cancel_event.wait()))
-                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
-                if self.cancel_event and self.cancel_event.is_set():
-                    raise asyncio.CancelledError("任务被用户停止")
-            finally:
-                _active_tasks[self.task_id].pop("question_ready_event", None)
-                _active_tasks[self.task_id].pop("question_selections_ref", None)
+                from app.routers.modeling_router import _active_tasks
 
+                entry = _active_tasks.setdefault(self.task_id, {})
+                self.question_ready_event = asyncio.Event()
+                entry["question_ready_event"] = self.question_ready_event
+                entry["question_selections_ref"] = self
+
+                try:
+                    tasks = [asyncio.create_task(self.question_ready_event.wait())]
+                    if self.cancel_event:
+                        tasks.append(asyncio.create_task(self.cancel_event.wait()))
+                    done, pending = await asyncio.wait(
+                        tasks,
+                        timeout=max(0, settings.HIL_TIMEOUT) or None,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    if self.cancel_event and self.cancel_event.is_set():
+                        raise asyncio.CancelledError("任务被用户停止")
+                    if not done:
+                        await redis_manager.publish_message(
+                            self.task_id,
+                            SystemMessage(
+                                content="问题划分确认超时，自动采用 Coordinator 拆题结果",
+                                type="warning",
+                            ),
+                        )
+                finally:
+                    entry.pop("question_ready_event", None)
+                    entry.pop("question_selections_ref", None)
+
+            if not self.question_selections:
+                self.question_selections = [
+                    {
+                        "questionIndex": idx,
+                        "questionText": str(
+                            coordinator_response.questions.get(f"ques{idx}", "")
+                        ),
+                    }
+                    for idx in range(1, coordinator_response.ques_count + 1)
+                ]
             checkpoint["question_selections"] = self.question_selections
             self._save_checkpoint(checkpoint)
 
-            await redis_manager.publish_message(
-                self.task_id,
-                SystemMessage(content="问题划分已确认，开始进入建模思路讨论"),
-            )
         else:
             self.question_selections = checkpoint["question_selections"]
             await redis_manager.publish_message(
@@ -819,46 +1099,59 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             coordinator_response.ques_count = len(self.question_selections)
             self.questions = coordinator_response.questions
             self.ques_count = coordinator_response.ques_count
+            total_steps = calculate_total_steps(self.ques_count)
             checkpoint["coordinator"] = coordinator_response.model_dump()
             self._save_checkpoint(checkpoint)
 
         # ── 等待用户确认建模方案 ─────────────────────────────────────────────
-        if not checkpoint.get("modeling_selections"):
-            await self._publish_progress(step_counter[0], total_steps, "等待用户确认各问建模方案")
-            await redis_manager.publish_message(
-                self.task_id,
-                SystemMessage(content="等待用户确认各问建模方案"),
-            )
-            from app.routers.modeling_router import _active_tasks
+        if "modeling_selections" not in checkpoint:
+            if settings.HIL_ENABLED:
+                await self._publish_progress(
+                    step_counter[0], total_steps, "等待用户确认各问建模方案"
+                )
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(content="等待用户确认各问建模方案"),
+                )
+                from app.routers.modeling_router import _active_tasks
 
-            # 防御：确保 _active_tasks 中有当前任务的条目（可能在异常恢复中缺失）
-            entry = _active_tasks.setdefault(self.task_id, {})
-            self.modeling_ready_event = asyncio.Event()
-            entry["modeling_ready_event"] = self.modeling_ready_event
-            entry["modeling_selections_ref"] = self
+                entry = _active_tasks.setdefault(self.task_id, {})
+                self.modeling_ready_event = asyncio.Event()
+                entry["modeling_ready_event"] = self.modeling_ready_event
+                entry["modeling_selections_ref"] = self
 
-            try:
-                tasks = [asyncio.create_task(self.modeling_ready_event.wait())]
-                if self.cancel_event:
-                    tasks.append(asyncio.create_task(self.cancel_event.wait()))
-                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
-                if self.cancel_event and self.cancel_event.is_set():
-                    raise asyncio.CancelledError("任务被用户停止")
-            finally:
-                _active_tasks[self.task_id].pop("modeling_ready_event", None)
-                _active_tasks[self.task_id].pop("modeling_selections_ref", None)
+                try:
+                    tasks = [asyncio.create_task(self.modeling_ready_event.wait())]
+                    if self.cancel_event:
+                        tasks.append(asyncio.create_task(self.cancel_event.wait()))
+                    done, pending = await asyncio.wait(
+                        tasks,
+                        timeout=max(0, settings.HIL_TIMEOUT) or None,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    if self.cancel_event and self.cancel_event.is_set():
+                        raise asyncio.CancelledError("任务被用户停止")
+                    if not done:
+                        await redis_manager.publish_message(
+                            self.task_id,
+                            SystemMessage(
+                                content="建模方案确认超时，自动采用 Modeler 推荐方案",
+                                type="warning",
+                            ),
+                        )
+                finally:
+                    entry.pop("modeling_ready_event", None)
+                    entry.pop("modeling_selections_ref", None)
 
-            checkpoint["modeling_selections"] = self.modeling_selections
+            checkpoint["modeling_selections"] = self.modeling_selections or {}
             self._save_checkpoint(checkpoint)
 
-            await redis_manager.publish_message(
-                self.task_id,
-                SystemMessage(content="建模方案已确认，开始执行建模"),
+            await self._publish_progress(
+                step_counter[0], total_steps, "建模方案已确认，开始建模分析"
             )
-            await self._publish_progress(step_counter[0], total_steps, "建模方案已确认，开始建模分析")
         else:
             self.modeling_selections = checkpoint["modeling_selections"]
             await redis_manager.publish_message(
@@ -878,7 +1171,8 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 api_key=settings.OPENALEX_API_KEY,
             )
         modeler_agent = ModelerAgent(
-            self.task_id, modeler_llm,
+            self.task_id,
+            modeler_llm,
             context_window=settings.MODELER_CONTEXT_WINDOW,
             cancel_event=self.cancel_event,
             scholar=modeler_scholar,
@@ -888,9 +1182,24 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             modeler_response = ModelerToCoder(**checkpoint["modeler"])
             await redis_manager.publish_message(
                 self.task_id,
-                SystemMessage(content="从断点恢复：已复用建模方案"),
+                SystemMessage(
+                    content="建模手已从断点恢复整体建模方案，准备继续代码求解。",
+                    type="success",
+                    agent_instance_id="modeler",
+                    group_id="modeler",
+                    phase="modeling",
+                ),
             )
         else:
+            await redis_manager.publish_message(
+                self.task_id,
+                SystemMessage(
+                    content="建模手已接收确认的最优模型方案，正在生成供代码求解使用的整体建模方案。",
+                    agent_instance_id="modeler",
+                    group_id="modeler",
+                    phase="modeling",
+                ),
+            )
             modeler_response = await modeler_agent.run(
                 coordinator_response,
                 modeling_selections=self.modeling_selections,
@@ -899,7 +1208,9 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             self._save_checkpoint(checkpoint)
 
         step_counter[0] += 1
-        await self._publish_progress(step_counter[0], total_steps, "建模分析完成，准备并行求解")
+        await self._publish_progress(
+            step_counter[0], total_steps, "建模分析完成，准备求解"
+        )
 
         user_output = UserOutput(work_dir=self.work_dir, ques_count=self.ques_count)
         for key, value in checkpoint.get("user_output_res", {}).items():
@@ -919,6 +1230,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             notebook_serializer=notebook_serializer,
             timeout=3000,
         )
+        self._managed_interpreters.add(code_interpreter)
 
         await redis_manager.publish_message(
             self.task_id,
@@ -945,7 +1257,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
         solution_flows = flows.get_solution_flows(self.questions, modeler_response)
 
-        # 并发控制：QUESTION_PARALLELISM <= 0 表示所有子问题组一起并行。
+        # 默认串行以保留问题间依赖；明确确认各问独立后可通过配置提高并发。
         configured_question_parallelism = int(
             getattr(settings, "QUESTION_PARALLELISM", 0) or 0
         )
@@ -967,7 +1279,9 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 self.task_id,
                 SystemMessage(content="全局协调者：启动 EDA 数据探索阶段"),
             )
-            eda_coder = self._create_coder_agent(problem, code_interpreter, agent_index=None)
+            eda_coder = self._create_coder_agent(
+                problem, code_interpreter, agent_index=None
+            )
             eda_writer = self._create_writer_agent(problem, agent_index=None)
             await self._run_solution_step(
                 key=eda_key,
@@ -990,7 +1304,9 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             )
         else:
             step_counter[0] += 2
-            await self._publish_progress(step_counter[0], total_steps, "从断点恢复：EDA 已完成")
+            await self._publish_progress(
+                step_counter[0], total_steps, "从断点恢复：EDA 已完成"
+            )
 
         await self._check_cancelled()
 
@@ -998,11 +1314,17 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         question_keys = [k for k in solution_flows if k.startswith("ques")]
 
         if question_keys:
+            execution_mode = (
+                "串行执行，后续问题复用前面结果"
+                if question_parallelism == 1
+                else f"最多 {question_parallelism} 组并行"
+            )
             await redis_manager.publish_message(
                 self.task_id,
                 SystemMessage(
                     content=(
-                        f"全局协调者：启动 {len(question_keys)} 个子问题并行组，"
+                        f"全局协调者：启动 {len(question_keys)} 个子问题组，"
+                        f"{execution_mode}；"
                         "每问单 Coder，失败自动启动备用"
                     )
                 ),
@@ -1018,7 +1340,9 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             if key in user_output.res:
                 step_counter[0] += 5
                 await self._publish_progress(
-                    step_counter[0], total_steps, f"从断点恢复：[组#{group_idx}] {key} 已完成"
+                    step_counter[0],
+                    total_steps,
+                    f"从断点恢复：[组#{group_idx}] {key} 已完成",
                 )
                 return
 
@@ -1048,9 +1372,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     worker_suffix=worker_suffix,
                     artifact_tag=artifact_tag,
                 )
-                coder = self._create_coder_agent(
-                    problem, interp, agent_index=group_idx
-                )
+                coder = self._create_coder_agent(problem, interp, agent_index=group_idx)
                 coder.model.question_index = group_idx
                 coder.model.race_index = race_index
                 coder.model.agent_instance_id = (
@@ -1063,7 +1385,9 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 return interp, coder
 
             # ── 公共产物检查 helper ──
-            async def _check_coder_artifacts(result, attempt_name: str, artifact_tag: str = ""):
+            async def _check_coder_artifacts(
+                result, attempt_name: str, artifact_tag: str = ""
+            ):
                 from app.utils.artifact_checker import check_section_artifacts
 
                 section_dir = section_dir_name(key)
@@ -1083,21 +1407,27 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     "attempt_name": attempt_name,
                     "passed": check.passed,
                     "issues": check.issues,
+                    "blocking_issues": check.blocking_issues,
                     "images": check.images,
                     "code_files": check.code_files,
                 }
                 self._save_checkpoint(checkpoint)
 
                 if not check.passed:
-                    core_ok = self._has_required_result_files(key)
                     issue_text = "；".join(check.issues[:8])
 
-                    if core_ok and not getattr(settings, "ARTIFACT_STRICT_FATAL", False):
+                    if check.blocking_issues:
+                        blocking_text = "；".join(check.blocking_issues[:8])
+                        raise RuntimeError(
+                            f"Coder {attempt_name} 证据检查失败：{blocking_text}"
+                        )
+
+                    if not getattr(settings, "ARTIFACT_STRICT_FATAL", False):
                         await redis_manager.publish_message(
                             self.task_id,
                             SystemMessage(
                                 content=(
-                                    f"[组#{group_idx}] Coder {attempt_name} 核心结果已生成，"
+                                    f"[组#{group_idx}] Coder {attempt_name} 核心证据已生成，"
                                     f"产物检查存在非致命问题，继续进入 Writer。\n"
                                     f"问题：{issue_text}"
                                 ),
@@ -1133,22 +1463,45 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                                 )
                             ),
                         )
-                        base_prompt = prompt_override or solution_flows[key]["coder_prompt"]
+                        base_prompt = (
+                            prompt_override or solution_flows[key]["coder_prompt"]
+                        )
+                        completed_context = user_output.get_model_build_solve().strip()
+                        if completed_context:
+                            base_prompt += f"""
+
+【已完成阶段的真实结果】
+以下内容来自当前任务已经完成并保存的阶段。若本问依赖前一问，
+必须复用这些结果和工作目录中的实际产物，不能重新猜测数值：
+{completed_context[-12000:]}
+"""
                         attempt_prompt = self._with_image_position_hint(
                             base_prompt,
                             key,
                             group_idx,
                             artifact_tag=artifact_tag or None,
                         )
-                        attempt_timeout = int(
-                            getattr(settings, "CODER_ATTEMPT_TIMEOUT", 1200)
-                        )
-                        result = await asyncio.wait_for(
-                            coder.run(
-                                prompt=attempt_prompt, subtask_title=key
+                        attempt_timeout = max(
+                            0,
+                            int(
+                                getattr(
+                                    settings,
+                                    "CODER_ATTEMPT_TIMEOUT",
+                                    0,
+                                )
                             ),
-                            timeout=attempt_timeout,
                         )
+                        coder_coro = coder.run(
+                            prompt=attempt_prompt,
+                            subtask_title=key,
+                        )
+                        if attempt_timeout:
+                            result = await asyncio.wait_for(
+                                coder_coro,
+                                timeout=attempt_timeout,
+                            )
+                        else:
+                            result = await coder_coro
 
                     await _check_coder_artifacts(result, attempt_name, artifact_tag)
 
@@ -1212,9 +1565,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     )
                 except Exception as exc:
                     failures.append(f"主力失败：{exc}")
-                    logger.warning(
-                        f"[组#{group_idx}] 主力 Coder 失败: {exc}"
-                    )
+                    logger.warning(f"[组#{group_idx}] 主力 Coder 失败: {exc}")
                     await self._publish_agent_stop_reason(
                         group_idx=group_idx,
                         key=key,
@@ -1247,9 +1598,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     )
                 except Exception as exc:
                     failures.append(f"备用1失败：{exc}")
-                    logger.warning(
-                        f"[组#{group_idx}] 备用 Coder 1 失败: {exc}"
-                    )
+                    logger.warning(f"[组#{group_idx}] 备用 Coder 1 失败: {exc}")
                     await self._publish_agent_stop_reason(
                         group_idx=group_idx,
                         key=key,
@@ -1272,39 +1621,67 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     f"[组#{group_idx}] 所有 Coder 尝试均失败：" + final_reason
                 )
 
-            # ── 入口：固定主力 → 备用1 ──
-            winner_interp, winner_coder_response = (
-                await _run_coder_with_fallback()
+            # ── 入口：优先恢复已通过检查的 Coder 产物，再执行主力 → 备用1 ──
+            winner_interp = await self._create_code_interpreter(
+                key,
+                worker_suffix="_resume",
             )
+            winner_coder_response = self._restore_coder_stage_checkpoint(
+                checkpoint,
+                key,
+                winner_interp,
+            )
+            if winner_coder_response is None:
+                await winner_interp.cleanup()
+                winner_interp, winner_coder_response = await _run_coder_with_fallback()
+                self._save_coder_stage_checkpoint(
+                    checkpoint,
+                    key,
+                    winner_coder_response,
+                    winner_interp,
+                )
+            else:
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=f"[组#{group_idx}] 从断点恢复 {key} Coder 结果",
+                        type="success",
+                    ),
+                )
 
             step_counter[0] += 1
             await self._publish_progress(
-                step_counter[0], total_steps,
+                step_counter[0],
+                total_steps,
                 f"[组#{group_idx}] 求解完成: {key}，正在撰写",
             )
             # 确定胜出 Coder 标识
-            winner_tag = getattr(winner_interp, "artifact_tag", "") or "主力"  # 可能为 "b1" 备用
+            winner_tag = (
+                getattr(winner_interp, "artifact_tag", "") or "主力"
+            )  # 可能为 "b1" 备用
             winner_label = {
                 "": "主力",
                 **{f"b{i}": f"备用{i}" for i in range(1, 10)},
-
             }.get(winner_tag, winner_tag)
 
             await redis_manager.publish_message(
                 self.task_id,
                 SystemMessage(
                     content=(
-                        f"[组#{group_idx}] 代码手求解成功 {key}，"
-                        f"胜出：{winner_label}"
+                        f"[组#{group_idx}] 代码手求解成功 {key}，胜出：{winner_label}"
                     ),
                     type="success",
                 ),
             )
+            await self._publish_created_image_events(
+                winner_coder_response.created_images,
+                section_key=key,
+                group_index=group_idx,
+            )
 
             # 图片描述（在 coder_semaphore 外执行，不阻塞其他 Coder）
-            if (
-                winner_coder_response.created_images
-                and getattr(settings, "IMAGE_DESCRIPTION_ENABLED", False)
+            if winner_coder_response.created_images and getattr(
+                settings, "IMAGE_DESCRIPTION_ENABLED", False
             ):
                 desc_coro = self._describe_images(
                     image_filenames=winner_coder_response.created_images,
@@ -1327,15 +1704,17 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             group_writer = self._create_writer_agent(problem, agent_index=group_idx)
 
             group_writer.model.question_index = group_idx
-            group_writer.model.agent_instance_id = f'q{group_idx}.writer'
-            group_writer.model.group_id = f'q{group_idx}'
-            group_writer.model.phase = 'writing'
+            group_writer.model.agent_instance_id = f"q{group_idx}.writer"
+            group_writer.model.group_id = f"q{group_idx}"
+            group_writer.model.phase = "writing"
 
             await redis_manager.publish_message(
                 self.task_id,
                 SystemMessage(content=f"[组#{group_idx}] 论文手开始写 {key} 部分"),
             )
-            writer_timeout = int(getattr(settings, "WRITER_ATTEMPT_TIMEOUT", None) or 0) or None
+            writer_timeout = (
+                int(getattr(settings, "WRITER_ATTEMPT_TIMEOUT", None) or 0) or None
+            )
             try:
                 writer_response = await asyncio.wait_for(
                     group_writer.run(
@@ -1354,6 +1733,10 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     detail="已终止该小问 Writer。建议降低章节内容长度或关闭缺图修复。",
                     level="error",
                 )
+                await winner_interp.cleanup()
+                raise
+            except BaseException:
+                await winner_interp.cleanup()
                 raise
             await redis_manager.publish_message(
                 self.task_id,
@@ -1362,14 +1745,16 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
             # 检查 Coder 生成的图片是否被 Writer 引用，缺图则自动修复一次
             missing_images = []
-            for img in (winner_coder_response.created_images or []):
+            for img in winner_coder_response.created_images or []:
                 basename = os.path.basename(img)
-                if img not in writer_response.response_content and basename not in writer_response.response_content:
+                if (
+                    img not in writer_response.response_content
+                    and basename not in writer_response.response_content
+                ):
                     missing_images.append(img)
 
-            if (
-                missing_images
-                and getattr(settings, "WRITER_IMAGE_REPAIR_ENABLED", False)
+            if missing_images and getattr(
+                settings, "WRITER_IMAGE_REPAIR_ENABLED", False
             ):
                 await redis_manager.publish_message(
                     self.task_id,
@@ -1451,7 +1836,9 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 self.ques_count,
                 available_images=winner_coder_response.created_images,
             )
-            length_issues = [issue for issue in initial_content_check if "内容过长" in issue]
+            length_issues = [
+                issue for issue in initial_content_check if "内容过长" in issue
+            ]
             if length_issues:
                 await redis_manager.publish_message(
                     self.task_id,
@@ -1526,7 +1913,9 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                 "last_action": "generated",
             }
             if section_issues:
-                logger.warning(f"[Group#{group_idx}] {key} section issues: {section_issues}")
+                logger.warning(
+                    f"[Group#{group_idx}] {key} section issues: {section_issues}"
+                )
                 await redis_manager.publish_message(
                     self.task_id,
                     SystemMessage(
@@ -1554,12 +1943,19 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         # 所有子问题组并发启动（无上限，有多少问就跑多少组）
         async def run_question_group_limited(group_idx: int, key: str) -> None:
             async with question_semaphore:
-                group_timeout = int(getattr(settings, "QUESTION_GROUP_TIMEOUT", 1800))
+                group_timeout = max(
+                    0,
+                    int(getattr(settings, "QUESTION_GROUP_TIMEOUT", 0)),
+                )
                 try:
-                    await asyncio.wait_for(
-                        run_question_group(group_idx, key),
-                        timeout=group_timeout,
-                    )
+                    group_coro = run_question_group(group_idx, key)
+                    if group_timeout:
+                        await asyncio.wait_for(
+                            group_coro,
+                            timeout=group_timeout,
+                        )
+                    else:
+                        await group_coro
                 except asyncio.TimeoutError:
                     await self._publish_agent_stop_reason(
                         group_idx=group_idx,
@@ -1602,11 +1998,22 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
         sa_key = "sensitivity_analysis"
         if sa_key not in user_output.res:
-            sa_coder = self._create_coder_agent(problem, code_interpreter, agent_index=None)
+            sa_coder = self._create_coder_agent(
+                problem, code_interpreter, agent_index=None
+            )
             sa_writer = self._create_writer_agent(problem, agent_index=None)
             await self._run_solution_step(
                 key=sa_key,
-                coder_prompt=solution_flows[sa_key]["coder_prompt"],
+                coder_prompt=(
+                    solution_flows[sa_key]["coder_prompt"]
+                    + """
+
+【灵敏度分析输入】
+必须基于前面各问已经保存的真实模型结果、参数、代码和数据文件进行扰动，
+不得重新假设一套与正文不同的模型。已完成求解摘要如下：
+"""
+                    + user_output.get_model_build_solve()[-16000:]
+                ),
                 problem=problem,
                 flows=flows,
                 code_interpreter=code_interpreter,
@@ -1639,9 +2046,21 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
         await self._check_cancelled()
 
         # ── 阶段 6：并行写作（论文框架章节） ──────────────────────────────────
+        await redis_manager.publish_message(
+            self.task_id,
+            SystemMessage(
+                content=(
+                    "各问模型、代码求解与灵敏度检验均已完成，"
+                    "论文手开始基于完整结果统一总结前置章节"
+                ),
+                phase="paper_writing",
+                group_id="paper.writing",
+            ),
+        )
         write_flows = flows.get_write_flows(
             user_output, config_template, problem.ques_all
         )
+
         # TOC 确定性生成（不交给 LLM，确保覆盖所有小问）
         def _build_deterministic_toc(q_count: int) -> str:
             lines = [
@@ -1655,29 +2074,35 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             ]
             for i in range(1, q_count + 1):
                 lines.append(f"2.{i} 问题{i}的分析")
-            lines.extend([
-                "",
-                "三、模型假设",
-                "",
-                "四、符号说明和数据预处理",
-                "4.1 符号说明",
-                "4.2 描述性统计",
-                "",
-                "五、模型的建立与求解",
-            ])
+            lines.extend(
+                [
+                    "",
+                    "三、模型假设",
+                    "",
+                    "四、符号说明和数据预处理",
+                    "4.1 符号说明",
+                    "4.2 描述性统计",
+                    "",
+                    "五、模型的建立与求解",
+                ]
+            )
             for i in range(1, q_count + 1):
-                lines.extend([
-                    f"5.{i} 问题{i}模型的建立与求解",
-                    f"5.{i}.1 模型的建立",
-                    f"5.{i}.2 模型的求解",
-                ])
-            lines.extend([
-                "",
-                "六、模型的分析与检验",
-                "6.1 灵敏度分析",
-                "",
-                "七、模型的评价、改进与推广",
-            ])
+                lines.extend(
+                    [
+                        f"5.{i} 问题{i}模型的建立与求解",
+                        f"5.{i}.1 模型的建立",
+                        f"5.{i}.2 模型的求解",
+                    ]
+                )
+            lines.extend(
+                [
+                    "",
+                    "六、模型的分析与检验",
+                    "6.1 灵敏度分析",
+                    "",
+                    "七、模型的评价、改进与推广",
+                ]
+            )
             return "\n".join(lines).strip() + "\n"
 
         if "toc" not in user_output.res:
@@ -1806,9 +2231,15 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
 
         final_paper = checkpoint.get("final_paper_review")
 
-        _paper_source_sig = hashlib.sha256(
-            json.dumps(user_output.res, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        ).hexdigest() if hasattr(json, "dumps") else ""
+        _paper_source_sig = (
+            hashlib.sha256(
+                json.dumps(user_output.res, ensure_ascii=False, sort_keys=True).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            if hasattr(json, "dumps")
+            else ""
+        )
 
         if (
             isinstance(final_paper, str)
@@ -1831,8 +2262,7 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             "judge": "模型评价、改进与推广",
         }
         section_order = [
-            f"{key}: {section_label_map.get(key, key)}"
-            for key in user_output.seq
+            f"{key}: {section_label_map.get(key, key)}" for key in user_output.seq
         ]
 
         if isinstance(final_paper, str) and final_paper.strip():
@@ -1847,7 +2277,9 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
             )
             await redis_manager.publish_message(
                 self.task_id,
-                SystemMessage(content="论文手开始终稿审计：检查章节重复、串位、图片引用"),
+                SystemMessage(
+                    content="论文手开始终稿审计：检查章节重复、串位、图片引用"
+                ),
             )
 
             # ── Layer 2: Section ledger check + missing/invalid repair ──
@@ -1902,9 +2334,9 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                     )
 
                 # quesN missing/invalid -> rerun qN.writer with existing coder results
-                repair_targets = list(dict.fromkeys(
-                    missing_keys + [k for k, _ in invalid_keys]
-                ))
+                repair_targets = list(
+                    dict.fromkeys(missing_keys + [k for k, _ in invalid_keys])
+                )
                 # toc 已在前面确定性修复，跳过
                 repair_targets = [k for k in repair_targets if k != "toc"]
 
@@ -1917,12 +2349,14 @@ REMINDER: Before EVERY execute_code call, you MUST still output the ## 代码介
                             SystemMessage(content=f"Repair: regenerating {k}"),
                         )
                         coder_result = checkpoint.get("coder_results", {}).get(k, {})
-                        code_text = ""
                         images = []
                         if isinstance(coder_result, dict):
-                            code_text = str(coder_result.get("code_response") or "")
                             images = coder_result.get("created_images") or []
-                        question_text = str(self.questions.get(k, "")) if hasattr(self, "questions") else ""
+                        question_text = (
+                            str(self.questions.get(k, ""))
+                            if hasattr(self, "questions")
+                            else ""
+                        )
                         model_summary = user_output.get_model_build_solve()
                         repair_prompt = f"""You are the dedicated Writer for Question {group_idx}.
 
@@ -1975,7 +2409,9 @@ Regenerate the model building and solving chapter for {k}.
                             checkpoint["section_ledger"][k] = (
                                 checkpoint["section_ledger"].get(k) or {}
                             )
-                            checkpoint["section_ledger"][k]["last_action"] = "repair_failed"
+                            checkpoint["section_ledger"][k]["last_action"] = (
+                                "repair_failed"
+                            )
                             checkpoint["section_ledger"][k]["status"] = "missing"
 
                     else:
@@ -1984,9 +2420,13 @@ Regenerate the model building and solving chapter for {k}.
                             value = user_output.res.get(k)
                             content = ""
                             if isinstance(value, dict):
-                                content = str(value.get("response_content") or "").strip()
+                                content = str(
+                                    value.get("response_content") or ""
+                                ).strip()
                             if content:
-                                issues = validate_section_output(k, content, self.ques_count)
+                                issues = validate_section_output(
+                                    k, content, self.ques_count
+                                )
                                 checkpoint["section_ledger"][k] = {
                                     "title": k,
                                     "owner": "restored",
@@ -1998,11 +2438,20 @@ Regenerate the model building and solving chapter for {k}.
                                 }
                                 await redis_manager.publish_message(
                                     self.task_id,
-                                    SystemMessage(content=f"Ledger: {k} restored from existing content"),
+                                    SystemMessage(
+                                        content=f"Ledger: {k} restored from existing content"
+                                    ),
                                 )
                                 continue
 
-                    if k in ("analysisQues", "modelAssumption", "symbol", "judge", "firstPage", "RepeatQues"):
+                    if k in (
+                        "analysisQues",
+                        "modelAssumption",
+                        "symbol",
+                        "judge",
+                        "firstPage",
+                        "RepeatQues",
+                    ):
                         repair_writer.model.agent_instance_id = f"paper.writer.{k}"
                         repair_writer.model.group_id = "paper.writing"
                         repair_writer.model.phase = "paper_writing"
@@ -2032,6 +2481,7 @@ Regenerate the model building and solving chapter for {k}.
 
             # Execute section repair loop
             await _repair_missing_or_invalid_sections()
+
             # 终稿前必备章节检查
             def _missing_required_sections() -> list:
                 missing: list = []
@@ -2091,7 +2541,8 @@ Regenerate the model building and solving chapter for {k}.
                 self._save_checkpoint(checkpoint)
 
                 high_issues = [
-                    item for item in audit_result.get("issues", [])
+                    item
+                    for item in audit_result.get("issues", [])
                     if str(item.get("severity", "")).lower() in ("medium", "high")
                 ]
 
@@ -2100,7 +2551,9 @@ Regenerate the model building and solving chapter for {k}.
                     checkpoint["final_paper_source_signature"] = _paper_source_sig
                     await redis_manager.publish_message(
                         self.task_id,
-                        SystemMessage(content="终稿审计通过，无需全文重写", type="success"),
+                        SystemMessage(
+                            content="终稿审计通过，无需全文重写", type="success"
+                        ),
                     )
                 else:
                     await redis_manager.publish_message(
@@ -2111,12 +2564,16 @@ Regenerate the model building and solving chapter for {k}.
                         ),
                     )
 
-                    repair_response = await final_review_writer.repair_full_paper_by_audit(
-                        paper_markdown=raw_draft,
-                        audit_issues=high_issues,
-                        section_order=section_order,
+                    repair_response = (
+                        await final_review_writer.repair_full_paper_by_audit(
+                            paper_markdown=raw_draft,
+                            audit_issues=high_issues,
+                            section_order=section_order,
+                        )
                     )
-                    repaired = clean_final_paper_markdown(repair_response.response_content)
+                    repaired = clean_final_paper_markdown(
+                        repair_response.response_content
+                    )
 
                     # 终稿轻量修正保护：不应大幅删减或丢失章节
                     required_tokens = [
@@ -2145,53 +2602,91 @@ Regenerate the model building and solving chapter for {k}.
                         await redis_manager.publish_message(
                             self.task_id,
                             SystemMessage(
-                                content="终稿轻量修正疑似删减章节，已拒绝修正版，保留原始拼接稿",
-                                type="warning",
+                                content="终稿轻量修正疑似删减章节，已拒绝且停止发布终稿",
+                                type="error",
                             ),
                         )
-                        final_paper = clean_final_paper_markdown(raw_draft)
+                        raise RuntimeError(
+                            "终稿修正未保留完整章节，原稿仍含中高风险问题"
+                        )
                     else:
                         final_paper = repaired
+                        post_repair_audit = await final_review_writer.audit_full_paper(
+                            paper_markdown=final_paper,
+                            section_order=section_order,
+                        )
+                        checkpoint["final_paper_post_repair_audit"] = post_repair_audit
+                        remaining_issues = [
+                            item
+                            for item in post_repair_audit.get("issues", [])
+                            if str(item.get("severity", "")).lower()
+                            in ("medium", "high")
+                        ]
+                        if remaining_issues:
+                            checkpoint["final_paper_unresolved_issues"] = (
+                                remaining_issues
+                            )
+                            self._save_checkpoint(checkpoint)
+                            raise RuntimeError(
+                                f"终稿修正后仍有 {len(remaining_issues)} 个中高风险问题"
+                            )
                         await redis_manager.publish_message(
                             self.task_id,
-                            SystemMessage(content="论文手完成终稿轻量修正"),
+                            SystemMessage(
+                                content="论文手完成终稿轻量修正并通过复审",
+                                type="success",
+                            ),
                         )
 
                 checkpoint["final_paper_review"] = final_paper
                 checkpoint["final_paper_source_signature"] = _paper_source_sig
+                checkpoint.pop("final_paper_review_failed", None)
                 self._save_checkpoint(checkpoint)
 
             except Exception as e:
-                logger.warning(f"论文终稿检查失败，使用原始拼接稿: {e}")
-                final_paper = user_output.get_result_to_save()
-                checkpoint["final_paper_review_failed"] = str(e)
+                detail = str(e).strip() or type(e).__name__
+                logger.exception(f"论文终稿检查失败，停止发布: {detail}")
+                checkpoint["final_paper_review_failed"] = detail
                 self._save_checkpoint(checkpoint)
+                raise RuntimeError(
+                    f"论文终稿语义审查未通过，未保存终稿：{detail}"
+                ) from e
 
         # 图片引用校验
         image_ref_issues = validate_markdown_image_refs(self.work_dir, final_paper)
-        if image_ref_issues:
-            checkpoint["final_image_ref_issues"] = image_ref_issues
-            self._save_checkpoint(checkpoint)
-            await redis_manager.publish_message(
-                self.task_id,
-                SystemMessage(
-                    content="终稿图片引用检查发现问题：" + "；".join(image_ref_issues[:5]),
-                    type="warning",
-                ),
-            )
-
-        # 终稿完整性总检查
         paper_issues = validate_final_paper(self.work_dir, final_paper)
-        if paper_issues:
-            checkpoint["final_paper_issues"] = paper_issues
+        evidence_issues = validate_paper_evidence(
+            self.work_dir,
+            final_paper,
+            section_keys=[
+                "eda",
+                *[f"ques{i}" for i in range(1, self.ques_count + 1)],
+                "sensitivity_analysis",
+            ],
+        )
+        checkpoint["final_image_ref_issues"] = image_ref_issues
+        checkpoint["final_paper_issues"] = paper_issues
+        checkpoint["final_evidence_issues"] = evidence_issues
+        self._save_checkpoint(checkpoint)
+
+        blocking_issues = [
+            *image_ref_issues,
+            *paper_issues,
+            *evidence_issues,
+        ]
+        if blocking_issues:
             self._save_checkpoint(checkpoint)
             await redis_manager.publish_message(
                 self.task_id,
                 SystemMessage(
-                    content="终稿完整性检查发现问题：" + "；".join(paper_issues[:5]),
-                    type="warning",
+                    content=(
+                        "终稿质量门禁未通过，已停止保存："
+                        + "；".join(blocking_issues[:5])
+                    ),
+                    type="error",
                 ),
             )
+            raise RuntimeError("终稿质量门禁未通过：" + "；".join(blocking_issues[:8]))
 
         user_output.save_result(final_text=final_paper)
         file_issues = validate_saved_files(self.work_dir)

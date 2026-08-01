@@ -1,5 +1,11 @@
 <script setup lang="ts">
-import { ChevronDown, ExternalLink, MessageCircle, Send, Sparkles } from "lucide-vue-next";
+import {
+	ChevronDown,
+	ExternalLink,
+	MessageCircle,
+	Send,
+	Sparkles,
+} from "lucide-vue-next";
 import { computed, nextTick, ref, watch } from "vue";
 
 interface SourceDetail {
@@ -26,6 +32,9 @@ interface ModelOption {
 	isRecommended?: boolean;
 	sources?: string[];
 	sourceDetails?: SourceDetail[];
+	origin?: "generated" | "discussion";
+	revisionNumber?: number;
+	discussionPrompt?: string;
 }
 
 interface ChatMessage {
@@ -62,9 +71,12 @@ const emit = defineEmits<{
 
 const chatInput = ref("");
 const chatScrollRef = ref<HTMLDivElement | null>(null);
+const optionScrollRef = ref<HTMLDivElement | null>(null);
 const userScrolledUp = ref(false);
 
-const isCustomSelected = computed(() => props.selectedOptionId === "__custom__");
+const isCustomSelected = computed(
+	() => props.selectedOptionId === "__custom__",
+);
 
 function handleSend() {
 	const msg = chatInput.value.trim();
@@ -94,19 +106,44 @@ function onChatScroll() {
 }
 
 function sourceUrl(source: SourceDetail) {
-	if (source.doi) return String(source.doi).startsWith("http") ? String(source.doi) : `https://doi.org/${source.doi}`;
+	if (source.doi)
+		return String(source.doi).startsWith("http")
+			? String(source.doi)
+			: `https://doi.org/${source.doi}`;
 	return source.url || "";
 }
 
 function sourceSnippet(source: SourceDetail) {
-	const text = String(source.abstract || source.snippet || "").replace(/\s+/g, " ").trim();
+	const text = String(source.abstract || source.snippet || "")
+		.replace(/\s+/g, " ")
+		.trim();
 	return text.length > 130 ? `${text.slice(0, 130)}…` : text;
+}
+
+function isFirstDiscussionOption(optionId: string) {
+	return (
+		props.presetOptions.find((option) => option.origin === "discussion")?.id ===
+		optionId
+	);
 }
 
 watch(
 	() => props.chatHistory.length,
 	() => {
 		if (props.isExpanded) scrollChatToBottom();
+	},
+);
+
+watch(
+	() =>
+		props.presetOptions.filter((option) => option.origin === "discussion")
+			.length,
+	(nextCount, previousCount) => {
+		if (nextCount <= previousCount) return;
+		nextTick(() => {
+			const el = optionScrollRef.value;
+			if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+		});
 	},
 );
 
@@ -148,7 +185,7 @@ watch(
 				<ChevronDown class="h-4 w-4 shrink-0 rotate-180 text-slate-400" />
 			</div>
 
-			<div class="space-y-1.5 px-4 pt-3 max-h-80 overflow-y-auto">
+			<div ref="optionScrollRef" class="space-y-1.5 px-4 pt-3 max-h-80 overflow-y-auto">
 				<div class="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-500">
 					<Sparkles class="h-3 w-3" />
 					选择建模方案
@@ -165,50 +202,68 @@ watch(
 				>
 					{{ props.genStatus?.text || "等待生成..." }}
 				</div>
-				<label
-					v-for="option in presetOptions"
-					:key="option.id"
-					class="flex items-start gap-3 rounded-xl border px-3 py-2.5 transition-all duration-200 hover:border-blue-300 hover:bg-blue-50/40"
-					:class="[
-						disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
-						selectedOptionId === option.id ? 'border-blue-400 bg-blue-50/60 shadow-[0_0_0_1px_rgba(59,130,246,0.3)]' : 'border-slate-200 bg-white/50',
-					]"
-				>
-					<input type="radio" :value="option.id" :checked="selectedOptionId === option.id" class="mt-0.5 h-3.5 w-3.5 accent-blue-600" :disabled="disabled" @change="!disabled && emit('select-option', option.id)" />
-					<div class="min-w-0 flex-1">
-						<div class="flex flex-wrap items-center gap-1.5 text-sm font-medium text-slate-800">
-							<span>{{ option.label }}</span>
-							<span v-if="option.isRecommended" class="rounded-full bg-amber-500 px-1.5 py-0.5 text-[9px] font-semibold text-white">推荐</span>
-							<span v-if="option.score != null" class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-500">{{ option.score }}分</span>
-							<span v-if="option.sourceDetails?.length" class="rounded-full bg-blue-100 px-1.5 py-0.5 text-[9px] font-medium text-blue-700">{{ option.sourceDetails.length }} 条文献</span>
-						</div>
-						<div class="text-xs leading-relaxed text-slate-500">{{ option.description }}</div>
-						<div v-if="option.reason" class="mt-1 text-[11px] leading-relaxed text-slate-600">{{ option.reason }}</div>
-
-						<details v-if="option.sourceDetails?.length" class="mt-2 rounded-lg border border-blue-100 bg-blue-50/50 px-2.5 py-2 text-[11px] text-slate-700" @click.stop>
-							<summary class="cursor-pointer select-none font-semibold text-blue-700">查看检索依据</summary>
-							<div class="mt-2 space-y-2">
-								<div v-for="source in option.sourceDetails" :key="source.source_id || source.title" class="rounded-md border border-white/80 bg-white/70 p-2">
-									<div class="flex flex-wrap items-center gap-1.5 font-semibold text-slate-800">
-										<span>{{ source.source_id }}</span>
-										<span>{{ source.title }}</span>
-									</div>
-									<div class="mt-0.5 flex flex-wrap gap-1.5 text-[10px] text-slate-500">
-										<span>{{ source.source }}</span>
-										<span v-if="source.year">{{ source.year }}</span>
-										<span v-if="source.relevance_score != null">相关度 {{ source.relevance_score }}</span>
-									</div>
-									<p v-if="sourceSnippet(source)" class="mt-1 leading-relaxed text-slate-600">{{ sourceSnippet(source) }}</p>
-									<a v-if="sourceUrl(source)" :href="sourceUrl(source)" target="_blank" rel="noreferrer" class="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-blue-600 hover:underline">
-										打开来源 <ExternalLink class="h-3 w-3" />
-									</a>
-								</div>
-							</div>
-						</details>
-
-						<div v-else-if="option.sources?.length" class="mt-1 text-[10px] text-slate-400">来源：{{ option.sources.join('、') }}</div>
+				<template v-for="option in presetOptions" :key="option.id">
+					<div
+						v-if="option.origin === 'discussion' && isFirstDiscussionOption(option.id)"
+						class="flex items-center gap-2 px-1 pt-2 text-[11px] font-semibold text-indigo-600"
+					>
+						<span class="h-px flex-1 bg-indigo-100" />
+						讨论后新增方案
+						<span class="h-px flex-1 bg-indigo-100" />
 					</div>
-				</label>
+					<label
+						class="flex items-start gap-3 rounded-xl border px-3 py-2.5 transition-all duration-200"
+						:class="[
+							disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
+							option.origin === 'discussion'
+								? selectedOptionId === option.id
+									? 'border-indigo-500 bg-indigo-50/80 shadow-[0_0_0_1px_rgba(99,102,241,0.28)]'
+									: 'border-indigo-200 bg-gradient-to-br from-indigo-50/80 to-violet-50/70 hover:border-indigo-400'
+								: selectedOptionId === option.id
+									? 'border-blue-400 bg-blue-50/60 shadow-[0_0_0_1px_rgba(59,130,246,0.3)]'
+									: 'border-slate-200 bg-white/50 hover:border-blue-300 hover:bg-blue-50/40',
+						]"
+					>
+						<input type="radio" :value="option.id" :checked="selectedOptionId === option.id" class="mt-0.5 h-3.5 w-3.5 accent-indigo-600" :disabled="disabled" @change="!disabled && emit('select-option', option.id)" />
+						<div class="min-w-0 flex-1">
+							<div class="flex flex-wrap items-center gap-1.5 text-sm font-medium text-slate-800">
+								<span>{{ option.label }}</span>
+								<span v-if="option.origin === 'discussion'" class="rounded-full bg-indigo-600 px-1.5 py-0.5 text-[9px] font-semibold text-white">
+									讨论新增 #{{ option.revisionNumber }}
+								</span>
+								<span v-if="option.isRecommended" class="rounded-full bg-amber-500 px-1.5 py-0.5 text-[9px] font-semibold text-white">推荐</span>
+								<span v-if="option.score != null" class="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-500">{{ option.score }}分</span>
+								<span v-if="option.sourceDetails?.length" class="rounded-full bg-blue-100 px-1.5 py-0.5 text-[9px] font-medium text-blue-700">{{ option.sourceDetails.length }} 条文献</span>
+							</div>
+							<div v-if="option.origin === 'discussion'" class="mt-0.5 text-[10px] font-medium text-indigo-500">原方案保持不变，可直接选择本修订版</div>
+							<div class="text-xs leading-relaxed text-slate-500">{{ option.description }}</div>
+							<div v-if="option.reason" class="mt-1 text-[11px] leading-relaxed text-slate-600">{{ option.reason }}</div>
+
+							<details v-if="option.sourceDetails?.length" class="mt-2 rounded-lg border border-blue-100 bg-blue-50/50 px-2.5 py-2 text-[11px] text-slate-700" @click.stop>
+								<summary class="cursor-pointer select-none font-semibold text-blue-700">查看检索依据</summary>
+								<div class="mt-2 space-y-2">
+									<div v-for="source in option.sourceDetails" :key="source.source_id || source.title" class="rounded-md border border-white/80 bg-white/70 p-2">
+										<div class="flex flex-wrap items-center gap-1.5 font-semibold text-slate-800">
+											<span>{{ source.source_id }}</span>
+											<span>{{ source.title }}</span>
+										</div>
+										<div class="mt-0.5 flex flex-wrap gap-1.5 text-[10px] text-slate-500">
+											<span>{{ source.source }}</span>
+											<span v-if="source.year">{{ source.year }}</span>
+											<span v-if="source.relevance_score != null">相关度 {{ source.relevance_score }}</span>
+										</div>
+										<p v-if="sourceSnippet(source)" class="mt-1 leading-relaxed text-slate-600">{{ sourceSnippet(source) }}</p>
+										<a v-if="sourceUrl(source)" :href="sourceUrl(source)" target="_blank" rel="noreferrer" class="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-blue-600 hover:underline">
+											打开来源 <ExternalLink class="h-3 w-3" />
+										</a>
+									</div>
+								</div>
+							</details>
+
+							<div v-else-if="option.sources?.length" class="mt-1 text-[10px] text-slate-400">来源：{{ option.sources.join('、') }}</div>
+						</div>
+					</label>
+				</template>
 
 				<label
 					class="flex items-start gap-3 rounded-xl border px-3 py-2.5 transition-all duration-200 hover:border-purple-300 hover:bg-purple-50/30"

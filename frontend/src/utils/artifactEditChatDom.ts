@@ -1,7 +1,11 @@
 import { sendArtifactEditMessage } from "@/apis/filesApi";
-import { useArtifactEditStore } from "@/stores/artifactEdit";
+import {
+	type ArtifactEditContext,
+	useArtifactEditStore,
+} from "@/stores/artifactEdit";
 import { useTaskStore } from "@/stores/task";
 import { AgentType } from "@/utils/enum";
+import { isImageFile, normalizeImageFilename } from "@/utils/imageConstants";
 
 const ROOT_ID = "artifact-edit-chat-root";
 const STYLE_ID = "artifact-edit-chat-style";
@@ -9,6 +13,18 @@ let installed = false;
 let inputValue = "";
 let sending = false;
 let lastTextActivateAt = 0;
+let lastReferenceSignature = "";
+let lastReferenceAt = 0;
+
+interface ArtifactEditResponseData {
+	success?: boolean;
+	status?: string;
+	analysis_text?: string;
+	message?: string;
+	updated_alt_text?: string;
+	updated_caption?: string;
+	revised_text?: string;
+}
 
 function short(text: string, max = 160) {
 	const s = (text || "").replace(/\s+/g, " ").trim();
@@ -36,14 +52,76 @@ function filenameFromSrc(src: string) {
 	try {
 		const url = new URL(src, window.location.origin);
 		const parts = decodeURIComponent(url.pathname).split("/static/");
-		const afterStatic = parts[1] || decodeURIComponent(url.pathname).replace(/^\/+/, "");
+		const afterStatic =
+			parts[1] || decodeURIComponent(url.pathname).replace(/^\/+/, "");
 		const segments = afterStatic.split("/").filter(Boolean);
 		const taskId = currentTaskId();
 		if (segments[0] === taskId) return segments.slice(1).join("/");
 		return segments.join("/");
 	} catch {
-		return decodeURIComponent(src.split(/[?#]/)[0].split("/static/").pop() || src);
+		return decodeURIComponent(
+			src.split(/[?#]/)[0].split("/static/").pop() || src,
+		);
 	}
+}
+
+function sectionNumberFromHeading(text: string) {
+	const normalized = text.replace(/\s+/g, " ").trim();
+	const numbered = normalized.match(/^(\d+(?:\.\d+)*)\b/);
+	if (numbered?.[1]) return numbered[1];
+
+	const chineseChapter = normalized.match(/^([一二三四五六七八九十]+)、/);
+	if (!chineseChapter?.[1]) return "";
+	const chapterNumbers: Record<string, number> = {
+		一: 1,
+		二: 2,
+		三: 3,
+		四: 4,
+		五: 5,
+		六: 6,
+		七: 7,
+		八: 8,
+		九: 9,
+		十: 10,
+	};
+	return String(chapterNumbers[chineseChapter[1]] ?? "");
+}
+
+function findPaperSection(element: Element | null) {
+	const root = element?.closest(".paper-preview");
+	if (!root || !element) return "";
+	let section = "";
+	for (const heading of root.querySelectorAll<HTMLElement>("h1, h2, h3, h4")) {
+		const relation = heading.compareDocumentPosition(element);
+		if (
+			heading === element ||
+			Boolean(relation & Node.DOCUMENT_POSITION_FOLLOWING)
+		) {
+			section = sectionNumberFromHeading(heading.textContent || "") || section;
+			continue;
+		}
+		break;
+	}
+	return section;
+}
+
+function displayTargetPath(ctx: {
+	targetType: "image" | "text";
+	targetPath: string;
+}) {
+	return ctx.targetType === "image"
+		? normalizeImageFilename(ctx.targetPath)
+		: "paper.md";
+}
+
+function displayTargetMeta(ctx: {
+	targetType: "image" | "text";
+	targetPath: string;
+	sectionTitle?: string;
+}) {
+	const typeLabel = ctx.targetType === "image" ? "图片" : "文字";
+	const section = ctx.sectionTitle ? ` · ${ctx.sectionTitle}` : "";
+	return `${typeLabel} · ${displayTargetPath(ctx)}${section}`;
 }
 
 function addStyle() {
@@ -89,7 +167,7 @@ function addStyle() {
 .artifact-edit-chat-send{border:0;background:#2563eb;color:white;border-radius:1rem;padding:.55rem .8rem;font-size:13px;font-weight:700;min-height:38px;}
 .artifact-edit-chat-send:disabled{background:#94a3b8;cursor:not-allowed;}
 .artifact-edit-reference-flash{animation:artifactEditFlash 1.2s ease-out 1;}
-.paper-preview [data-artifact-edit-selected="true"]{outline:2px solid rgba(37,99,235,.35);background:rgba(219,234,254,.42);border-radius:.35rem;}
+.paper-preview [data-artifact-edit-selected="true"]{outline:2px solid rgba(59,130,246,.42);background:linear-gradient(90deg,rgba(59,130,246,.16),rgba(59,130,246,.08));border-left:3px solid rgba(59,130,246,.65);border-radius:.35rem;}
 @keyframes artifactEditFlash{0%{box-shadow:0 0 0 0 rgba(37,99,235,.45)}100%{box-shadow:0 0 0 14px rgba(37,99,235,0)}}
 `;
 	document.head.appendChild(style);
@@ -113,8 +191,11 @@ function ensureRoot() {
 
 function syncExistingInput(root: HTMLElement) {
 	const textarea = root.querySelector<HTMLTextAreaElement>("textarea");
-	const sendBtn = root.querySelector<HTMLButtonElement>(".artifact-edit-chat-send");
-	if (textarea && document.activeElement !== textarea) textarea.value = inputValue;
+	const sendBtn = root.querySelector<HTMLButtonElement>(
+		".artifact-edit-chat-send",
+	);
+	if (textarea && document.activeElement !== textarea)
+		textarea.value = inputValue;
 	if (textarea) textarea.disabled = sending;
 	if (sendBtn) {
 		sendBtn.disabled = sending || !inputValue.trim();
@@ -139,16 +220,20 @@ function renderInput(force = false) {
 		return;
 	}
 	root.dataset.renderKey = renderKey;
-	const icon = ctx.targetType === "image" ? "图片" : "文字";
-	const placeholder = ctx.targetType === "image"
-		? "直接输入修图要求，例如：把标题改短、调大坐标轴字体、改配色..."
-		: "直接输入文字修改要求，例如：压缩成两句话、改得更学术、去掉口语化...";
+	const placeholder =
+		ctx.targetType === "image"
+			? "直接输入修图要求，例如：把标题改短、调大坐标轴字体、改配色..."
+			: "直接输入文字修改要求，例如：压缩成两句话、改得更学术、去掉口语化...";
+	const detail =
+		ctx.targetType === "image"
+			? ctx.description || ctx.excerpt || ""
+			: ctx.excerpt || "";
 	root.innerHTML = `
 		<div class="artifact-edit-chat-ref artifact-edit-reference-flash">
 			<div style="min-width:0;flex:1;">
 				<div class="artifact-edit-chat-ref-title">当前修改对象：${escapeHtml(ctx.targetLabel)}</div>
-				<div class="artifact-edit-chat-ref-meta">${icon} · ${escapeHtml(ctx.targetPath)}</div>
-				${ctx.excerpt ? `<div class="artifact-edit-chat-ref-excerpt">${escapeHtml(ctx.excerpt)}</div>` : ""}
+				<div class="artifact-edit-chat-ref-meta">${escapeHtml(displayTargetMeta(ctx))}</div>
+				${detail ? `<div class="artifact-edit-chat-ref-excerpt">${escapeHtml(detail)}</div>` : ""}
 			</div>
 			<button class="artifact-edit-chat-clear" type="button">清除</button>
 		</div>
@@ -158,8 +243,12 @@ function renderInput(force = false) {
 		</div>
 	`;
 	const textarea = root.querySelector<HTMLTextAreaElement>("textarea");
-	const sendBtn = root.querySelector<HTMLButtonElement>(".artifact-edit-chat-send");
-	const clearBtn = root.querySelector<HTMLButtonElement>(".artifact-edit-chat-clear");
+	const sendBtn = root.querySelector<HTMLButtonElement>(
+		".artifact-edit-chat-send",
+	);
+	const clearBtn = root.querySelector<HTMLButtonElement>(
+		".artifact-edit-chat-clear",
+	);
 	if (textarea) {
 		textarea.value = inputValue;
 		textarea.disabled = sending;
@@ -185,20 +274,31 @@ function renderInput(force = false) {
 	});
 }
 
-function addReferenceMessage(ctx: any, reused = false) {
+function addReferenceMessage(
+	ctx: ArtifactEditContext | null | undefined,
+	reused = false,
+) {
 	if (!ctx) return;
+	const signature = `${ctx.targetType}:${ctx.targetPath}:${ctx.sectionTitle || ""}`;
+	const now = Date.now();
+	if (signature === lastReferenceSignature && now - lastReferenceAt < 3500) {
+		return;
+	}
+	lastReferenceSignature = signature;
+	lastReferenceAt = now;
 	const taskStore = useTaskStore();
 	const typeLabel = ctx.targetType === "image" ? "图片" : "文字";
-	taskStore.addSystemAction(
-		reused ? "继续修改" : "引用",
-		`${typeLabel}修改对象`,
-		`${reused ? "继续修改" : "已引用"}${typeLabel}：${ctx.targetLabel}\n路径：${ctx.targetPath}${ctx.excerpt ? `\n片段：${short(ctx.excerpt, 220)}` : ""}`,
+	const detail =
+		ctx.targetType === "image" ? ctx.description || "" : ctx.excerpt || "";
+	taskStore.addUserAction(
+		reused ? "继续编辑" : "选择",
+		`当前修改对象：${ctx.targetLabel}`,
+		`当前修改对象：${ctx.targetLabel}\n${displayTargetMeta(ctx)}${detail ? `\n${typeLabel === "图片" ? "描述" : "内容"}：${short(detail, 220)}` : ""}`,
 		{
 			from: "User",
 			to: ctx.targetType === "image" ? "CoderAgent" : "WriterAgent",
-			label: ctx.targetType === "image" ? "引用图片修改" : "引用文字修改",
+			label: "当前修改对象",
 		},
-		"info",
 	);
 }
 
@@ -207,6 +307,7 @@ function activateExistingOrCreate(data: {
 	targetType: "image" | "text";
 	targetPath: string;
 	targetLabel: string;
+	sectionTitle?: string;
 	previewUrl?: string;
 	description?: string;
 	excerpt?: string;
@@ -222,6 +323,7 @@ function activateExistingOrCreate(data: {
 	if (existing) {
 		store.updateSession(existing.sessionId, {
 			targetLabel: data.targetLabel || existing.targetLabel,
+			sectionTitle: data.sectionTitle || existing.sectionTitle,
 			previewUrl: data.previewUrl || existing.previewUrl,
 			description: data.description || existing.description,
 			excerpt: data.excerpt || existing.excerpt,
@@ -236,6 +338,7 @@ function activateExistingOrCreate(data: {
 		targetType: data.targetType,
 		targetPath: data.targetPath,
 		targetLabel: data.targetLabel,
+		sectionTitle: data.sectionTitle,
 		previewUrl: data.previewUrl,
 		description: data.description,
 		excerpt: data.excerpt,
@@ -249,6 +352,7 @@ function activateImageFromData(data: {
 	title?: string;
 	url?: string;
 	description?: string;
+	sectionTitle?: string;
 }) {
 	const taskId = currentTaskId();
 	if (!taskId || !data.filename) return;
@@ -256,19 +360,25 @@ function activateImageFromData(data: {
 		taskId,
 		targetType: "image",
 		targetPath: data.filename,
-		targetLabel: data.title || data.filename.split("/").pop() || data.filename,
+		targetLabel: normalizeImageFilename(data.filename),
+		sectionTitle: data.sectionTitle,
 		previewUrl: data.url,
-		description: data.description,
+		description:
+			data.description ||
+			(data.title && data.title !== data.filename ? data.title : undefined),
 	});
 	inputValue = "";
 	renderInput(true);
-	document.getElementById(ROOT_ID)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+	document
+		.getElementById(ROOT_ID)
+		?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 function activateTextFromData(data: {
 	selectedText: string;
 	context?: string;
 	label?: string;
+	sectionTitle?: string;
 }) {
 	const taskId = currentTaskId();
 	if (!taskId || !data.selectedText.trim()) return;
@@ -278,6 +388,7 @@ function activateTextFromData(data: {
 		targetType: "text",
 		targetPath: `paper.md#${excerpt.slice(0, 40)}`,
 		targetLabel: data.label || "论文选中文本",
+		sectionTitle: data.sectionTitle,
 		excerpt,
 		description: data.context,
 	});
@@ -286,10 +397,13 @@ function activateTextFromData(data: {
 }
 
 function refreshRightPanelAfterEdit(type: "image" | "text") {
-	window.dispatchEvent(new CustomEvent("artifact-edit-updated", { detail: { type } }));
+	window.dispatchEvent(
+		new CustomEvent("artifact-edit-updated", { detail: { type } }),
+	);
 	setTimeout(() => {
-		const refreshButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
-			.filter((button) => (button.textContent || "").includes("刷新"));
+		const refreshButtons = Array.from(
+			document.querySelectorAll<HTMLButtonElement>("button"),
+		).filter((button) => (button.textContent || "").includes("刷新"));
 		if (type === "image") refreshButtons.at(-1)?.click();
 		else refreshButtons[0]?.click();
 	}, 600);
@@ -328,7 +442,8 @@ async function sendCurrentInstruction() {
 	);
 	renderInput(true);
 	try {
-		const currentSession = store.sessions.find((s) => s.sessionId === ctx.sessionId) || ctx;
+		const currentSession =
+			store.sessions.find((s) => s.sessionId === ctx.sessionId) || ctx;
 		const response = await sendArtifactEditMessage({
 			task_id: ctx.taskId,
 			target_type: ctx.targetType,
@@ -340,34 +455,79 @@ async function sendCurrentInstruction() {
 			context: ctx.description || ctx.excerpt,
 			conversation_history: currentSession.messages,
 		});
-		const data = response.data as any;
+		const data = response.data as ArtifactEditResponseData;
 		const ok = Boolean(data?.success) && data?.status !== "failed";
-		const resultText = ctx.targetType === "image"
-			? [data?.analysis_text, data?.message, data?.updated_alt_text ? `新标题：${data.updated_alt_text}` : "", data?.updated_caption ? `新说明：${data.updated_caption}` : ""].filter(Boolean).join("\n")
-			: [data?.message, data?.revised_text ? `修改后：${data.revised_text}` : ""].filter(Boolean).join("\n");
-		store.appendSessionMessage(ctx.sessionId, "assistant", resultText || (ok ? "修改完成" : "修改失败"));
+		const resultText =
+			ctx.targetType === "image"
+				? [
+						data?.analysis_text,
+						data?.message,
+						data?.updated_alt_text ? `新标题：${data.updated_alt_text}` : "",
+						data?.updated_caption ? `新说明：${data.updated_caption}` : "",
+					]
+						.filter(Boolean)
+						.join("\n")
+				: [
+						data?.message,
+						data?.revised_text ? `修改后：${data.revised_text}` : "",
+					]
+						.filter(Boolean)
+						.join("\n");
+		store.appendSessionMessage(
+			ctx.sessionId,
+			"assistant",
+			resultText || (ok ? "修改完成" : "修改失败"),
+		);
 		store.updateSession(ctx.sessionId, { status: ok ? "done" : "failed" });
 		if (ok) {
 			taskStore.addAgentAction(
 				ctx.targetType === "image" ? AgentType.CODER : AgentType.WRITER,
 				"返回",
 				`${ctx.targetType === "image" ? "图片" : "文字"}修改结果`,
-				resultText || `${ctx.targetType === "image" ? "图片" : "文字"}修改完成：${ctx.targetLabel}`,
+				resultText ||
+					`${ctx.targetType === "image" ? "图片" : "文字"}修改完成：${ctx.targetLabel}`,
 				{
 					from: ctx.targetType === "image" ? "CoderAgent" : "WriterAgent",
 					to: "User",
-					label: ctx.targetType === "image" ? "返回图片修改结果" : "返回文字修改结果",
+					label:
+						ctx.targetType === "image"
+							? "返回图片修改结果"
+							: "返回文字修改结果",
 				},
 			);
 			refreshRightPanelAfterEdit(ctx.targetType);
 		} else {
-			taskStore.addSystemAction("失败", "AI 修改", resultText || "修改失败", { from: ctx.targetType === "image" ? "CoderAgent" : "WriterAgent", to: "User", label: "返回失败原因" }, "error");
+			taskStore.addSystemAction(
+				"失败",
+				"AI 修改",
+				resultText || "修改失败",
+				{
+					from: ctx.targetType === "image" ? "CoderAgent" : "WriterAgent",
+					to: "User",
+					label: "返回失败原因",
+				},
+				"error",
+			);
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "网络错误";
-		store.appendSessionMessage(ctx.sessionId, "assistant", `修改失败：${message}`);
+		store.appendSessionMessage(
+			ctx.sessionId,
+			"assistant",
+			`修改失败：${message}`,
+		);
 		store.updateSession(ctx.sessionId, { status: "failed" });
-		taskStore.addSystemAction("失败", "AI 修改", `修改失败：${message}`, { from: ctx.targetType === "image" ? "CoderAgent" : "WriterAgent", to: "User", label: "返回失败原因" }, "error");
+		taskStore.addSystemAction(
+			"失败",
+			"AI 修改",
+			`修改失败：${message}`,
+			{
+				from: ctx.targetType === "image" ? "CoderAgent" : "WriterAgent",
+				to: "User",
+				label: "返回失败原因",
+			},
+			"error",
+		);
 	} finally {
 		sending = false;
 		renderInput(true);
@@ -379,25 +539,37 @@ function interceptImageGalleryButton(event: MouseEvent) {
 	const button = target?.closest("button") as HTMLButtonElement | null;
 	if (!button) return false;
 	const text = button.textContent || "";
-	if (!text.includes("修改代码重画") && !text.includes("正在修改")) return false;
+	if (!text.includes("修改代码重画") && !text.includes("正在修改"))
+		return false;
 	const section = button.closest("section") as HTMLElement | null;
 	if (!section) return false;
 	const img = section.querySelector<HTMLImageElement>("img");
-	const filenameText = Array.from(section.querySelectorAll<HTMLElement>("span,div,p"))
+	const filenameText = Array.from(
+		section.querySelectorAll<HTMLElement>("span,div,p"),
+	)
 		.map((el) => el.textContent?.trim() || "")
-		.find((t) => /\.(png|jpg|jpeg|svg|webp)$/i.test(t));
+		.find((text) => isImageFile(text));
 	const filename = filenameText || (img?.src ? filenameFromSrc(img.src) : "");
 	const title =
-		section.querySelector<HTMLElement>("[data-image-title-fixed='true']")?.textContent?.trim() ||
+		section
+			.querySelector<HTMLElement>("[data-image-title-fixed='true']")
+			?.textContent?.trim() ||
 		section.querySelector<HTMLElement>(".font-semibold")?.textContent?.trim() ||
 		filename.split("/").pop() ||
 		filename;
-	const desc = section.querySelector<HTMLElement>("p")?.textContent?.trim() || "";
+	const desc =
+		section.querySelector<HTMLElement>("p")?.textContent?.trim() || "";
 	if (!filename) return false;
 	event.preventDefault();
 	event.stopPropagation();
 	event.stopImmediatePropagation();
-	activateImageFromData({ filename, title, url: img?.src, description: desc });
+	activateImageFromData({
+		filename,
+		title,
+		url: img?.src,
+		description: desc,
+		sectionTitle: findPaperSection(img),
+	});
 	return true;
 }
 
@@ -406,12 +578,17 @@ function textFromSelectionOrSentence(target: HTMLElement | null) {
 	if (!root) return { selectedText: "", context: "" };
 	const nativeSelected = window.getSelection()?.toString()?.trim() || "";
 	if (nativeSelected.length >= 2) {
-		return { selectedText: nativeSelected, context: root.textContent?.slice(0, 2400) || nativeSelected };
+		return {
+			selectedText: nativeSelected,
+			context: root.textContent?.slice(0, 2400) || nativeSelected,
+		};
 	}
 	const sentence = target?.closest("[data-sentence]") as HTMLElement | null;
 	const sentenceText = sentence?.textContent?.trim() || "";
 	if (sentenceText.length >= 2) {
-		const siblings = Array.from(root.querySelectorAll<HTMLElement>("[data-sentence]"));
+		const siblings = Array.from(
+			root.querySelectorAll<HTMLElement>("[data-sentence]"),
+		);
 		const idx = siblings.indexOf(sentence);
 		const context = siblings
 			.slice(Math.max(0, idx - 4), Math.min(siblings.length, idx + 5))
@@ -426,19 +603,27 @@ function textFromSelectionOrSentence(target: HTMLElement | null) {
 function fallbackActivateTextSelection(event: MouseEvent) {
 	const target = event.target as HTMLElement | null;
 	if (!target?.closest(".paper-preview")) return;
-	if (target.closest("button, a, img, .revision-overlay, .action-btn-overlay")) return;
+	if (target.closest("button, a, img, .revision-overlay, .action-btn-overlay"))
+		return;
 	const now = Date.now();
 	if (now - lastTextActivateAt < 450) return;
 	setTimeout(() => {
 		const { selectedText, context } = textFromSelectionOrSentence(target);
 		if (!selectedText) return;
 		lastTextActivateAt = Date.now();
-		for (const el of document.querySelectorAll<HTMLElement>(".paper-preview [data-artifact-edit-selected='true']")) {
+		for (const el of document.querySelectorAll<HTMLElement>(
+			".paper-preview [data-artifact-edit-selected='true']",
+		)) {
 			el.removeAttribute("data-artifact-edit-selected");
 		}
 		const sentence = target.closest("[data-sentence]") as HTMLElement | null;
 		sentence?.setAttribute("data-artifact-edit-selected", "true");
-		activateTextFromData({ selectedText, context, label: "论文选中文本" });
+		activateTextFromData({
+			selectedText,
+			context,
+			label: "论文选中文本",
+			sectionTitle: findPaperSection(sentence || target),
+		});
 	}, 40);
 }
 
@@ -453,22 +638,41 @@ function interceptWriterActionButton(event: MouseEvent) {
 	event.stopImmediatePropagation();
 	if (text.includes("AI 修图")) {
 		const selected =
-			document.querySelector<HTMLImageElement>(".paper-preview img.image-selected") ||
-			document.querySelector<HTMLImageElement>(".paper-preview img.image-hovered");
+			document.querySelector<HTMLImageElement>(
+				".paper-preview img.image-selected",
+			) ||
+			document.querySelector<HTMLImageElement>(
+				".paper-preview img.image-hovered",
+			);
 		if (!selected) return true;
 		activateImageFromData({
-			filename: filenameFromSrc(selected.src || selected.getAttribute("src") || ""),
+			filename: filenameFromSrc(
+				selected.src || selected.getAttribute("src") || "",
+			),
 			title: selected.alt || "论文图片",
 			url: selected.src,
 			description: selected.alt || "",
+			sectionTitle: findPaperSection(selected),
 		});
 		return true;
 	}
-	const selectedTexts = Array.from(document.querySelectorAll<HTMLElement>(".paper-preview .sentence-selected"))
+	const selectedTexts = Array.from(
+		document.querySelectorAll<HTMLElement>(".paper-preview .sentence-selected"),
+	)
 		.map((el) => el.textContent?.trim() || "")
 		.filter(Boolean);
 	const selected = selectedTexts.join("");
-	if (selected) activateTextFromData({ selectedText: selected, context: selectedTexts.join("\n"), label: "论文选中文本" });
+	if (selected) {
+		const firstSelected = document.querySelector<HTMLElement>(
+			".paper-preview .sentence-selected",
+		);
+		activateTextFromData({
+			selectedText: selected,
+			context: selectedTexts.join("\n"),
+			label: "论文选中文本",
+			sectionTitle: findPaperSection(firstSelected),
+		});
+	}
 	return true;
 }
 
@@ -485,7 +689,12 @@ function installClickCapture() {
 }
 
 export function installArtifactEditChatDomPatch() {
-	if (installed || typeof window === "undefined" || typeof document === "undefined") return;
+	if (
+		installed ||
+		typeof window === "undefined" ||
+		typeof document === "undefined"
+	)
+		return;
 	installed = true;
 	addStyle();
 	installClickCapture();

@@ -38,6 +38,15 @@ export interface ModelingReferencePreference {
 	reference_tools?: string[];
 }
 
+/** 建模讨论后生成的可选修订方案 */
+export interface ModelingDiscussionSuggestedOption {
+	label: string;
+	description: string;
+	reason?: string;
+	pros?: string;
+	cons?: string;
+}
+
 /** 健康检查 */
 export function getHelloWorld() {
 	return request.get<{ message: string }>("/");
@@ -47,6 +56,7 @@ export interface ArtifactCheckRecord {
 	attempt_name?: string;
 	passed: boolean;
 	issues: string[];
+	blocking_issues?: string[];
 	images: string[];
 	code_files: string[];
 }
@@ -67,6 +77,7 @@ export interface TaskDiagnostics {
 	final_audit?: unknown;
 	final_image_ref_issues?: string[];
 	final_paper_issues?: string[];
+	final_evidence_issues?: string[];
 	final_file_issues?: string[];
 }
 
@@ -159,11 +170,12 @@ export function modelingDiscussionChat(
 		questions: Array<Record<string, unknown>>;
 	} & ModelingReferencePreference,
 ) {
-	return request.post<{ success: boolean; message: string; content: string }>(
-		`/modeling/${task_id}/discussion-chat`,
-		payload,
-		{ timeout: 600000 },
-	);
+	return request.post<{
+		success: boolean;
+		message: string;
+		content: string;
+		suggested_option?: ModelingDiscussionSuggestedOption | null;
+	}>(`/modeling/${task_id}/discussion-chat`, payload, { timeout: 600000 });
 }
 
 export function generateModelingOptions(

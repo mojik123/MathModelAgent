@@ -111,7 +111,13 @@ export const useTaskStore = defineStore("task", () => {
 		if (message.type === "warning" && content.includes("任务已停止")) {
 			return "stopped";
 		}
-		if (message.type === "error") return "failed";
+		if (
+			message.type === "error" &&
+			(content.includes("任务执行失败") ||
+				content.includes("任务运行超过配置上限"))
+		) {
+			return "failed";
+		}
 		return null;
 	}
 
@@ -245,11 +251,19 @@ export const useTaskStore = defineStore("task", () => {
 	function applyTerminalSystemMessage(taskId: string, message: Message) {
 		const status = terminalStatusFromSystemMessage(message);
 		if (!status) return;
+		const previousState =
+			taskRuntimeState.value?.task_id === taskId
+				? taskRuntimeState.value
+				: null;
 		taskRuntimeState.value = {
 			task_id: taskId,
 			status,
 			message: message.content ?? "",
-			current_step: taskRuntimeState.value?.current_step ?? "",
+			current_step: previousState?.current_step ?? "",
+			progress:
+				previousState?.progress ?? currentProgress.value?.percentage ?? null,
+			started_at: previousState?.started_at,
+			finished_at: message.created_at,
 			updated_at: message.created_at,
 			active: false,
 		};
@@ -368,14 +382,13 @@ export const useTaskStore = defineStore("task", () => {
 	}
 
 	function getAgentStreamKey(msg: AgentMessage): string {
-		const m = msg as any;
 		return (
-			m.agent_instance_id ??
+			msg.agent_instance_id ??
 			[
-				m.agent_type,
-				m.question_index ?? "",
-				m.race_index ?? "",
-				m.agent_index ?? "",
+				msg.agent_type,
+				msg.question_index ?? "",
+				msg.race_index ?? "",
+				msg.agent_index ?? "",
 			].join(":")
 		);
 	}
@@ -653,13 +666,14 @@ export const useTaskStore = defineStore("task", () => {
 		return "local";
 	}
 
-	function addUserMessage(content: string) {
+	function addUserMessage(content: string, files: string[] = []) {
 		const taskId = activeTaskId();
 		appendMessage(taskId, {
 			id: localActionId("user"),
 			created_at: new Date().toISOString(),
 			msg_type: "user",
 			content,
+			files,
 		} as UserMessage);
 	}
 

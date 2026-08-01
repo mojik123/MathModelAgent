@@ -277,7 +277,6 @@ class BaseCodeInterpreter(abc.ABC):
             code: 生成图片的 Python 代码。
             image_filenames: 图片相对路径列表（含章节目录）。
         """
-        import os as _os
         from pathlib import Path as _Path
 
         for fname in image_filenames:

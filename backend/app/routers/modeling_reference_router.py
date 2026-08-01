@@ -57,6 +57,7 @@ class ModelingDiscussionChatResponse(BaseModel):
     success: bool
     message: str = ""
     content: str = ""
+    suggested_option: dict[str, str] | None = None
 
 
 def _question_index(q: dict[str, Any], fallback: int) -> int:
@@ -408,8 +409,10 @@ async def modeling_discussion_chat(task_id: str, body: ModelingDiscussionChatReq
     shared_context = json.dumps(body.questions, ensure_ascii=False, indent=2)
     user_prompt = f"""
 你是建模方案讨论助手。用户会逐问选择模型，所有问题卡片共用同一个上下文。
-请结合全部卡片的已选模型、自定义方案、对话历史和参考文献检索状态，回答当前问题卡片的追问。
-不要直接启动正式建模，只给出可供用户选择/修正的建议；如果更合适的模型不在候选卡片中，请明确建议用户通过“自定义方案”填写。
+请结合全部卡片的已选模型、自定义方案、对话历史和参考文献检索状态，为当前问题生成一份不覆盖原方案、可独立选择的修订方案。
+不要直接启动正式建模。无论用户是在追问、补充还是要求修改，都必须输出一份完整、具体、可执行的修订方案。
+严格返回一个 JSON 对象，不要使用 Markdown 代码块，结构如下：
+{{"reply":"给用户的简洁说明","suggestedOption":{{"label":"修订后方案标题","description":"完整建模流程与实施步骤","reason":"为什么这样修改","pros":"主要优势","cons":"局限或注意事项"}}}}
 
 【当前讨论的问题】第 {body.question_index} 问
 {json.dumps(selected_question, ensure_ascii=False, indent=2) if selected_question else '(未找到当前问题卡片)'}
@@ -434,7 +437,7 @@ async def modeling_discussion_chat(task_id: str, body: ModelingDiscussionChatReq
         task_id=safe_task_id,
     )
     try:
-        content = await simple_chat(
+        raw_content = await simple_chat(
             llm,
             [
                 {
@@ -448,4 +451,10 @@ async def modeling_discussion_chat(task_id: str, body: ModelingDiscussionChatReq
         logger.error(f"建模讨论失败 {safe_task_id}: {exc}")
         raise HTTPException(status_code=500, detail=f"建模讨论失败: {exc}") from exc
 
-    return ModelingDiscussionChatResponse(success=True, message="已生成建模讨论回复", content=content.strip())
+    content, suggested_option = legacy._normalize_discussion_response(raw_content)
+    return ModelingDiscussionChatResponse(
+        success=True,
+        message="已生成建模讨论回复",
+        content=content,
+        suggested_option=suggested_option,
+    )

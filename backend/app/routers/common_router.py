@@ -42,7 +42,6 @@ def _require_safe_task_id(task_id: str) -> str:
 
 def _salvage_json_array(raw: str) -> list:
     """从损坏的 JSON 文件中尽力恢复消息数组。"""
-    import re
     items = []
     # 尝试匹配每个顶层 JSON 对象
     depth = 0
@@ -56,12 +55,13 @@ def _salvage_json_array(raw: str) -> list:
             depth -= 1
             if depth == 0 and start >= 0:
                 try:
-                    obj = json.loads(raw[start:i+1])
+                    obj = json.loads(raw[start : i + 1])
                     items.append(obj)
                 except json.JSONDecodeError:
                     pass
                 start = -1
     return items
+
 
 async def _load_task_messages_from_file(task_id: str) -> list[dict]:
     """从文件加载指定任务的历史消息。
@@ -154,7 +154,9 @@ def _make_checkpoint_agent_message(
     return payload
 
 
-def _hydrate_checkpoint_agent_messages(task_id: str, messages: list[dict]) -> list[dict]:
+def _hydrate_checkpoint_agent_messages(
+    task_id: str, messages: list[dict]
+) -> list[dict]:
     """用 workflow_checkpoint 补齐刷新后右侧 Agent 面板需要的最终内容。"""
     checkpoint_path = WORK_DIR_ROOT / task_id / "workflow_checkpoint.json"
     if not checkpoint_path.exists():
@@ -171,7 +173,9 @@ def _hydrate_checkpoint_agent_messages(task_id: str, messages: list[dict]) -> li
     hydrated = deepcopy(messages)
     created_at = _message_created_at_from_path(checkpoint_path)
 
-    if checkpoint.get("modeling_selections") and not _has_modeling_confirmation_message(hydrated):
+    if checkpoint.get("modeling_selections") and not _has_modeling_confirmation_message(
+        hydrated
+    ):
         hydrated.append(
             {
                 "id": f"{task_id}-checkpoint-modeling-selections",
@@ -183,7 +187,9 @@ def _hydrate_checkpoint_agent_messages(task_id: str, messages: list[dict]) -> li
         )
 
     coordinator = checkpoint.get("coordinator")
-    if isinstance(coordinator, dict) and not _has_agent_message(hydrated, "CoordinatorAgent"):
+    if isinstance(coordinator, dict) and not _has_agent_message(
+        hydrated, "CoordinatorAgent"
+    ):
         questions = dict(coordinator.get("questions") or {})
         if "ques_count" not in questions:
             questions["ques_count"] = coordinator.get("ques_count", 0)
@@ -274,10 +280,15 @@ async def get_task_messages(task_id: str):
 
 def _parse_task_title(messages: list[dict], task_id: str) -> str:
     for message in messages:
-        if message.get("msg_type") == "agent" and message.get("agent_type") == "CoordinatorAgent":
+        if (
+            message.get("msg_type") == "agent"
+            and message.get("agent_type") == "CoordinatorAgent"
+        ):
             content = message.get("content") or ""
             try:
-                clean_content = content.replace("```json", "").replace("```", "").strip()
+                clean_content = (
+                    content.replace("```json", "").replace("```", "").strip()
+                )
                 data = json.loads(clean_content)
                 title = str(data.get("title") or "").strip()
                 if title:
@@ -301,13 +312,11 @@ def _parse_task_status(messages: list[dict]) -> str:
             return "ready"
         if message_type == "success" and "任务处理完成" in content:
             return "completed"
-        if message_type == "error":
-            return "failed"
         if message_type == "warning" and "任务已停止" in content:
             return "stopped"
         if "任务处理完成" in content:
             return "completed"
-        if "任务执行失败" in content:
+        if "任务执行失败" in content or "任务运行超过配置上限" in content:
             return "failed"
         if "任务已停止" in content:
             return "stopped"
@@ -377,7 +386,9 @@ async def list_tasks():
         if client is not None:
             try:
                 if await client.exists(f"task_id:{safe_task_id}"):
-                    if status == "interrupted" and _is_recent_task_update(updated_timestamp):
+                    if status == "interrupted" and _is_recent_task_update(
+                        updated_timestamp
+                    ):
                         status = "running"
                     elif status not in {"running", "stopping"}:
                         await client.delete(f"task_id:{safe_task_id}")
@@ -391,7 +402,9 @@ async def list_tasks():
                 "status": status,
                 "message_count": len(messages),
                 "created_at": _parse_task_created_at(safe_task_id, updated_timestamp),
-                "updated_at": datetime.datetime.fromtimestamp(updated_timestamp).isoformat()
+                "updated_at": datetime.datetime.fromtimestamp(
+                    updated_timestamp
+                ).isoformat()
                 if updated_timestamp
                 else None,
                 "has_paper": (work_dir / "res.md").exists(),
@@ -459,11 +472,18 @@ async def get_service_status():
     try:
         redis_client = await asyncio.wait_for(redis_manager.get_client(), timeout=1.5)
         await asyncio.wait_for(redis_client.ping(), timeout=1.5)  # type: ignore[reportGeneralTypeIssues]
-        status["redis"] = {"status": "running", "message": "Redis connection is healthy"}
+        status["redis"] = {
+            "status": "running",
+            "message": "Redis connection is healthy",
+        }
 
         active_task_ids: list[str] = []
         async for key in redis_client.scan_iter(match="task_id:*", count=100):
-            key_text = key.decode("utf-8", errors="ignore") if isinstance(key, bytes) else str(key)
+            key_text = (
+                key.decode("utf-8", errors="ignore")
+                if isinstance(key, bytes)
+                else str(key)
+            )
             active_task_id = key_text.split(":", 1)[1] if ":" in key_text else key_text
             if active_task_id:
                 active_task_ids.append(active_task_id)
@@ -489,6 +509,9 @@ async def get_service_status():
             }
     except Exception as e:
         logger.error(f"Redis connection failed: {str(e)}")
-        status["redis"] = {"status": "error", "message": f"Redis connection failed: {str(e)}"}
+        status["redis"] = {
+            "status": "error",
+            "message": f"Redis connection failed: {str(e)}",
+        }
 
     return status

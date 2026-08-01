@@ -31,3 +31,5 @@ node_modules/
 frontend/.pnpm-store/
 frontend/.corepack/
 frontend/node_modules/
+.ruff_cache/
+tmp/

@@ -4,10 +4,12 @@ from app.models.user_output import UserOutput
 from app.tools.base_interpreter import BaseCodeInterpreter
 from app.core.agents.modeler_agent import ModelerToCoder
 from app.core.section_contracts import SECTION_CONTRACTS
+from app.utils.paper_evidence_validator import build_writer_evidence_context
 
 
 class Flows:
     """管理数学建模任务的求解流程和写作流程。"""
+
     def __init__(self, questions: dict[str, str | int]):
         self.flows: dict[str, dict] = {}
         self.questions: dict[str, str | int] = questions
@@ -51,20 +53,13 @@ class Flows:
 
         eda_data_safety_prompt = """
 【EDA 数据读取与防错规则 — 必须严格执行】
-1. 读取每个 Excel sheet 后，必须先统一清洗列名和字符串字段：
-   - df.columns = [str(c).strip() for c in df.columns]
-   - 所有 object/string 列都要 astype(str).str.strip()，并把 "nan" 还原为空值。
-2. 不得直接假定某个 DataFrame 一定包含“作物类型”。
-   - 若当前经济参数表缺少“作物类型”，必须从“附件1.xlsx / 乡村种植的农作物”按“作物编号”合并补齐。
-   - 合并前必须把“作物编号”转为数值型并删除非数据行。
-   - 若按“作物编号”合并后仍有缺失，可再按“作物名称”映射补齐。
-3. 对固定类别排序或绘图时，禁止使用 set_index(...).loc[固定列表] 直接强索引。
-   - 必须使用 reindex(固定列表) 后再 dropna/reset_index，避免 KeyError。
-4. 所有可能缺列的统计都必须先检查列是否存在：
-   - if "作物类型" in df.columns: ...
-   - 缺列时先补列或跳过该图，并输出明确说明。
-5. EDA 阶段只做数据清洗、结构核验和轻量可视化，不做 MILP、动态规划、穷举搜索等复杂模型。
-6. 保存清洗后的中间数据，输出必要的列名检查结果和缺失值统计，便于后续 Coder 复用。
+1. 先枚举当前目录中的数据文件、Excel sheet、列名、数据类型和数据规模，再决定读取与合并方式，不得猜测文件名或字段名。
+2. 读取表格后统一清洗列名和字符串字段；保留原始文件，清洗结果另存为可复用的中间文件。
+3. 多表合并前必须从实际列名中寻找公共键，并检查键的类型、重复值、匹配率和合并后的缺失值。
+4. 所有统计、排序和绘图都必须先确认字段存在；缺少必要字段时跳过对应分析并明确说明，不能自行虚构字段。
+5. 类别重排使用 reindex 后再清理缺失项，避免固定列表强索引引发 KeyError。
+6. EDA 只做数据清洗、结构核验和轻量可视化，不执行复杂优化模型。
+7. 输出列名检查、缺失值、重复值和异常值摘要，供后续 Coder 复用。
 """
 
         flows = {
@@ -93,7 +88,11 @@ class Flows:
 
         def fill_template(key: str) -> str:
             tpl = config_template.get(key, "")
-            return tpl.replace("{问题}", model_build_solve).replace("{模型的建立与求解}", model_build_solve).replace("{题目}", bg_ques_all)
+            return (
+                tpl.replace("{问题}", model_build_solve)
+                .replace("{模型的建立与求解}", model_build_solve)
+                .replace("{题目}", bg_ques_all)
+            )
 
         def contract_prompt(key: str, base_prompt: str) -> str:
             contract = SECTION_CONTRACTS.get(key)
@@ -131,7 +130,7 @@ class Flows:
 """
 
         symbol_specific_prompt = f"""
-结合模型变量和求解摘要{model_build_solve}，按照模板撰写符号说明：{fill_template('symbol')}
+结合模型变量和求解摘要{model_build_solve}，按照模板撰写符号说明：{fill_template("symbol")}
 
 【符号说明强制要求】
 1. 只生成最重要的 10 个符号，不能超过 10 行。
@@ -156,7 +155,9 @@ class Flows:
             ),
             "analysisQues": contract_prompt(
                 "analysisQues",
-                self._build_analysis_ques_prompt(bg_ques_all, model_build_solve, fill_template('analysisQues')),
+                self._build_analysis_ques_prompt(
+                    bg_ques_all, model_build_solve, fill_template("analysisQues")
+                ),
             ),
             "modelAssumption": contract_prompt(
                 "modelAssumption",
@@ -178,12 +179,15 @@ class Flows:
         config_template: dict,
     ) -> str:
         code_output = code_interpreter.get_code_output(key)
+        evidence_context = build_writer_evidence_context(
+            code_interpreter.work_dir,
+            key,
+        )
         questions_quesx_keys = self.get_questions_quesx_keys()
         bgc = str(self.questions.get("background") or "")
 
         # 获取建模手的方案（在 get_solution_flows 时已保存）
         modeler_solutions = getattr(self, "_modeler_solutions", {})
-        modeler_solution_text = modeler_solutions.get(key, "")
 
         _SUBQUES_SCOPE_CONSTRAINT = """
 
@@ -207,21 +211,19 @@ class Flows:
 
         _WRITING_DEPTH_INSTRUCTION = """
 
-【写作深度与篇幅要求 — 必须严格遵守，违反将被退回重写】
+【写作深度与篇幅要求 — 必须严格遵守】
 
-## 一、字数硬性要求（质量优先，避免冗余）
-- **每个子问题（ques1, ques2, ...）的"模型的建立与求解"部分应在 1000-5000 字之间**（中文正文，不含公式、图片标签、表格）。
-- **下限**：不少于 1000 字，确保充分论述模型逻辑
-- **上限**：不超过 5000 字，避免冗余和重复
-  - 若有多个独立子模型（3+）可适当超过，但总体应控制在 3000-5000 字为主
-  - 删除内容的优先级：冗余背景描述 > 重复解释 > 中间计算步骤细节 > 次要模型假设
+## 一、证据优先的篇幅控制
+- 不设置机械最低字数，以完整说明"目标→变量→模型→求解→结果→验证→结论"为结束条件。
+- 复杂问题可以充分展开，简单问题保持简洁；不得通过重复题意、算法背景或中间日志凑字数。
+- 内容过长时按以下顺序精简：冗余背景描述 > 重复解释 > 次要中间过程 > 与结论无关的图表。
 
-**字数优化建议**（在上限内做质量优化）：
+**内容优化建议**：
 - ✅ 保留：模型核心思想、关键公式推导逻辑、求解方法的主要步骤、关键数值结果、结论分析
 - ❌ 删除：问题重述（那是分析章节的任务）、教科书级别的背景知识、所有中间计算细节、重复解释
 
-- **EDA 章节 600-1500 字，灵敏度分析章节 500-2000 字。**
-- 超过上限时自动精简，保留模型结果和关键发现
+- EDA 只保留会影响模型选择的数据审计和发现；灵敏度分析只扰动会影响最终结论的关键参数。
+- 自动精简时保留模型关系、关键参数、真实结果、验证证据和本问直接答案。
 
 ## 二、图片全覆盖强制规则
 - **代码手产出的每一张图片都必须插入到论文中，0 遗漏。**
@@ -279,6 +281,7 @@ class Flows:
 
 代码手的执行输出：
 {code_output}
+{evidence_context}
 
 按照如下模板撰写：{config_template[qkey]}
 {_SUBQUES_SCOPE_CONSTRAINT}
@@ -288,7 +291,9 @@ class Flows:
         modeler_eda_solution = modeler_solutions.get("eda", "")
         eda_modeler_section = ""
         if modeler_eda_solution:
-            eda_modeler_section = f"\n\n【建模手的 EDA 调研方案】\n{modeler_eda_solution}\n"
+            eda_modeler_section = (
+                f"\n\n【建模手的 EDA 调研方案】\n{modeler_eda_solution}\n"
+            )
 
         modeler_sa_solution = modeler_solutions.get("sensitivity_analysis", "")
         sa_modeler_section = ""
@@ -307,6 +312,7 @@ class Flows:
 
 代码手的执行输出：
 {code_output}
+{evidence_context}
 
 按照如下模板撰写：{config_template["eda"]}
 {_WRITING_DEPTH_INSTRUCTION}
@@ -320,6 +326,7 @@ class Flows:
 
 代码手的执行输出：
 {code_output}
+{evidence_context}
 
 按照如下模板撰写：{config_template["sensitivity_analysis"]}
 {_WRITING_DEPTH_INSTRUCTION}

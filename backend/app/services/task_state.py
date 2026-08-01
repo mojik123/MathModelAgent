@@ -66,6 +66,13 @@ async def set_task_state(
         payload["finished_at"] = previous["finished_at"]
 
     next_progress = progress if progress is not None else previous.get("progress")
+    previous_progress = previous.get("progress")
+    if (
+        status == "running"
+        and isinstance(next_progress, (int, float))
+        and isinstance(previous_progress, (int, float))
+    ):
+        next_progress = max(next_progress, previous_progress)
     if next_progress is not None:
         payload["progress"] = next_progress
 
@@ -86,7 +93,9 @@ async def get_task_state(task_id: str) -> dict[str, Any] | None:
         return None
 
 
-async def mark_task_ready(task_id: str, message: str = "任务已创建，等待手动启动") -> dict[str, Any]:
+async def mark_task_ready(
+    task_id: str, message: str = "任务已创建，等待手动启动"
+) -> dict[str, Any]:
     return await set_task_state(task_id, "ready", message=message)
 
 
@@ -105,7 +114,9 @@ async def mark_task_running(
     )
 
 
-async def mark_task_stopping(task_id: str, message: str = "正在停止当前任务") -> dict[str, Any]:
+async def mark_task_stopping(
+    task_id: str, message: str = "正在停止当前任务"
+) -> dict[str, Any]:
     return await set_task_state(task_id, "stopping", message=message)
 
 

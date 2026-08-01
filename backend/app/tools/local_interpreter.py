@@ -15,11 +15,12 @@ from app.schemas.response import (
     SystemMessage,
 )
 from app.utils.image_code_index import extract_saved_images, update_image_code_index
-from app.utils.image_constants import is_image_file, validate_image_filename
+from app.utils.image_constants import validate_image_filename
 
 
 class LocalCodeInterpreter(BaseCodeInterpreter):
     """基于本地 Jupyter 内核的代码解释器。"""
+
     def __init__(
         self,
         task_id: str,
@@ -159,12 +160,18 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
                     self.save_code_for_images(code, final_images)
                     # 更新 section 图片记录为最终路径
                     if current_section:
-                        self.created_images_by_section[current_section] = set(final_images)
+                        self.created_images_by_section[current_section] = set(
+                            final_images
+                        )
                     # 反馈命名违规信息给 Agent
                     naming_issues: list[str] = []
                     for i, image_name in enumerate(saved_images):
                         ok, reason = validate_image_filename(image_name)
-                        corrected = corrected_images[i] if i < len(corrected_images) else image_name
+                        corrected = (
+                            corrected_images[i]
+                            if i < len(corrected_images)
+                            else image_name
+                        )
                         if not ok:
                             logger.warning(f"图片命名不规范: {reason}")
                             if corrected != image_name:
@@ -194,8 +201,8 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
             current_section = self.notebook_serializer.current_segmentation
             if current_section:
                 self.append_section_code(current_section, code)
-                # 非图片代码：保存为 5.1_step_01.py 等顺序编号文件
-                if not has_images:
+                # notebook 与章节 code.py 已保留完整轨迹；逐步脚本仅供显式调试。
+                if not has_images and getattr(settings, "SAVE_STEP_CODE_FILES", False):
                     self.save_non_image_code(code)
 
         await self._push_to_websocket(content_to_display)
@@ -315,12 +322,18 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
         return sorted(recorded)
 
     async def cleanup(self):
-        # 关闭内核
-        assert self.kc is not None
-        assert self.km is not None
-        self.kc.shutdown()
+        """关闭本地内核；未初始化或已经关闭时直接返回。"""
+        kc, km = self.kc, self.km
+        self.kc, self.km = None, None
+        if kc is None and km is None:
+            return
+        try:
+            if kc is not None:
+                kc.shutdown()
+        finally:
+            if km is not None:
+                km.shutdown_kernel()
         logger.info("关闭内核")
-        self.km.shutdown_kernel()
 
     def send_interrupt_signal(self):
         self.interrupt_signal = True

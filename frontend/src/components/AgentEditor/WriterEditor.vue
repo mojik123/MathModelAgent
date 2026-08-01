@@ -539,9 +539,12 @@ function findTocTargetHeading(text: string) {
 	const compact = normalized.replace(/\s/g, "");
 	const headings = getPaperHeadings(root);
 	return (
-		headings.find((h) => normalizeTocText(h.textContent ?? "") === normalized) ??
 		headings.find(
-			(h) => normalizeTocText(h.textContent ?? "").replace(/\s/g, "") === compact,
+			(h) => normalizeTocText(h.textContent ?? "") === normalized,
+		) ??
+		headings.find(
+			(h) =>
+				normalizeTocText(h.textContent ?? "").replace(/\s/g, "") === compact,
 		) ??
 		null
 	);
@@ -568,50 +571,52 @@ function ensureHeadingId(
 	return heading.id;
 }
 
-/** 从渲染后的标题自动生成目录并注入到 # 目录 标题下方 */
+/** 根据正文标题生成与导出论文一致的独立目录页。 */
 function injectPaperToc() {
 	const root = getPreviewRoot();
 	if (!root) return;
 
-	const allH1 = Array.from(root.querySelectorAll<HTMLHeadingElement>("h1"));
-	const tocHeading = allH1.find((h) => h.textContent?.trim() === "目录") as
-		| HTMLHeadingElement
-		| undefined;
+	const allHeadings = Array.from(
+		root.querySelectorAll<HTMLHeadingElement>("h1, h2, h3, h4"),
+	);
+	const tocHeading = allHeadings.find(
+		(h) => h.textContent?.replace(/\s+/g, "").trim() === "目录",
+	);
 	if (!tocHeading) return;
+	tocHeading.classList.add("paper-front-heading");
 
-	// 移除目录标题之后已有的目录内容，将由前端重新生成
+	// 移除模型生成的静态目录正文；目录项统一从最终实际标题生成。
+	const tocLevel = Number(tocHeading.tagName.slice(1));
 	let nextEl = tocHeading.nextElementSibling;
 	while (nextEl) {
 		const tag = nextEl.tagName;
-		if (/^H[1-6]$/.test(tag)) break;
+		const headingLevel = /^H[1-6]$/.test(tag) ? Number(tag.slice(1)) : 0;
+		if (headingLevel > 0 && headingLevel <= tocLevel) break;
 		const toRemove = nextEl;
 		nextEl = nextEl.nextElementSibling;
-		if (
-			tag === "OL" ||
-			tag === "UL" ||
-			(tag === "DIV" && toRemove.classList.contains("paper-toc-content")) ||
-			(tag === "P" && !toRemove.querySelector("img"))
-		) {
-			toRemove.remove();
-		}
+		toRemove.remove();
 	}
 
-	const allHeadings = Array.from(
-		root.querySelectorAll<HTMLHeadingElement>("h1, h2"),
+	const refreshedHeadings = Array.from(
+		root.querySelectorAll<HTMLHeadingElement>("h1, h2, h3, h4"),
 	);
-	const tocIndex = allHeadings.indexOf(tocHeading);
+	const tocIndex = refreshedHeadings.indexOf(tocHeading);
 	if (tocIndex < 0) return;
-	const paperHeadings = allHeadings.slice(tocIndex + 1);
+	const paperHeadings = refreshedHeadings
+		.slice(tocIndex + 1)
+		.filter((heading) => heading.textContent?.trim());
 	if (!paperHeadings.length) return;
 
-	// 估计每个章节页数，生成目录条目
-	let page = 1; // 摘要页第1页
 	const wrapper = document.createElement("div");
 	wrapper.className = "paper-toc-content";
 	const allPaperHeadings = getPaperHeadings(root);
+	const baseHeadingLevel = Math.min(
+		...paperHeadings.map((heading) => Number(heading.tagName.slice(1))),
+	);
 	for (let i = 0; i < paperHeadings.length; i++) {
 		const h = paperHeadings[i];
 		const level = Number(h.tagName.slice(1));
+		const displayLevel = Math.min(Math.max(level - baseHeadingLevel + 1, 1), 4);
 		const text = h.textContent?.trim() || "";
 		if (!text) continue;
 		const headingIndex = allPaperHeadings.indexOf(h);
@@ -621,36 +626,63 @@ function injectPaperToc() {
 			root,
 		);
 
-		const pageStr = String(page);
-		const indent = level === 2 ? "　　" : "";
-		const totalLen = text.length + indent.length + pageStr.length;
-		const dots = ".".repeat(Math.max(2, 40 - totalLen));
 		const line = document.createElement("p");
-		line.className = "toc-line paper-toc-link";
+		line.className = `toc-line toc-level-${displayLevel} paper-toc-link`;
 		line.dataset.tocTarget = targetId;
 		line.setAttribute("role", "button");
 		line.tabIndex = 0;
-		line.style.margin = "0.2rem 0";
-		line.style.textIndent = "0";
-		line.style.fontSize = "12pt";
-		line.style.lineHeight = "1.8";
-		if (indent) line.appendChild(document.createTextNode(indent));
-		if (level === 1) {
-			const bold = document.createElement("b");
-			bold.textContent = text;
-			line.appendChild(bold);
-		} else {
-			line.appendChild(document.createTextNode(text));
-		}
-		line.appendChild(document.createTextNode(` ${dots} ${pageStr}`));
+		const label = document.createElement("span");
+		label.className = "toc-label";
+		label.textContent = text;
+		const leader = document.createElement("span");
+		leader.className = "toc-leader";
+		leader.setAttribute("aria-hidden", "true");
+		const pageNumber = document.createElement("span");
+		pageNumber.className = "toc-page-number";
+		pageNumber.textContent = "1";
+		line.append(label, leader, pageNumber);
 		wrapper.appendChild(line);
-
-		// 粗略页码估算
-		if (level === 1 && i > 0) page += 2;
-		else page += 1;
 	}
 
-	tocHeading.insertAdjacentElement("afterend", wrapper);
+	const tocPage = document.createElement("section");
+	tocPage.className = "paper-front-page paper-toc-page";
+	tocPage.setAttribute("aria-label", "论文目录页");
+	const beforeDivider = document.createElement("div");
+	beforeDivider.className = "paper-page-divider paper-page-divider-before-toc";
+	beforeDivider.setAttribute("aria-hidden", "true");
+	const afterDivider = document.createElement("div");
+	afterDivider.className = "paper-page-divider paper-page-divider-after-toc";
+	afterDivider.setAttribute("aria-hidden", "true");
+	const bodyTopSpacer = document.createElement("div");
+	bodyTopSpacer.className = "paper-page-top-spacer";
+	bodyTopSpacer.setAttribute("aria-hidden", "true");
+
+	tocHeading.before(beforeDivider, tocPage);
+	tocPage.append(tocHeading, wrapper);
+	tocPage.after(afterDivider, bodyTopSpacer);
+
+	/** 用正文标题的实际纵向位置估算预览页码，同页标题共享页码。 */
+	const updatePageNumbers = () => {
+		const firstBodyHeading = paperHeadings[0];
+		const pageContentHeight = root.clientWidth * ((297 - 2 * 25.4) / 210);
+		if (!firstBodyHeading || pageContentHeight <= 0) return;
+		for (const line of Array.from(
+			wrapper.querySelectorAll<HTMLElement>(".toc-line[data-toc-target]"),
+		)) {
+			const targetId = line.dataset.tocTarget;
+			const target = targetId
+				? root.querySelector<HTMLElement>(`#${CSS.escape(targetId)}`)
+				: null;
+			const pageElement = line.querySelector<HTMLElement>(".toc-page-number");
+			if (!target || !pageElement) continue;
+			const offset = Math.max(0, target.offsetTop - firstBodyHeading.offsetTop);
+			pageElement.textContent = String(
+				Math.floor(offset / pageContentHeight) + 1,
+			);
+		}
+	};
+	updatePageNumbers();
+	requestAnimationFrame(updatePageNumbers);
 }
 
 function bindPaperTocClicks() {
@@ -673,9 +705,11 @@ function bindPaperTocClicks() {
 		line.setAttribute("role", "button");
 		line.tabIndex = 0;
 		line.removeAttribute("data-sentence");
-		line
-			.querySelectorAll<HTMLElement>("[data-sentence]")
-			.forEach((child) => child.removeAttribute("data-sentence"));
+		for (const child of Array.from(
+			line.querySelectorAll<HTMLElement>("[data-sentence]"),
+		)) {
+			child.removeAttribute("data-sentence");
+		}
 		line.onmousedown = (event) => {
 			event.stopPropagation();
 		};
@@ -1684,8 +1718,8 @@ watch(
 				@mousedown="onPaperMouseDown"
 				@mouseup="onPaperMouseUp"
 			>
-				<article v-if="previewMode === 'markdown'" class="mx-auto max-w-4xl px-8 py-6">
-					<div v-if="renderedContent" class="paper-preview glass-card prose prose-slate max-w-none" v-html="renderedContent" />
+				<article v-if="previewMode === 'markdown'" class="paper-preview-stage mx-auto w-full px-4 py-6">
+					<div v-if="renderedContent" class="paper-preview prose prose-slate max-w-none" v-html="renderedContent" />
 					<div v-else class="glass-card flex h-40 items-center justify-center text-sm text-slate-500">暂无论文内容</div>
 				</article>
 				<div v-else class="h-full min-h-[520px] p-4">
@@ -1911,53 +1945,99 @@ watch(
 	</div>
 </template>
 
+<style>
+@import "katex/dist/katex.min.css";
+</style>
+
 <style scoped>
-@import 'katex/dist/katex.min.css';
+/* ---- 论文预览：全国大学生统计建模大赛成品版式 ---- */
+.paper-preview-stage {
+	background: #eef1f5;
+}
 
-/* ---- 论文预览（中文学术排版规范） ----
-   论文题目/一级标题: 黑体 四号(14pt) 居中
-   二级标题: 黑体 小四(12pt) 左对齐
-   正文: 宋体(中文) + Times New Roman(西文/数字) 小四(12pt)
-   段首缩进2字符, 多倍行距1.25
----- */
-.paper-preview { color: #000; }
+.paper-preview {
+	--paper-horizontal-margin: 31.7mm;
+	--paper-vertical-margin: 25.4mm;
+	color: #000;
+	background: #fff;
+	font-family: "Times New Roman", "SimSun", "宋体", serif;
+	font-size: 12pt;
+	box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+}
 
-/* 一级标题（论文题目 + 摘要/问题重述等章节标题）: 黑体 四号 居中 */
+/* 一级标题：黑体小三，左对齐。 */
 .paper-preview :deep(h1) {
-	margin: 1.5rem 0 1rem;
+	margin: 12pt 0 0;
+	text-align: left;
+	font-family: "SimHei", "黑体", sans-serif;
+	font-size: 15pt;
+	font-weight: 700;
+	line-height: 24pt;
+	color: #000;
+}
+
+/* 论文总标题：方正小标宋三号；缺字库时回退为黑体。 */
+.paper-preview :deep(h1.paper-document-title) {
+	margin: 0 0 24pt;
 	text-align: center;
-	font-family: "SimHei", "黑体", "Microsoft YaHei", "微软雅黑", sans-serif;
+	font-family: "FZXiaoBiaoSong-B05S", "方正小标宋简体", "SimHei", "黑体", sans-serif;
+	font-size: 16pt;
+	font-weight: 400;
+	line-height: 24pt;
+}
+
+/* 摘要、目录、参考文献等前置/后置标题采用四号黑体居中。 */
+.paper-preview :deep(h1.paper-front-heading) {
+	margin: 0;
+	text-align: center;
+	font-family: "SimHei", "黑体", sans-serif;
 	font-size: 14pt;
 	font-weight: 700;
-	color: #000;
+	line-height: 24pt;
 }
 
-/* 二级标题（2.1 模型假设等）: 黑体 小四 左对齐 */
+/* 二级标题：楷体四号。 */
 .paper-preview :deep(h2) {
-	margin: 1.25rem 0 0.75rem;
+	margin: 6pt 0 0;
 	text-align: left;
-	font-family: "SimHei", "黑体", "Microsoft YaHei", "微软雅黑", sans-serif;
-	font-size: 12pt;
-	font-weight: 700;
+	font-family: "KaiTi", "楷体", "STKaiti", serif;
+	font-size: 14pt;
+	font-weight: 400;
+	line-height: 24pt;
 	color: #000;
 }
 
-/* 三级标题 */
+/* 三级标题：宋体小四加粗。 */
 .paper-preview :deep(h3) {
-	margin: 1rem 0 0.5rem;
+	margin: 3pt 0 0;
 	text-align: left;
-	font-family: "SimHei", "黑体", "Microsoft YaHei", "微软雅黑", sans-serif;
+	font-family: "Times New Roman", "SimSun", "宋体", serif;
 	font-size: 12pt;
 	font-weight: 700;
+	line-height: 24pt;
 	color: #000;
 }
 
-/* 正文: 宋体 + Times New Roman, 小四(12pt), 首行缩进2字符, 多倍行距1.25 */
+.paper-preview :deep(h4),
+.paper-preview :deep(h5),
+.paper-preview :deep(h6) {
+	margin: 0;
+	text-align: left;
+	font-family: "Times New Roman", "SimSun", "宋体", serif;
+	font-size: 12pt;
+	font-weight: 400;
+	line-height: 24pt;
+	color: #000;
+}
+
+/* 正文：小四，固定 24 磅，段前后 0，首行缩进 2 字符。 */
 .paper-preview :deep(p) {
 	margin: 0;
 	padding: 0;
 	text-indent: 2em;
-	line-height: 1.5;
+	line-height: 24pt;
+	text-align: justify;
+	text-justify: inter-ideograph;
 	font-family: "Times New Roman", "SimSun", "宋体", serif;
 	font-size: 12pt;
 	color: #000;
@@ -1969,16 +2049,87 @@ watch(
 	text-indent: 0;
 }
 
-/* 目录（自动生成） */
+/* 目录：独立 A4 页面，层级、引导点和页码与导出版式一致。 */
+.paper-preview :deep(.paper-page-divider) {
+	width: calc(100% + 2 * var(--paper-horizontal-margin));
+	height: 12mm;
+	margin-right: calc(-1 * var(--paper-horizontal-margin));
+	margin-left: calc(-1 * var(--paper-horizontal-margin));
+	background: #eef1f5;
+	box-shadow:
+		inset 0 1px 0 rgba(148, 163, 184, 0.32),
+		inset 0 -1px 0 rgba(148, 163, 184, 0.32);
+}
+.paper-preview :deep(.paper-page-divider-before-toc) {
+	margin-top: var(--paper-vertical-margin);
+}
+.paper-preview :deep(.paper-page-top-spacer) {
+	height: var(--paper-vertical-margin);
+}
+.paper-preview :deep(.paper-toc-page) {
+	width: calc(100% + 2 * var(--paper-horizontal-margin));
+	max-width: none !important;
+	min-height: 297mm;
+	margin-right: calc(-1 * var(--paper-horizontal-margin));
+	margin-left: calc(-1 * var(--paper-horizontal-margin));
+	padding: var(--paper-vertical-margin) var(--paper-horizontal-margin);
+	background: #fff;
+	break-after: page;
+	page-break-after: always;
+}
+.paper-preview :deep(.paper-toc-page > .paper-front-heading) {
+	margin: 0 0 18pt;
+	text-align: center;
+	font-family: "SimHei", "黑体", sans-serif;
+	font-size: 14pt;
+	font-weight: 700;
+	line-height: 24pt;
+}
 .paper-preview :deep(.paper-toc-content) {
-	margin: 1rem 0;
-	padding: 0.5rem 1rem;
+	margin: 0;
+	padding: 0;
 }
 .paper-preview :deep(.toc-line) {
+	display: flex;
+	align-items: baseline;
+	gap: 0.45em;
+	margin: 0;
+	padding: 0 0.2em;
+	text-indent: 0;
 	font-family: "Times New Roman", "SimSun", "宋体", serif !important;
+	font-size: 10.5pt;
+	line-height: 20pt;
 	cursor: pointer;
 	border-radius: 0.25rem;
 	transition: background-color 0.16s ease, color 0.16s ease;
+}
+.paper-preview :deep(.toc-label) {
+	flex: 0 1 auto;
+	min-width: 0;
+}
+.paper-preview :deep(.toc-level-1 .toc-label) {
+	font-family: "SimHei", "黑体", sans-serif;
+	font-weight: 700;
+}
+.paper-preview :deep(.toc-level-2 .toc-label) {
+	padding-left: 2em;
+}
+.paper-preview :deep(.toc-level-3 .toc-label) {
+	padding-left: 4em;
+}
+.paper-preview :deep(.toc-level-4 .toc-label) {
+	padding-left: 6em;
+}
+.paper-preview :deep(.toc-leader) {
+	flex: 1 1 2em;
+	min-width: 1.5em;
+	border-bottom: 1px dotted #6b7280;
+	transform: translateY(-0.28em);
+}
+.paper-preview :deep(.toc-page-number) {
+	flex: 0 0 2.25em;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
 }
 .paper-preview :deep(.paper-toc-link:hover),
 .paper-preview :deep(.paper-toc-link:focus-visible) {
@@ -1987,24 +2138,34 @@ watch(
 	outline: none;
 }
 
+@media (max-width: 720px) {
+	.paper-preview {
+		--paper-horizontal-margin: 10mm;
+		--paper-vertical-margin: 12mm;
+	}
+	.paper-preview :deep(.paper-toc-page) {
+		min-height: 0;
+	}
+}
+
 .pdf-preview-shell iframe {
 	border: 0;
 }
 
 /* 列表 */
 .paper-preview :deep(ul), .paper-preview :deep(ol) {
-	margin: 0.5rem 0;
+	margin: 0;
 	padding-left: 2em;
 	font-family: "Times New Roman", "SimSun", "宋体", serif;
 	font-size: 12pt;
-	line-height: 1.5;
+	line-height: 24pt;
 }
 .paper-preview :deep(ul) { list-style: disc; }
 .paper-preview :deep(ol) { list-style: decimal; }
-.paper-preview :deep(li) { margin: 0.15rem 0; }
+.paper-preview :deep(li) { margin: 0; }
 
-/* 表格 — 三线表风格 */
-.paper-preview :deep(.markdown-table-wrapper) { margin: 1rem 0; overflow-x: auto; }
+/* 表格：三线表，表内单倍行距。 */
+.paper-preview :deep(.markdown-table-wrapper) { margin: 12pt 0; overflow-x: auto; }
 .paper-preview :deep(table) {
 	margin: 0 auto;
 	width: 100%;
@@ -2016,8 +2177,9 @@ watch(
 	padding: 0.3rem 0.5rem;
 	font-family: "Times New Roman", "SimSun", "宋体", serif;
 	font-size: 10.5pt;
-	line-height: 1.3;
+	line-height: 1;
 	text-align: center;
+	vertical-align: middle;
 }
 .paper-preview :deep(thead) {
 	border-top: 1.5px solid #000;
@@ -2033,29 +2195,31 @@ watch(
 .paper-preview :deep(tr) {
 	border: none;
 }
-/* 表标题由 WriterAgent 以加粗段落形式输出，此处做居中处理 */
 .paper-preview :deep(.markdown-table-caption) {
 	text-align: center;
-	font-family: "SimHei", "黑体", "Microsoft YaHei", sans-serif;
-	font-size: 10.5pt;
-	font-weight: 700;
-	margin-bottom: 0.35rem;
+	text-indent: 0;
+	font-family: "Times New Roman", "SimSun", "宋体", serif;
+	font-size: 12pt;
+	font-weight: 400;
+	line-height: 24pt;
+	margin: 0;
 }
 
-/* figure 图片容器 */
-.paper-preview :deep(figure) { margin: 0.75rem 0; text-align: center; }
+/* 图题置于图下，宋体小四。 */
+.paper-preview :deep(figure) { margin: 12pt 0; text-align: center; }
 .paper-preview :deep(figcaption) {
-	margin-top: 0.35rem;
+	margin: 0;
 	text-align: center;
-	font-family: "SimHei", "黑体", "Microsoft YaHei", sans-serif;
-	font-size: 10.5pt;
-	font-weight: 600;
+	font-family: "Times New Roman", "SimSun", "宋体", serif;
+	font-size: 12pt;
+	font-weight: 400;
+	line-height: 24pt;
 	text-indent: 0;
 }
 
 /* 图片 */
 .paper-preview :deep(img) {
-	margin: 0.5rem auto;
+	margin: 0 auto;
 	max-width: 100%;
 	display: block;
 	cursor: pointer;
@@ -2063,20 +2227,32 @@ watch(
 	user-select: none;
 }
 
-/* 公式块 */
-.paper-preview :deep(.math-block), .paper-preview :deep(.katex-display) { overflow-x: auto; text-align: center; }
+/* 公式居中，编号由 KaTeX 的 tag 固定在版心右侧。 */
+.paper-preview :deep(.math-block),
+.paper-preview :deep(.katex-display) {
+	margin: 0;
+	min-height: 24pt;
+	overflow-x: auto;
+	text-align: center;
+	line-height: 24pt;
+	text-indent: 0;
+}
+
+.paper-preview :deep(.katex-display > .katex) {
+	width: 100%;
+}
 
 /* 代码块 */
 .paper-preview :deep(pre) { overflow: auto; border-radius: 0.25rem; background: rgba(248, 250, 252, 0.88); padding: 0.75rem; }
 
 /* ---- 图片悬停 / 选中 ---- */
 .paper-preview :deep(img.image-hovered) {
-	outline: 2px solid rgba(139, 92, 246, 0.45);
-	box-shadow: 0 0 0 5px rgba(139, 92, 246, 0.10);
+	outline: 2px solid rgba(59, 130, 246, 0.45);
+	box-shadow: 0 0 0 5px rgba(59, 130, 246, 0.10);
 }
 .paper-preview :deep(img.image-selected) {
-	outline: 2px solid rgba(139, 92, 246, 0.80);
-	box-shadow: 0 0 0 7px rgba(139, 92, 246, 0.15);
+	outline: 2px solid rgba(59, 130, 246, 0.80);
+	box-shadow: 0 0 0 7px rgba(59, 130, 246, 0.15);
 }
 
 /* ---- 句子悬停高亮 ---- */

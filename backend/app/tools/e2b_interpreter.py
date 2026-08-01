@@ -329,7 +329,10 @@ class E2BCodeInterpreter(BaseCodeInterpreter):
                 current_section = self.notebook_serializer.current_segmentation
                 if current_section:
                     self.append_section_code(current_section, code)
-                    if not has_images:
+                    if (
+                        not has_images
+                        and getattr(settings, "SAVE_STEP_CODE_FILES", False)
+                    ):
                         self.save_non_image_code(code)
         except Exception as e:
             logger.error(f"文件同步失败: {str(e)}")

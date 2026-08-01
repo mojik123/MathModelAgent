@@ -1,18 +1,20 @@
 """建模手 Agent 模块，负责分析问题并制定建模方案。"""
 
 import asyncio
-from app.core.agents.agent import Agent
-from app.core.llm.llm import LLM
-from app.core.prompts import MODELER_PROMPT
-from app.core.functions import modeler_tools
-from app.schemas.A2A import CoordinatorToModeler, ModelerToCoder
-from app.tools.openalex_scholar import OpenAlexScholar
-from app.utils.log_util import logger
-from app.services.redis_manager import redis_manager
-from app.schemas.response import SystemMessage
 import json
 import re
+
 from icecream import ic  # type: ignore[import-unresolved]
+
+from app.core.agents.agent import Agent
+from app.core.functions import modeler_tools
+from app.core.llm.llm import LLM
+from app.core.prompts import MODELER_PROMPT
+from app.schemas.A2A import CoordinatorToModeler, ModelerToCoder
+from app.schemas.response import SystemMessage
+from app.services.redis_manager import redis_manager
+from app.tools.openalex_scholar import OpenAlexScholar
+from app.utils.log_util import logger
 
 
 def repair_json(json_str: str) -> dict | None:
@@ -56,8 +58,17 @@ def repair_json(json_str: str) -> dict | None:
     return None
 
 
+def _brief_query(query: str, limit: int = 88) -> str:
+    """压缩检索词，便于在任务流中显示。"""
+    compact = re.sub(r"\s+", " ", query).strip()
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "…"
+
+
 class ModelerAgent(Agent):
     """建模手 Agent，分析问题类型并制定建模方案、求解方法和可视化策略。"""
+
     def __init__(
         self,
         task_id: str,
@@ -70,41 +81,78 @@ class ModelerAgent(Agent):
         self.system_prompt = MODELER_PROMPT
         self.scholar = scholar
 
-    async def _handle_tool_calls(self, response) -> None:
+    async def _publish_stage(self, content: str, *, msg_type: str = "info") -> None:
+        """发布可直接展示给用户的建模细化阶段状态。"""
+        await redis_manager.publish_message(
+            self.task_id,
+            SystemMessage(
+                content=content,
+                type=msg_type,
+                agent_instance_id="modeler",
+                group_id="modeler",
+                phase="modeling",
+            ),
+        )
+
+    async def _handle_tool_calls(self, response, round_index: int) -> None:
         """处理建模手的工具调用（search_papers）。
 
         搜索文献后将结果注入对话历史，让建模手在后续输出中引用。
+        同时发布检索主题、轮次和结果数量，避免前端长时间没有反馈。
         """
         if not response.tool_calls:
             return
 
         # assistant 消息已由 Agent._chat() 追加到 chat_history，此处不再重复追加
+        search_calls = [
+            tool_call
+            for tool_call in response.tool_calls
+            if tool_call.name == "search_papers"
+        ]
 
-        for tool_call in response.tool_calls:
-            if tool_call.name != "search_papers":
-                logger.warning(f"建模手忽略未知工具调用: {tool_call.name}")
-                continue
-
-            logger.info("建模手调用工具: search_papers")
-            await redis_manager.publish_message(
-                self.task_id,
-                SystemMessage(content="建模手正在系统性检索学术文献（深度调研模式）..."),
-            )
-
+        for call_index, tool_call in enumerate(search_calls, start=1):
             try:
                 query = json.loads(tool_call.arguments)["query"]
             except Exception:
                 query = str(tool_call.arguments or "").strip() or "mathematical modeling"
 
+            query_label = _brief_query(query)
+            round_label = f"第 {round_index} 轮"
+            if len(search_calls) > 1:
+                round_label += f"·检索 {call_index}/{len(search_calls)}"
+
+            logger.info("建模手调用工具: search_papers")
+            await self._publish_stage(
+                f"建模方案细化：{round_label}，正在检索学术文献“{query_label}”"
+            )
+
             try:
                 assert self.scholar is not None, "scholar 未初始化"
                 papers = await self.scholar.search_papers(query)
                 papers_str = self.scholar.papers_to_str(papers)
+                paper_count = len(papers)
                 logger.info(f"建模手文献搜索结果\n{papers_str}")
-            except Exception as e:
-                error_msg = f"文献搜索失败: {str(e)}"
+                await self._publish_stage(
+                    (
+                        f"建模方案细化：{round_label}文献检索完成，"
+                        f"获得 {paper_count} 篇候选文献，正在评估方法适用性"
+                    ),
+                    msg_type="success",
+                )
+            except Exception as exc:
+                error_msg = f"文献搜索失败: {str(exc)}"
                 logger.warning(error_msg)
-                papers_str = f"文献搜索失败: {str(e)}。请继续制定建模方案，可基于领域知识引用经典文献。"
+                papers_str = (
+                    f"文献搜索失败: {str(exc)}。"
+                    "请继续制定建模方案，可基于领域知识引用经典文献。"
+                )
+                await self._publish_stage(
+                    (
+                        f"建模方案细化：{round_label}文献检索失败，"
+                        "将基于已有资料继续综合方案"
+                    ),
+                    msg_type="warning",
+                )
 
             await self.append_chat_history(
                 {
@@ -114,6 +162,10 @@ class ModelerAgent(Agent):
                     "name": "search_papers",
                 }
             )
+
+        for tool_call in response.tool_calls:
+            if tool_call.name != "search_papers":
+                logger.warning(f"建模手忽略未知工具调用: {tool_call.name}")
 
     async def run(
         self,
@@ -143,14 +195,23 @@ class ModelerAgent(Agent):
         await self.append_chat_history({"role": "user", "content": user_prompt})
 
         attempt = 0
-        await redis_manager.publish_message(
-            self.task_id,
-            SystemMessage(content="建模手正在进行深度调研：问题分析 → 文献检索 → 头脑风暴 → 方案制定..."),
+        await self._publish_stage(
+            "建模方案细化：正在梳理各问目标、变量、约束和问题间依赖"
         )
 
         # 第一轮：允许工具调用（搜索文献）
         tools = modeler_tools if self.scholar else None
         max_tool_rounds = 6  # 最多允许 6 轮工具调用，支持深度系统性文献调研
+        tool_round = 0
+
+        if tools:
+            await self._publish_stage(
+                "建模方案细化：已启用文献调研，正在生成检索主题和方法关键词"
+            )
+        else:
+            await self._publish_stage(
+                "建模方案细化：未启用在线文献检索，正在基于题目与已确认方案综合数学模型"
+            )
 
         while True:
             response = await self._chat(
@@ -164,11 +225,15 @@ class ModelerAgent(Agent):
             # 处理工具调用（文献检索）
             if response.tool_calls and tools and max_tool_rounds > 0:
                 max_tool_rounds -= 1
-                await self._handle_tool_calls(response)
+                tool_round += 1
+                await self._handle_tool_calls(response, tool_round)
+
                 # 工具调用后要求继续输出最终 JSON 方案
                 if max_tool_rounds <= 0:
-                    # 最后一轮后禁用工具，强制输出 JSON
                     tools = None
+                    await self._publish_stage(
+                        "建模方案细化：文献调研轮次已完成，正在综合模型、公式、约束与求解步骤"
+                    )
                     await self.append_chat_history(
                         {
                             "role": "user",
@@ -184,6 +249,9 @@ class ModelerAgent(Agent):
                         }
                     )
                 else:
+                    await self._publish_stage(
+                        "建模方案细化：正在评估检索结果，并判断是否需要补充方法变体或组合模型"
+                    )
                     await self.append_chat_history(
                         {
                             "role": "user",
@@ -203,9 +271,9 @@ class ModelerAgent(Agent):
             questions_solution = repair_json(json_str)
             if questions_solution:
                 ic(questions_solution)
-                await redis_manager.publish_message(
-                    self.task_id,
-                    SystemMessage(content="建模手深度调研完成，前沿建模方案已生成（含文献支撑）"),
+                await self._publish_stage(
+                    "建模方案细化完成：各问模型、公式、约束、求解步骤与文献依据已整理",
+                    msg_type="success",
                 )
                 return ModelerToCoder(questions_solution=questions_solution)
 
@@ -213,9 +281,9 @@ class ModelerAgent(Agent):
             tools = None
             attempt += 1
             logger.warning(f"JSON 解析失败 (第{attempt}次)，请求模型重新生成")
-            await redis_manager.publish_message(
-                self.task_id,
-                SystemMessage(content=f"建模方案格式校验中，第{attempt}次修正..."),
+            await self._publish_stage(
+                f"建模方案细化：结构化格式校验未通过，正在进行第 {attempt} 次修正",
+                msg_type="warning",
             )
             retry_msg: dict = {"role": "assistant", "content": json_str}
             if response.reasoning_content:

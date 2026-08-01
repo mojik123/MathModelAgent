@@ -38,7 +38,7 @@ const apiKeyStore = useApiKeyStore();
 const defaultDeepSeekConfig = {
 	apiKey: "",
 	baseUrl: "https://api.deepseek.com/v1",
-	modelId: "deepseek-chat",
+	modelId: "deepseek-v4-flash[1m]",
 	apiType: "openai-chat",
 	contextWindow: 128000,
 };

@@ -21,14 +21,14 @@ from app.utils.common_utils import (
     get_work_dir,
     ensure_safe_task_id,
     md_2_docx,
-    md_2_pdf,
 )
 import os
 import asyncio
 import hashlib
 import json
 import re
-from typing import Any, Dict, Tuple
+from pathlib import Path
+from typing import Any, Dict
 from fastapi import HTTPException
 from icecream import ic  # type: ignore[import-unresolved]
 from app.schemas.request import ExampleRequest
@@ -50,6 +50,8 @@ MODEL_OPTION_LIMIT = 4
 MODEL_OPTION_ATTEMPTS = 3
 MIN_MODEL_OPTIONS = 3
 MODEL_OPTIONS_CACHE_FILENAME = ".modeling_options_cache.json"
+ALLOWED_UPLOAD_SUFFIXES = {".txt", ".csv", ".xlsx"}
+MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024
 
 
 def _model_options_cache_key(
@@ -105,7 +107,6 @@ def _save_model_options_cache(
         logger.warning(f"写入模型候选缓存失败 {task_id}: {exc}")
 
 
-
 def _contains_any(text: str, keywords: tuple[str, ...] | list[str]) -> bool:
     """大小写不敏感的关键词包含检查，避免中文正则在不同终端编码下出错。"""
     lower_text = text.lower()
@@ -147,6 +148,42 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     raise ValueError("LLM 返回的 JSON 对象不完整")
 
 
+def _normalize_discussion_response(raw: str) -> tuple[str, dict[str, str]]:
+    """将建模讨论回复拆成聊天说明和可追加的修订方案。
+
+    Args:
+        raw: LLM 返回的原始文本，优先解析约定的 JSON 结构。
+
+    Returns:
+        聊天区说明文本，以及可直接追加到候选列表的修订方案。
+    """
+    cleaned = raw.strip()
+    parsed: dict[str, Any] = {}
+    try:
+        parsed = _extract_json_object(cleaned)
+    except (ValueError, json.JSONDecodeError, TypeError):
+        pass
+
+    suggested_raw = parsed.get("suggestedOption") or parsed.get("suggested_option")
+    suggested = suggested_raw if isinstance(suggested_raw, dict) else {}
+    reply = str(parsed.get("reply") or parsed.get("content") or "").strip()
+    description = str(suggested.get("description") or "").strip()
+
+    if not reply:
+        reply = description or cleaned
+    if not description:
+        description = reply or "请结合本轮讨论进一步完善该建模方案。"
+
+    label = str(suggested.get("label") or "").strip() or "讨论修订方案"
+    return reply, {
+        "label": label[:80],
+        "description": description,
+        "reason": str(suggested.get("reason") or "").strip(),
+        "pros": str(suggested.get("pros") or "").strip(),
+        "cons": str(suggested.get("cons") or "").strip(),
+    }
+
+
 def _model_option_id(label: str, question_index: int, option_index: int) -> str:
     raw = re.sub(r"[^a-zA-Z0-9]+", "_", label.lower()).strip("_")
     return raw or f"q{question_index}_model_{option_index}"
@@ -173,7 +210,9 @@ def _normalize_model_options_payload(payload: dict[str, Any]) -> list[dict[str, 
         for idx, raw_option in enumerate(raw_options[:MODEL_OPTION_LIMIT], start=1):
             if not isinstance(raw_option, dict):
                 continue
-            label = str(raw_option.get("label") or raw_option.get("model") or "").strip()
+            label = str(
+                raw_option.get("label") or raw_option.get("model") or ""
+            ).strip()
             if not label:
                 continue
             option_id = str(raw_option.get("id") or "").strip() or _model_option_id(
@@ -214,11 +253,7 @@ def _normalize_model_options_payload(payload: dict[str, Any]) -> list[dict[str, 
                 "questionIndex": question_index,
                 "researchSummary": str(q.get("researchSummary") or "").strip(),
                 "recommendedOptionId": next(
-                    (
-                        option["id"]
-                        for option in options
-                        if option.get("isRecommended")
-                    ),
+                    (option["id"] for option in options if option.get("isRecommended")),
                     options[0]["id"] if options else "",
                 ),
                 "options": options,
@@ -403,15 +438,42 @@ def _infer_modeling_search_terms(text: str) -> str:
     text_lower = text.lower()
     terms: list[str] = []
     keyword_terms = [
-        (("社交媒体", "用户行为", "博主", "关注", "点赞", "评论"), "social media user behavior prediction follower growth recommender system"),
-        (("推荐", "个性化", "内容分发"), "recommender systems collaborative filtering learning to rank"),
-        (("时段", "时间习惯", "在线", "小时"), "temporal user activity prediction time aware recommendation"),
-        (("新增关注", "增长", "次日"), "time series forecasting gradient boosting feature engineering"),
-        (("是否", "二分类", "分类", "关注概率"), "binary classification logistic regression gradient boosting class imbalance"),
-        (("预测", "forecast", "prediction"), "predictive modeling machine learning model comparison"),
-        (("时间序列", "时序", "趋势"), "time series forecasting ARIMA XGBoost temporal features"),
-        (("优化", "最优", "资源", "调度", "路径"), "optimization linear programming mixed integer programming heuristic algorithms"),
-        (("评价", "指标", "综合评价"), "multi criteria decision making TOPSIS AHP entropy weight"),
+        (
+            ("社交媒体", "用户行为", "博主", "关注", "点赞", "评论"),
+            "social media user behavior prediction follower growth recommender system",
+        ),
+        (
+            ("推荐", "个性化", "内容分发"),
+            "recommender systems collaborative filtering learning to rank",
+        ),
+        (
+            ("时段", "时间习惯", "在线", "小时"),
+            "temporal user activity prediction time aware recommendation",
+        ),
+        (
+            ("新增关注", "增长", "次日"),
+            "time series forecasting gradient boosting feature engineering",
+        ),
+        (
+            ("是否", "二分类", "分类", "关注概率"),
+            "binary classification logistic regression gradient boosting class imbalance",
+        ),
+        (
+            ("预测", "forecast", "prediction"),
+            "predictive modeling machine learning model comparison",
+        ),
+        (
+            ("时间序列", "时序", "趋势"),
+            "time series forecasting ARIMA XGBoost temporal features",
+        ),
+        (
+            ("优化", "最优", "资源", "调度", "路径"),
+            "optimization linear programming mixed integer programming heuristic algorithms",
+        ),
+        (
+            ("评价", "指标", "综合评价"),
+            "multi criteria decision making TOPSIS AHP entropy weight",
+        ),
         (("聚类", "画像", "分群"), "clustering user profiling kmeans gaussian mixture"),
     ]
     for keywords, phrase in keyword_terms:
@@ -523,7 +585,9 @@ def _validate_model_options_for_questions(
         source = question_map.get(idx, {})
         question_text = str(source.get("questionText") or "")
         traits = "、".join(source.get("systemHints") or [])
-        options = result.get("options") if isinstance(result.get("options"), list) else []
+        options = (
+            result.get("options") if isinstance(result.get("options"), list) else []
+        )
         if len(options) < 3:
             issues.append(f"第{idx}问候选不足 3 个")
             continue
@@ -532,13 +596,8 @@ def _validate_model_options_for_questions(
             (option for option in options if option.get("isRecommended")),
             options[0],
         )
-        recommended_text = " ".join(
-            str(recommended.get(field) or "")
-            for field in ("label", "description", "reason", "pros", "cons")
-        )
         recommended_focus_text = " ".join(
-            str(recommended.get(field) or "")
-            for field in ("label", "reason")
+            str(recommended.get(field) or "") for field in ("label", "reason")
         )
         all_text = " ".join(
             " ".join(
@@ -548,7 +607,10 @@ def _validate_model_options_for_questions(
             for option in options
         )
 
-        if any(bad in all_text for bad in ("本题未明确", "通用首选", "常见优化/分类任务", "生产调度")):
+        if any(
+            bad in all_text
+            for bad in ("本题未明确", "通用首选", "常见优化/分类任务", "生产调度")
+        ):
             issues.append(f"第{idx}问候选过泛化或脱离题面")
 
         is_temporal_task = (
@@ -572,7 +634,20 @@ def _validate_model_options_for_questions(
         if is_temporal_task:
             temporal_hits = [
                 key
-                for key in ("时段", "小时", "时间", "在线", "活跃", "推荐", "排序", "协同", "矩阵", "序列", "互动", "博主")
+                for key in (
+                    "时段",
+                    "小时",
+                    "时间",
+                    "在线",
+                    "活跃",
+                    "推荐",
+                    "排序",
+                    "协同",
+                    "矩阵",
+                    "序列",
+                    "互动",
+                    "博主",
+                )
                 if _contains_any(recommended_focus_text, (key,))
             ]
             if len(temporal_hits) < 2:
@@ -610,7 +685,14 @@ def _validate_model_options_for_questions(
                 issues.append(f"第{idx}问推荐模型没有体现次日新增关注的时序计数预测")
             if _contains_any(
                 recommended_focus_text,
-                ("在线时段", "二分类", "推荐排序", "预测互动数", "互动数预测", "目标为互动数"),
+                (
+                    "在线时段",
+                    "二分类",
+                    "推荐排序",
+                    "预测互动数",
+                    "互动数预测",
+                    "目标为互动数",
+                ),
             ):
                 issues.append(f"第{idx}问推荐模型把新增关注数预测误写成其他任务")
 
@@ -637,22 +719,20 @@ def _validate_model_options_for_questions(
                 ("在线时段", "在线时长", "目标为互动数", "预测互动数", "互动数预测"),
             ):
                 issues.append(f"第{idx}问推荐模型把新关注分类误写成在线/互动数任务")
-            if _contains_any(recommended_focus_text, ("预测互动数", "互动数预测", "回归")) and not _contains_any(
-                recommended_focus_text, ("逻辑回归", "logistic")
-            ):
+            if _contains_any(
+                recommended_focus_text, ("预测互动数", "互动数预测", "回归")
+            ) and not _contains_any(recommended_focus_text, ("逻辑回归", "logistic")):
                 issues.append(f"第{idx}问推荐模型把新关注分类误写成回归/互动数预测")
 
         is_recommendation_question = any(
-            key in question_text
-            for key in ("推荐", "博主", "互动数", "时段", "在线")
+            key in question_text for key in ("推荐", "博主", "互动数", "时段", "在线")
         )
         is_optimization_question = any(
             key in question_text
             for key in ("优化", "最优", "约束", "资源", "路径", "调度")
         )
         is_evaluation_question = any(
-            key in question_text
-            for key in ("评价", "指标", "综合评价")
+            key in question_text for key in ("评价", "指标", "综合评价")
         )
         if is_recommendation_question and not is_optimization_question:
             if any(term in recommended_focus_text for term in optimization_terms):
@@ -661,16 +741,31 @@ def _validate_model_options_for_questions(
             if any(term in recommended_focus_text for term in evaluation_terms):
                 issues.append(f"第{idx}问推荐模型误用了评价模型作为主模型")
 
-        if traits and not any(term in all_text for term in _seed_model_guidance(question_text)[:2]):
+        if traits and not any(
+            term in all_text for term in _seed_model_guidance(question_text)[:2]
+        ):
             # 这里只做弱约束：候选文本至少应靠近题面提示，而不是完全泛化。
             if "需由 LLM" not in traits and len(question_text) > 20:
                 relevant_keywords = [
                     key
-                    for key in ("博主", "关注", "用户", "互动", "时段", "在线", "推荐", "预测")
+                    for key in (
+                        "博主",
+                        "关注",
+                        "用户",
+                        "互动",
+                        "时段",
+                        "在线",
+                        "推荐",
+                        "预测",
+                    )
                     if key in question_text
                 ]
-                if relevant_keywords and not any(key in all_text for key in relevant_keywords):
-                    issues.append(f"第{idx}问候选没有覆盖题面关键词：{','.join(relevant_keywords)}")
+                if relevant_keywords and not any(
+                    key in all_text for key in relevant_keywords
+                ):
+                    issues.append(
+                        f"第{idx}问候选没有覆盖题面关键词：{','.join(relevant_keywords)}"
+                    )
 
     return issues
 
@@ -708,15 +803,26 @@ def _load_task_problem(task_id: str) -> Problem:
     return Problem(
         task_id=task_id,
         ques_all=payload.get("ques_all", ""),
-        comp_template=CompTemplate(payload.get("comp_template", CompTemplate.CHINA.value)),
-        format_output=FormatOutPut(payload.get("format_output", FormatOutPut.Markdown.value)),
+        comp_template=CompTemplate(
+            payload.get("comp_template", CompTemplate.CHINA.value)
+        ),
+        format_output=FormatOutPut(
+            payload.get("format_output", FormatOutPut.Markdown.value)
+        ),
     )
 
 
-async def _mark_task_created(task_id: str, ques_all: str) -> None:
+async def _mark_task_created(
+    task_id: str,
+    ques_all: str,
+    files: list[str] | None = None,
+) -> None:
     await redis_manager.set(f"task_id:{task_id}", task_id)
     await mark_task_ready(task_id)
-    await redis_manager.publish_message(task_id, UserMessage(content=ques_all))
+    await redis_manager.publish_message(
+        task_id,
+        UserMessage(content=ques_all, files=files or []),
+    )
     await redis_manager.publish_message(
         task_id,
         SystemMessage(content="任务已创建，等待手动启动"),
@@ -852,7 +958,12 @@ async def validate_openalex_email(request: ValidateOpenalexEmailRequest):
         if settings.OPENALEX_API_KEY:
             params["api_key"] = settings.OPENALEX_API_KEY
 
-        response = requests.get("https://api.openalex.org/works", params=params)
+        response = await asyncio.to_thread(
+            requests.get,
+            "https://api.openalex.org/works",
+            params=params,
+            timeout=12,
+        )
         logger.debug(f"OpenAlex Email 验证响应: {response}")
         response.raise_for_status()
         return ValidateOpenalexEmailResponse(
@@ -870,7 +981,11 @@ async def exampleModeling(
 ):
     task_id = create_task_id()
     work_dir = create_work_dir(task_id)
-    example_dir = os.path.join("app", "example", "example", example_request.source)
+    example_root = Path("app/example/example").resolve()
+    example_dir_path = (example_root / example_request.source).resolve()
+    if example_root not in example_dir_path.parents or not example_dir_path.is_dir():
+        raise HTTPException(status_code=400, detail="非法示例路径")
+    example_dir = str(example_dir_path)
     ic(example_dir)
     with open(os.path.join(example_dir, "questions.txt"), "r", encoding="utf-8") as f:
         ques_all = f.read()
@@ -882,7 +997,7 @@ async def exampleModeling(
         with open(src_file, "rb") as src, open(dst_file, "wb") as dst:
             dst.write(src.read())
     _save_task_config(task_id, ques_all, CompTemplate.CHINA, FormatOutPut.Markdown)
-    await _mark_task_created(task_id, ques_all)
+    await _mark_task_created(task_id, ques_all, current_files)
     return {"task_id": task_id, "status": "created"}
 
 
@@ -895,30 +1010,44 @@ async def modeling(
 ):
     task_id = create_task_id()
     work_dir = create_work_dir(task_id)
+    uploaded_filenames: list[str] = []
 
     # 如果有上传文件，保存文件
     if files:
         logger.info(f"开始处理上传的文件，工作目录: {work_dir}")
         for file in files:
             try:
-                assert file.filename is not None
-                data_file_path = os.path.join(work_dir, file.filename)
-                logger.info(f"保存文件: {file.filename} -> {data_file_path}")
-
-                # 确保文件名不为空
                 if not file.filename:
                     logger.warning("跳过空文件名")
                     continue
+                filename = Path(file.filename).name
+                if filename != file.filename or filename in {".", ".."}:
+                    raise HTTPException(status_code=400, detail="非法附件文件名")
+                if Path(filename).suffix.lower() not in ALLOWED_UPLOAD_SUFFIXES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="仅支持 .txt、.csv、.xlsx 附件",
+                    )
+                data_file_path = os.path.join(work_dir, filename)
+                logger.info(f"保存文件: {filename} -> {data_file_path}")
 
-                content = await file.read()
+                content = await file.read(MAX_UPLOAD_SIZE_BYTES + 1)
                 if not content:
-                    logger.warning(f"文件 {file.filename} 内容为空")
+                    logger.warning(f"文件 {filename} 内容为空")
                     continue
+                if len(content) > MAX_UPLOAD_SIZE_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"附件 {filename} 超过 50MB 限制",
+                    )
 
                 with open(data_file_path, "wb") as f:
                     f.write(content)
+                uploaded_filenames.append(filename)
                 logger.info(f"成功保存文件: {data_file_path}")
 
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.error(f"保存文件 {file.filename} 失败: {str(e)}")
                 raise HTTPException(
@@ -928,7 +1057,7 @@ async def modeling(
         logger.warning("没有上传文件")
 
     _save_task_config(task_id, ques_all, comp_template, format_output)
-    await _mark_task_created(task_id, ques_all)
+    await _mark_task_created(task_id, ques_all, uploaded_filenames)
     return {"task_id": task_id, "status": "created"}
 
 
@@ -955,7 +1084,9 @@ async def start_task(task_id: str):
             "interrupted",
             "上次停止没有对应的后台任务，已标记为中断，可重新启动",
         )
-    is_resume = bool(state and state.get("status") in {"stopped", "interrupted", "failed"})
+    is_resume = bool(
+        state and state.get("status") in {"stopped", "interrupted", "failed"}
+    )
 
     problem = _load_task_problem(safe_task_id)
     await redis_manager.set(f"task_id:{safe_task_id}", safe_task_id)
@@ -971,15 +1102,22 @@ async def start_task(task_id: str):
         progress=0,
     )
     logger.info(f"Manually starting background task for task_id: {safe_task_id}")
-    asyncio.create_task(
+    cancel_event = asyncio.Event()
+    runner = asyncio.create_task(
         run_modeling_task_async(
             safe_task_id,
             problem.ques_all,
             problem.comp_template,
             problem.format_output,
+            cancel_event=cancel_event,
         ),
         name=f"modeling-{safe_task_id}",
     )
+    # create_task 到协程首个时间片之间没有 await，可在状态接口读取前完成注册。
+    _active_tasks[safe_task_id] = {
+        "task": runner,
+        "cancel_event": cancel_event,
+    }
     return {"success": True, "status": "processing", "message": start_message}
 
 
@@ -1008,7 +1146,9 @@ async def get_modeling_task_state(task_id: str):
         }
 
     if state and state.get("status") in {"running", "stopping"}:
-        state = await mark_task_terminal(safe_task_id, "interrupted", "后端没有找到运行中的任务，流程可能已中断")
+        state = await mark_task_terminal(
+            safe_task_id, "interrupted", "后端没有找到运行中的任务，流程可能已中断"
+        )
 
     return {
         "task_id": safe_task_id,
@@ -1052,9 +1192,19 @@ async def get_task_diagnostics(task_id: str):
 
     # 统计文件
     all_files = list(root.rglob("*")) if root.exists() else []
-    images = [str(f.relative_to(root)) for f in all_files if f.is_file() and is_image_file(f.name)]
-    code_files = [str(f.relative_to(root)) for f in all_files if f.is_file() and f.suffix == ".py"]
-    notebooks = [str(f.relative_to(root)) for f in all_files if f.is_file() and f.suffix == ".ipynb"]
+    images = [
+        str(f.relative_to(root))
+        for f in all_files
+        if f.is_file() and is_image_file(f.name)
+    ]
+    code_files = [
+        str(f.relative_to(root)) for f in all_files if f.is_file() and f.suffix == ".py"
+    ]
+    notebooks = [
+        str(f.relative_to(root))
+        for f in all_files
+        if f.is_file() and f.suffix == ".ipynb"
+    ]
 
     # 收集 artifact_check 总结
     artifact_checks = checkpoint.get("artifact_checks", {})
@@ -1074,6 +1224,7 @@ async def get_task_diagnostics(task_id: str):
         "artifact_checks": artifact_checks,
         "final_audit": checkpoint.get("final_paper_audit"),
         "final_paper_issues": checkpoint.get("final_paper_issues", []),
+        "final_evidence_issues": checkpoint.get("final_evidence_issues", []),
         "final_file_issues": checkpoint.get("final_file_issues", []),
         "final_image_ref_issues": checkpoint.get("final_image_ref_issues", []),
         "final_review_failed": checkpoint.get("final_paper_review_failed"),
@@ -1085,6 +1236,8 @@ async def run_modeling_task_async(
     ques_all: str,
     comp_template: CompTemplate,
     format_output: FormatOutPut,
+    *,
+    cancel_event: asyncio.Event | None = None,
 ):
     """异步执行建模任务。
 
@@ -1093,14 +1246,16 @@ async def run_modeling_task_async(
         ques_all: 完整题目信息。
         comp_template: 竞赛模板类型。
         format_output: 输出格式。
+        cancel_event: 启动接口预先注册的取消事件。
     """
     logger.info(f"run modeling task for task_id: {task_id}")
 
-    # 立即注册到全局表（在所有 await 之前），确保后续代码始终能找到该条目
-    cancel_event = asyncio.Event()
-    # 使用 asyncio.current_task() 而非 None，确保状态端点不会在启动瞬间
-    # 因 task is None 而错误返回 "interrupted"
-    _active_tasks[task_id] = {"task": asyncio.current_task(), "cancel_event": cancel_event}
+    cancel_event = cancel_event or asyncio.Event()
+    runner = asyncio.current_task()
+    entry = _active_tasks.get(task_id)
+    if not entry or entry.get("task") is not runner:
+        # 兼容测试或内部直接调用，同时避免覆盖 start_task 已注册的 runner。
+        _active_tasks[task_id] = {"task": runner, "cancel_event": cancel_event}
 
     problem = Problem(
         task_id=task_id,
@@ -1126,14 +1281,16 @@ async def run_modeling_task_async(
     workflow = MathModelWorkFlow()
     workflow.cancel_event = cancel_event
 
-    # 创建工作流任务并更新注册表
+    # 工作流作为子任务运行，外层 runner 负责统一终态和导出处理。
     task = asyncio.create_task(workflow.execute(problem))
-    _active_tasks[task_id] = {"task": task, "cancel_event": cancel_event}
 
     task_completed = False
     try:
-        # 设置超时时间（5 小时）
-        await asyncio.wait_for(task, timeout=3600 * 5)
+        task_timeout = max(0, int(getattr(settings, "TASK_EXECUTION_TIMEOUT", 0)))
+        if task_timeout:
+            await asyncio.wait_for(task, timeout=task_timeout)
+        else:
+            await task
         task_completed = True
 
         await mark_task_terminal(task_id, "completed", "任务处理完成")
@@ -1149,16 +1306,31 @@ async def run_modeling_task_async(
             task_id,
             SystemMessage(content="任务已停止", type="warning"),
         )
-    except Exception as e:
-        logger.error(f"任务 {task_id} 执行失败: {e}")
-        await mark_task_terminal(task_id, "failed", f"任务执行失败: {str(e)}")
+    except asyncio.TimeoutError:
+        timeout_message = (
+            f"任务运行超过配置上限 {task_timeout} 秒，已停止。"
+            "已保留 checkpoint，可调整 TASK_EXECUTION_TIMEOUT 后继续运行"
+        )
+        logger.error(f"任务 {task_id} 超时: {timeout_message}")
+        await mark_task_terminal(task_id, "failed", timeout_message)
         await redis_manager.publish_message(
             task_id,
-            SystemMessage(content=f"任务执行失败: {str(e)}", type="error"),
+            SystemMessage(content=timeout_message, type="error"),
+        )
+    except Exception as e:
+        detail = str(e).strip() or type(e).__name__
+        logger.exception(f"任务 {task_id} 执行失败: {detail}")
+        await mark_task_terminal(task_id, "failed", f"任务执行失败: {detail}")
+        await redis_manager.publish_message(
+            task_id,
+            SystemMessage(content=f"任务执行失败: {detail}", type="error"),
         )
     finally:
-        # 从注册表中清理
-        _active_tasks.pop(task_id, None)
+        await workflow.cleanup_interpreters()
+        # 只清理自己注册的 runner，避免旧任务结束时误删新启动任务。
+        active = _active_tasks.get(task_id)
+        if active and active.get("task") is runner:
+            _active_tasks.pop(task_id, None)
         try:
             client = await redis_manager.get_client()
             await client.delete(f"task_id:{task_id}")
@@ -1200,7 +1372,8 @@ async def cancel_task(task_id: str):
             message="任务不存在或已完成",
         )
 
-    running_task = active["task"]; cancel_event = active["cancel_event"]
+    running_task = active["task"]
+    cancel_event = active["cancel_event"]
     cancel_event.set()
     await mark_task_stopping(safe_task_id, "停止指令已发送，正在安全停止当前步骤")
     await redis_manager.publish_message(
@@ -1218,11 +1391,15 @@ async def cancel_task(task_id: str):
 
 class ModelingConfirmRequest(BaseModel):
     """用户确认建模方案的请求体。"""
-    selections: list[dict]  # [{index: 1, model: "random_forest", chatHistory: [...]}, ...]
+
+    selections: list[
+        dict
+    ]  # [{index: 1, model: "random_forest", chatHistory: [...]}, ...]
 
 
 class ModelingOptionsRequest(BaseModel):
     """为建模讨论卡片动态生成候选模型。"""
+
     title: str = ""
     background: str = ""
     questions: list[dict]
@@ -1243,15 +1420,20 @@ class ModelingDiscussionChatRequest(BaseModel):
 
 class ModelingDiscussionChatResponse(BaseModel):
     success: bool
+    message: str = ""
+    content: str = ""
+    suggested_option: dict[str, str] | None = None
 
 
 class QuestionConfirmRequest(BaseModel):
     """用户确认问题划分的请求体。"""
+
     questions: list[dict]
 
 
 class QuestionDiscussionChatRequest(BaseModel):
     """问题划分讨论对话请求体。"""
+
     message: str
     questions: list[dict] = []
     original_problem: str = ""
@@ -1259,6 +1441,7 @@ class QuestionDiscussionChatRequest(BaseModel):
 
 class RegenerateQuestionsRequest(BaseModel):
     """重新生成问题划分请求体。"""
+
     message: str = ""
     questions: list[dict] = []
     original_problem: str = ""
@@ -1278,7 +1461,9 @@ class OriginalProblemResponse(BaseModel):
     content: str
 
 
-@router.post("/modeling/{task_id}/model-options", response_model=ModelingOptionsResponse)
+@router.post(
+    "/modeling/{task_id}/model-options", response_model=ModelingOptionsResponse
+)
 async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
     """根据题目动态生成逐问模型候选，而不是返回固定预设列表。"""
     try:
@@ -1340,7 +1525,9 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
             parts.append(f"第 {'、'.join(str(i) for i in searching)} 问正在检索文献")
 
         if generating:
-            parts.append(f"第 {'、'.join(str(i) for i in generating)} 问正在生成模型方案")
+            parts.append(
+                f"第 {'、'.join(str(i) for i in generating)} 问正在生成模型方案"
+            )
 
         if done:
             parts.append(f"第 {'、'.join(str(i) for i in done)} 问已完成")
@@ -1360,9 +1547,12 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
         """每问一个独立协程：检索 → LLM 生成 → 质检 → 返回结果。"""
         q_idx = int(q["questionIndex"])
         q_llm = LLM(
-            api_type=settings.MODELER_API_TYPE, api_key=settings.MODELER_API_KEY,
-            model=settings.MODELER_MODEL, base_url=settings.MODELER_BASE_URL,
-            task_id=safe_task_id, max_tokens=settings.MODELER_MAX_TOKENS,
+            api_type=settings.MODELER_API_TYPE,
+            api_key=settings.MODELER_API_KEY,
+            model=settings.MODELER_MODEL,
+            base_url=settings.MODELER_BASE_URL,
+            task_id=safe_task_id,
+            max_tokens=settings.MODELER_MAX_TOKENS,
         )
 
         async with progress_lock:
@@ -1388,7 +1578,10 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
             if attempt > 0:
                 await redis_manager.publish_message(
                     safe_task_id,
-                    SystemMessage(content=f"第 {q_idx} 问自动质检未通过（第{attempt}次），正在重试...", type="warning"),
+                    SystemMessage(
+                        content=f"第 {q_idx} 问自动质检未通过（第{attempt}次），正在重试...",
+                        type="warning",
+                    ),
                 )
             feedback_text = ""
             if quality_issues:
@@ -1399,7 +1592,9 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
                 "要求：3-4 个候选、有且仅有一个 isRecommended=true、每个候选含 label/description/pros/cons/reason/score。\n"
                 "禁止改写题目场景、禁止泛化理由、候选互有区分度。\n"
                 f"{feedback_text}\n"
-                "输出 JSON：{\"questions\":[{\"questionIndex\":" + str(q_idx) + ",\"researchSummary\":\"...\",\"recommendedOptionId\":\"...\",\"options\":[{\"id\":\"...\",\"label\":\"...\",\"description\":\"...\",\"pros\":\"...\",\"cons\":\"...\",\"reason\":\"...\",\"score\":92,\"isRecommended\":true,\"sources\":[]}]}]}\n\n"
+                '输出 JSON：{"questions":[{"questionIndex":'
+                + str(q_idx)
+                + ',"researchSummary":"...","recommendedOptionId":"...","options":[{"id":"...","label":"...","description":"...","pros":"...","cons":"...","reason":"...","score":92,"isRecommended":true,"sources":[]}]}]}\n\n'
                 f"【题目标题】\n{body.title}\n\n"
                 f"【题目背景】\n{body.background[:5000]}\n\n"
                 f"【当前问题】\n{json.dumps(q, ensure_ascii=False, indent=2)}\n\n"
@@ -1407,17 +1602,25 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
             )
 
             try:
-                raw = await simple_chat(q_llm, [
-                    {"role": "system", "content": "你是数学建模竞赛的模型选优专家。先判断题目结构再给候选模型，检索与题面不一致时服从题面。"},
-                    {"role": "user", "content": prompt},
-                ])
+                raw = await simple_chat(
+                    q_llm,
+                    [
+                        {
+                            "role": "system",
+                            "content": "你是数学建模竞赛的模型选优专家。先判断题目结构再给候选模型，检索与题面不一致时服从题面。",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                )
                 parsed = _extract_json_object(raw)
                 candidate_list = _normalize_model_options_payload(parsed)
                 if not candidate_list:
                     continue
                 candidate_list[0]["questionIndex"] = q_idx
                 candidate = candidate_list[0]
-                quality_issues = _validate_model_options_for_questions([candidate], question_map)
+                quality_issues = _validate_model_options_for_questions(
+                    [candidate], question_map
+                )
                 if candidate.get("options"):
                     if best_candidate is None or len(quality_issues) < len(best_issues):
                         best_candidate = candidate
@@ -1431,9 +1634,13 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
                 logger.warning(f"第{q_idx}问候选生成异常: {e}")
 
         last_issues = best_issues or quality_issues
-        last_issues_text = "；".join(last_issues) if last_issues else "未生成有效候选模型"
+        last_issues_text = (
+            "；".join(last_issues) if last_issues else "未生成有效候选模型"
+        )
 
-        logger.warning(f"第{q_idx}问候选生成未完全通过质检，降级放行：{last_issues_text}")
+        logger.warning(
+            f"第{q_idx}问候选生成未完全通过质检，降级放行：{last_issues_text}"
+        )
 
         async with progress_lock:
             progress[q_idx] = "done"
@@ -1565,7 +1772,9 @@ async def generate_model_options(task_id: str, body: ModelingOptionsRequest):
     )
 
 
-@router.post("/modeling/{task_id}/discussion-chat", response_model=ModelingDiscussionChatResponse)
+@router.post(
+    "/modeling/{task_id}/discussion-chat", response_model=ModelingDiscussionChatResponse
+)
 async def modeling_discussion_chat(task_id: str, body: ModelingDiscussionChatRequest):
     """卡片内建模讨论：所有卡片历史一起作为共享上下文。"""
     try:
@@ -1590,9 +1799,14 @@ async def modeling_discussion_chat(task_id: str, body: ModelingDiscussionChatReq
     shared_context = json.dumps(body.questions, ensure_ascii=False, indent=2)
     user_prompt = (
         "你是建模方案讨论助手。用户会逐问选择模型，所有问题卡片共用同一个上下文。\n"
-        "请结合全部卡片的已选模型、自定义方案、对话历史和联网检索摘要，回答当前问题卡片的追问。\n"
-        "不要直接启动正式建模，只给出可供用户选择/修正的建议；如果更合适的模型不在候选卡片中，"
-        "请明确建议用户通过「自定义方案」填写。\n\n"
+        "请结合全部卡片的已选模型、自定义方案、对话历史和联网检索摘要，"
+        "为当前问题生成一份不覆盖原方案、可独立选择的修订方案。\n"
+        "不要直接启动正式建模。无论用户是在追问、补充还是要求修改，都必须输出一份"
+        "完整、具体、可执行的修订方案。\n"
+        "严格返回一个 JSON 对象，不要使用 Markdown 代码块，结构如下：\n"
+        '{"reply":"给用户的简洁说明","suggestedOption":{"label":"修订后方案标题",'
+        '"description":"完整建模流程与实施步骤","reason":"为什么这样修改",'
+        '"pros":"主要优势","cons":"局限或注意事项"}}\n\n'
         f"【当前讨论的问题】第 {body.question_index} 问\n"
         f"{json.dumps(selected_question, ensure_ascii=False, indent=2) if selected_question else '(未找到当前问题卡片)'}\n\n"
         f"【全部问题卡片共享上下文】\n{shared_context}\n\n"
@@ -1608,7 +1822,7 @@ async def modeling_discussion_chat(task_id: str, body: ModelingDiscussionChatReq
         task_id=safe_task_id,
     )
     try:
-        content = await simple_chat(
+        raw_content = await simple_chat(
             llm,
             [
                 {
@@ -1625,10 +1839,12 @@ async def modeling_discussion_chat(task_id: str, body: ModelingDiscussionChatReq
         logger.error(f"建模讨论失败 {safe_task_id}: {e}")
         raise HTTPException(status_code=500, detail=f"建模讨论失败: {e}") from e
 
+    content, suggested_option = _normalize_discussion_response(raw_content)
     return ModelingDiscussionChatResponse(
         success=True,
         message="已生成建模讨论回复",
-        content=content.strip(),
+        content=content,
+        suggested_option=suggested_option,
     )
 
 
@@ -1696,7 +1912,8 @@ async def get_original_problem(task_id: str):
         files: list[str] = []
         if os.path.exists(work_dir):
             files = [
-                name for name in os.listdir(work_dir)
+                name
+                for name in os.listdir(work_dir)
                 if name != TASK_CONFIG_FILENAME and not name.startswith(".")
             ]
         return {
@@ -1736,12 +1953,14 @@ async def confirm_questions(task_id: str, body: QuestionConfirmRequest):
         text = str(item.get("questionText") or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail=f"第 {idx} 问内容不能为空")
-        valid_questions.append({
-            "questionIndex": idx,
-            "questionTitle": str(item.get("questionTitle") or f"第 {idx} 问"),
-            "questionText": text,
-            "chatHistory": item.get("chatHistory", []),
-        })
+        valid_questions.append(
+            {
+                "questionIndex": idx,
+                "questionTitle": str(item.get("questionTitle") or f"第 {idx} 问"),
+                "questionText": text,
+                "chatHistory": item.get("chatHistory", []),
+            }
+        )
 
     ref.question_selections = valid_questions
 
@@ -1808,7 +2027,10 @@ async def question_discussion_chat(task_id: str, body: QuestionDiscussionChatReq
     }
 
 
-@router.post("/modeling/{task_id}/regenerate-questions", response_model=RegenerateQuestionsResponse)
+@router.post(
+    "/modeling/{task_id}/regenerate-questions",
+    response_model=RegenerateQuestionsResponse,
+)
 async def regenerate_questions(task_id: str, body: RegenerateQuestionsRequest):
     """根据用户意见重新生成问题划分卡片。"""
     try:
@@ -1869,14 +2091,18 @@ async def regenerate_questions(task_id: str, body: RegenerateQuestionsRequest):
     questions = parsed.get("questions", [])
     normalized: list[dict] = []
     for idx, item in enumerate(questions, start=1):
-        normalized.append({
-            "questionIndex": idx,
-            "questionTitle": str(item.get("questionTitle") or f"第 {idx} 问"),
-            "questionText": str(item.get("questionText") or "").strip(),
-        })
+        normalized.append(
+            {
+                "questionIndex": idx,
+                "questionTitle": str(item.get("questionTitle") or f"第 {idx} 问"),
+                "questionText": str(item.get("questionText") or "").strip(),
+            }
+        )
     normalized = [q for q in normalized if q["questionText"]]
     if not normalized:
-        raise HTTPException(status_code=500, detail="重新生成问题划分失败：LLM 未返回有效结果")
+        raise HTTPException(
+            status_code=500, detail="重新生成问题划分失败：LLM 未返回有效结果"
+        )
 
     return RegenerateQuestionsResponse(
         success=True,

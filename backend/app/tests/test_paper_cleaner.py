@@ -6,6 +6,24 @@ from app.utils.paper_cleaner import clean_chinese_paper_markdown
 
 
 class TestPaperCleaner(unittest.TestCase):
+    def test_toc_is_canonical_front_matter_heading(self):
+        """目录必须是一级前置标题，供预览与导出链路识别分页。"""
+        raw = """# 示例论文
+
+## 目 录
+
+一、问题重述
+
+# 一、问题重述
+
+正文。
+"""
+
+        cleaned = clean_chinese_paper_markdown(raw)
+
+        self.assertIn("# 目录", cleaned)
+        self.assertNotIn("## 目录", cleaned)
+
     def test_removes_duplicate_symbol_section_and_restores_parent_heading(self):
         raw = """# 题目
 

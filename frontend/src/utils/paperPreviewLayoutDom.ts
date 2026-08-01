@@ -12,12 +12,12 @@ function addStyle() {
 	position: relative !important;
 	display: block !important;
 	box-sizing: border-box !important;
-	width: 100% !important;
-	max-width: 100% !important;
+	width: 210mm !important;
+	max-width: calc(100% - 2rem) !important;
+	min-height: 297mm !important;
 	margin-left: auto !important;
 	margin-right: auto !important;
-	padding-left: 0 !important;
-	padding-right: 0 !important;
+	padding: 25.4mm 31.7mm !important;
 	transform: none !important;
 	contain: layout paint;
 }
@@ -30,8 +30,6 @@ function addStyle() {
 
 .paper-preview > * {
 	max-width: 100% !important;
-	margin-left: 0 !important;
-	margin-right: 0 !important;
 	transform: none !important;
 }
 
@@ -100,7 +98,7 @@ function addStyle() {
 
 .paper-preview table,
 .paper-preview .markdown-table {
-	min-width: min(100%, 520px);
+	width: 100%;
 	max-width: 100% !important;
 }
 
@@ -113,6 +111,13 @@ function addStyle() {
 
 .paper-preview .paper-toc-content * {
 	text-indent: 0 !important;
+}
+
+@media (max-width: 720px) {
+	.paper-preview {
+		max-width: calc(100% - 1rem) !important;
+		padding: 12mm 10mm !important;
+	}
 }
 
 /* Selection should be block-based and predictable. The selected paragraph should not
@@ -157,9 +162,15 @@ function textOf(node: Element | null) {
 
 function isBadSelectableBlock(block: HTMLElement) {
 	if (!textOf(block)) return true;
-	if (block.closest("pre, code, .katex, .math-block, .paper-toc-content, figure, .markdown-figure, .markdown-image-wrapper")) return true;
+	if (
+		block.closest(
+			"pre, code, .katex, .math-block, .paper-toc-content, figure, .markdown-figure, .markdown-image-wrapper",
+		)
+	)
+		return true;
 	if (block.classList.contains("markdown-table-caption")) return true;
-	if (/^图\s*\d+/.test(textOf(block)) && block.tagName === "FIGCAPTION") return true;
+	if (/^图\s*\d+/.test(textOf(block)) && block.tagName === "FIGCAPTION")
+		return true;
 	return false;
 }
 
@@ -169,14 +180,18 @@ function normalizeSelectableBlocks() {
 
 	// Remove stale marks first. WriterEditor may mark figcaptions / table cells; this
 	// patch narrows text editing to true narrative blocks and valid table cells only.
-	for (const node of Array.from(root.querySelectorAll<HTMLElement>("[data-sentence]"))) {
+	for (const node of Array.from(
+		root.querySelectorAll<HTMLElement>("[data-sentence]"),
+	)) {
 		if (isBadSelectableBlock(node)) {
 			node.removeAttribute("data-sentence");
 			node.classList.remove("sentence-hover", "sentence-selected");
 		}
 	}
 
-	const blocks = Array.from(root.querySelectorAll<HTMLElement>("p, li, blockquote, td, th"));
+	const blocks = Array.from(
+		root.querySelectorAll<HTMLElement>("p, li, blockquote, td, th"),
+	);
 	let index = 0;
 	for (const block of blocks) {
 		if (isBadSelectableBlock(block)) {
@@ -191,7 +206,11 @@ function normalizeSelectableBlocks() {
 function normalizeLayoutInlineStyles() {
 	const root = getPreviewRoot();
 	if (!root) return;
-	for (const el of Array.from(root.querySelectorAll<HTMLElement>("p, li, blockquote, figure, .markdown-table-wrapper, .math-block"))) {
+	for (const el of Array.from(
+		root.querySelectorAll<HTMLElement>(
+			"p, li, blockquote, figure, .markdown-table-wrapper, .math-block",
+		),
+	)) {
 		// Some generated / injected blocks may carry inline layout values. Clear only
 		// properties that can make later content visually drift sideways.
 		el.style.removeProperty("margin-left");
@@ -208,7 +227,12 @@ function patchPaperPreviewLayout() {
 }
 
 export function installPaperPreviewLayoutDomPatch() {
-	if (installed || typeof window === "undefined" || typeof document === "undefined") return;
+	if (
+		installed ||
+		typeof window === "undefined" ||
+		typeof document === "undefined"
+	)
+		return;
 	installed = true;
 	addStyle();
 	setInterval(patchPaperPreviewLayout, 600);
