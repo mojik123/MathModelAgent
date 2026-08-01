@@ -17,13 +17,13 @@ import {
 	AlertTriangle,
 	Bot,
 	CheckCircle2,
-	ChevronDown,
+	ChevronRight,
 	Clock3,
 	Code2,
+	Copy,
 	Download,
 	FileSpreadsheet,
 	FileText,
-	ImageIcon,
 	LoaderCircle,
 	MessageSquareText,
 	PenLine,
@@ -66,6 +66,7 @@ interface TimelineEvent {
 		| "raw";
 	title: string;
 	detail?: string;
+	rawDetail?: string;
 	brief?: string;
 	status?: "running" | "done" | "warning" | "error" | "waiting";
 	timeLabel: string;
@@ -120,10 +121,10 @@ interface QuestionStatus {
 
 const scrollRef = ref<HTMLDivElement | null>(null);
 const userScrolledUp = ref(false);
-const inlineQuestionPanelOpen = ref(true);
-const inlineModelingPanelOpen = ref(true);
-const expandedProblemIds = ref<Set<string>>(new Set());
+const inlineQuestionPanelOpen = ref(false);
+const inlineModelingPanelOpen = ref(false);
 const legacyInputFiles = ref<string[]>([]);
+const copiedActionId = ref("");
 
 const roleMap: Record<string, string> = {
 	CoordinatorAgent: "任务协调",
@@ -747,9 +748,29 @@ function agentEvent(msg: AgentMessage): TimelineEvent | null {
 	const actor = actorFromMessage(msg, content);
 	if (isLowValueAgent(content)) return null;
 	const q = detectQuestionIndex(content, msg);
+	const isStreaming = msg.stream_state === "streaming";
+	if (msg.feedback_kind === "coder_code_stream") {
+		const [headline, ...codeLines] = content
+			.replace(/\r\n?/g, "\n")
+			.split("\n");
+		const rawDetail = codeLines.join("\n").trim() || content.trim();
+		return {
+			id: msg.id,
+			side: "left",
+			actor,
+			role: roleMap[actor] ?? "Agent",
+			type: "raw",
+			status: isStreaming ? "running" : "done",
+			title: brief(headline, 96) || "正在生成代码",
+			detail: isStreaming ? "代码正在实时生成" : "代码已生成",
+			rawDetail,
+			timeLabel: timeLabel(msg.created_at),
+			questionIndex: q,
+			badges: q ? [`Q${q}`, "代码"] : ["代码"],
+		};
+	}
 	const generatedImage = imageEvent(msg, content, actor, q);
 	if (generatedImage) return generatedImage;
-	const isStreaming = msg.stream_state === "streaming";
 	const structured = isStreaming
 		? null
 		: structuredAgentSummary(content, actor);
@@ -809,6 +830,17 @@ function toolEvent(msg: ToolMessage): TimelineEvent | null {
 		status: "warning",
 		title: "代码执行出错，正在改错",
 		detail: brief(desc || code, 180),
+		rawDetail: [
+			desc,
+			...output.map((item) =>
+				item.res_type === "error"
+					? `${item.name}: ${item.value}\n${item.traceback}`
+					: (item.msg ?? ""),
+			),
+			code ? `\n代码：\n${code}` : "",
+		]
+			.filter(Boolean)
+			.join("\n"),
 		timeLabel: timeLabel(msg.created_at),
 		questionIndex: q,
 		badges: q ? [`Q${q}`, "改错"] : ["改错"],
@@ -1529,6 +1561,136 @@ const progressSummary = computed(() => {
 	return { total, done, warnings };
 });
 
+function conciseTitle(title: string) {
+	return stripMarkdown(title)
+		.replace(/\s*[·・]\s*(?:已完成|进行中|写作中|求解中|需关注|已停止)\s*$/, "")
+		.replace(/^(?:正在|已)\s*/, "")
+		.trim();
+}
+
+const lastCompletedWork = computed(() =>
+	[...displayEvents.value]
+		.reverse()
+		.find(
+			(event) =>
+				event.side !== "right" &&
+				event.type !== "choice" &&
+				event.status === "done",
+		),
+);
+
+const currentFlowStep = computed(() =>
+	flowSteps.value.find(
+		(step) => step.status === "active" || step.status === "warning",
+	),
+);
+
+const followingFlowStep = computed(() => {
+	const current = currentFlowStep.value;
+	if (!current)
+		return flowSteps.value.find((step) => step.status === "pending");
+	const index = flowSteps.value.findIndex((step) => step.key === current.key);
+	return flowSteps.value
+		.slice(index + 1)
+		.find((step) => step.status === "pending");
+});
+
+const narrativeSummary = computed(() => {
+	const completed = conciseTitle(lastCompletedWork.value?.title ?? "前置准备");
+	if (taskCompletedForDisplay()) {
+		return `刚刚完成了${completed}。全部流程已经结束，可以在右侧检查论文、图片和代码。`;
+	}
+	if (taskStoppedForDisplay()) {
+		return `刚刚完成了${completed}。当前流程已经停止，请先查看下方的错误动作，再决定是否继续。`;
+	}
+	if (activeWork.value.status === "waiting") {
+		const next =
+			currentFlowStep.value?.label ??
+			followingFlowStep.value?.label ??
+			"后续步骤";
+		return `刚刚完成了${completed}。下一步是${next}，当前正在等待操作。`;
+	}
+	const current = conciseTitle(activeWork.value.title);
+	const next = followingFlowStep.value?.label;
+	return `刚刚完成了${completed}。现在由${activeWork.value.role}继续${current}${next ? `；完成后将进入${next}` : ""}。`;
+});
+
+function eventSentence(ev: TimelineEvent) {
+	const title = conciseTitle(ev.title) || "处理当前步骤";
+	const subject = ev.side === "right" ? "你" : ev.role || ev.actor;
+	if (ev.type === "choice") {
+		return ev.choiceKind === "question"
+			? questionConfirmed.value
+				? "问题划分已经确认，接下来会生成建模方案。"
+				: "问题划分已经完成，请确认后继续。"
+			: modelingConfirmed.value
+				? "建模方案已经确认，接下来会生成完整方案并开始求解。"
+				: "候选建模方案已经生成，请选择后继续。";
+	}
+	if (ev.side === "right") return `${subject}${title}。`;
+	if (ev.status === "done") return `${subject}完成了${title}。`;
+	if (ev.status === "warning" || ev.status === "error")
+		return `${subject}在${title}时遇到问题，正在处理。`;
+	if (ev.status === "waiting") return `${subject}正在等待${title}。`;
+	return `${subject}正在${title}。`;
+}
+
+function visibleActionEvents(ev: TimelineEvent) {
+	const events = ev.groupEvents?.length ? ev.groupEvents : [ev];
+	const meaningful = events.filter(
+		(event) =>
+			event.type !== "choice" &&
+			Boolean(
+				event.title ||
+					event.detail ||
+					event.rawDetail ||
+					event.artifacts?.length,
+			),
+	);
+	return meaningful.slice(-10);
+}
+
+function hiddenActionCount(ev: TimelineEvent) {
+	const count = ev.groupEvents?.length ?? 1;
+	return Math.max(0, count - visibleActionEvents(ev).length);
+}
+
+function actionExpandable(ev: TimelineEvent) {
+	return Boolean(
+		ev.rawDetail ||
+			hasDistinctDetail(ev) ||
+			ev.problemText ||
+			ev.inputFiles?.length ||
+			nonImageArtifactNames(ev.artifacts).length,
+	);
+}
+
+function isCodeAction(ev: TimelineEvent) {
+	return Boolean(ev.rawDetail && ev.actor === "CoderAgent");
+}
+
+function actionDetail(ev: TimelineEvent) {
+	return ev.rawDetail || ev.detail || ev.problemText || "";
+}
+
+function actionStatusText(status: TimelineEvent["status"]) {
+	if (status === "done") return "已完成";
+	if (status === "warning") return "需处理";
+	if (status === "error") return "失败";
+	if (status === "waiting") return "等待中";
+	return "进行中";
+}
+
+async function copyActionDetail(ev: TimelineEvent) {
+	const content = actionDetail(ev);
+	if (!content) return;
+	await navigator.clipboard.writeText(content);
+	copiedActionId.value = ev.id;
+	window.setTimeout(() => {
+		if (copiedActionId.value === ev.id) copiedActionId.value = "";
+	}, 1600);
+}
+
 function actorIcon(actor: string) {
 	if (actor === "User") return UserRound;
 	if (actor === "CoderAgent") return Code2;
@@ -1545,16 +1707,6 @@ function statusIcon(ev: TimelineEvent) {
 	if (ev.status === "error") return AlertTriangle;
 	if (ev.type === "choice") return MessageSquareText;
 	return LoaderCircle;
-}
-
-function toggleProblemDetail(eventId: string) {
-	const next = new Set(expandedProblemIds.value);
-	if (next.has(eventId)) {
-		next.delete(eventId);
-	} else {
-		next.add(eventId);
-	}
-	expandedProblemIds.value = next;
 }
 
 function inputFileType(filename: string) {
@@ -1586,32 +1738,6 @@ async function loadLegacyInputFiles(taskId?: string) {
 	} catch {
 		// 旧任务附件读取失败时仍保留紧凑的题目信息卡片。
 	}
-}
-
-function flowStepClass(status: FlowStep["status"]) {
-	if (status === "done") return "border-blue-200 bg-blue-50 text-blue-700";
-	if (status === "active")
-		return "border-emerald-200 bg-emerald-50 text-emerald-700 shadow-[0_0_0_2px_rgba(16,185,129,0.08)]";
-	if (status === "warning")
-		return "border-amber-200 bg-amber-50 text-amber-700 shadow-[0_0_0_2px_rgba(245,158,11,0.08)]";
-	return "border-slate-200 bg-slate-50 text-slate-400";
-}
-
-function questionStatusClass(status: QuestionStatusType) {
-	if (status === "done") return "border-blue-200 bg-blue-50 text-blue-700";
-	if (status === "solving")
-		return "border-emerald-200 bg-emerald-50 text-emerald-700";
-	if (status === "writing")
-		return "border-violet-200 bg-violet-50 text-violet-700";
-	if (status === "debugging")
-		return "border-amber-200 bg-amber-50 text-amber-700";
-	if (status === "judging")
-		return "border-orange-200 bg-orange-50 text-orange-700";
-	if (status === "restarting" || status === "recoding")
-		return "border-red-200 bg-red-50 text-red-700";
-	if (status === "failed") return "border-red-300 bg-red-100 text-red-800";
-	if (status === "plotting") return "border-cyan-200 bg-cyan-50 text-cyan-700";
-	return "border-slate-200 bg-slate-50 text-slate-400";
 }
 
 function scrollToBottom(force = false) {
@@ -1653,273 +1779,370 @@ watch(
 </script>
 
 <template>
-	<div class="flex h-full min-h-0 flex-col bg-slate-50/70">
-		<div class="border-b border-slate-200/80 bg-white/80 px-3 py-2.5 backdrop-blur">
+	<div class="narrative-shell flex h-full min-h-0 flex-col" data-narrative-flow="true">
+		<header class="narrative-header">
 			<div class="flex min-w-0 items-center gap-2">
-				<div class="flex shrink-0 items-center gap-1.5 text-slate-800">
-					<MessageSquareText class="h-4 w-4 text-blue-600" />
-					<span class="text-xs font-bold">Agent 流程</span>
-				</div>
-				<div class="h-4 w-px shrink-0 bg-slate-200" />
-				<div class="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-emerald-100 bg-emerald-50/70 px-2 py-1">
-					<LoaderCircle
-						v-if="activeWork.status === 'running'"
-						class="h-3.5 w-3.5 shrink-0 animate-spin text-emerald-600"
-					/>
-					<AlertTriangle
-						v-else-if="activeWork.status === 'warning' || activeWork.status === 'error'"
-						class="h-3.5 w-3.5 shrink-0 text-amber-600"
-					/>
-					<CheckCircle2
-						v-else-if="activeWork.status === 'done'"
-						class="h-3.5 w-3.5 shrink-0 text-blue-600"
-					/>
-					<Clock3 v-else class="h-3.5 w-3.5 shrink-0 text-slate-400" />
-					<span class="shrink-0 text-[10px] font-semibold text-emerald-700">
-						{{ activeWork.status === 'running' ? '正在工作' : activeWork.status === 'done' ? '已完成' : activeWork.status === 'waiting' ? '等待中' : '需关注' }}
-					</span>
-					<span class="shrink-0 text-[10px] text-slate-400">{{ activeWork.actor }}</span>
-					<span class="truncate text-[11px] font-semibold text-slate-800">{{ activeWork.title }}</span>
-				</div>
-				<div class="shrink-0 text-[10px] text-slate-500">
-					{{ progressSummary.done }}/{{ progressSummary.total }}
-					<span v-if="progressSummary.warnings" class="text-amber-600">· {{ progressSummary.warnings }} 提醒</span>
-				</div>
+				<MessageSquareText class="h-4 w-4 shrink-0 text-slate-700" />
+				<span class="text-xs font-semibold text-slate-800">Agent 进度</span>
+				<span class="h-3 w-px bg-slate-200" />
+				<span class="relative flex h-2 w-2 shrink-0">
+					<span v-if="activeWork.status === 'running'" class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+					<span class="relative inline-flex h-2 w-2 rounded-full" :class="activeWork.status === 'running' ? 'bg-emerald-500' : activeWork.status === 'done' ? 'bg-blue-500' : activeWork.status === 'waiting' ? 'bg-slate-300' : 'bg-amber-500'" />
+				</span>
+				<span class="min-w-0 flex-1 truncate text-[11px] text-slate-500">{{ activeWork.role }} · {{ activeWork.title }}</span>
+				<span class="shrink-0 text-[10px] tabular-nums text-slate-400">{{ progressSummary.done }}/{{ progressSummary.total }}</span>
 			</div>
+			<nav class="narrative-stage-nav" aria-label="任务阶段">
+				<template v-for="(step, index) in flowSteps" :key="step.key">
+					<span v-if="index" class="text-slate-300">/</span>
+					<span :class="{ 'font-semibold text-slate-800': step.status === 'active', 'text-amber-600': step.status === 'warning', 'text-slate-500': step.status === 'done', 'text-slate-300': step.status === 'pending' }" :title="step.detail">{{ step.label }}</span>
+				</template>
+			</nav>
+		</header>
 
-			<div class="mt-2 flex items-center gap-1 overflow-x-auto pb-0.5">
-				<div
-					v-for="step in flowSteps"
-					:key="step.key"
-					class="flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold"
-					:class="flowStepClass(step.status)"
-					:title="step.detail"
-				>
-					<CheckCircle2 v-if="step.status === 'done'" class="h-3 w-3" />
-					<LoaderCircle v-else-if="step.status === 'active'" class="h-3 w-3 animate-spin" />
-					<AlertTriangle v-else-if="step.status === 'warning'" class="h-3 w-3" />
-					<span v-else class="h-1.5 w-1.5 rounded-full bg-current opacity-50" />
-					{{ step.label }}
-				</div>
-				<div class="mx-1 h-3 w-px shrink-0 bg-slate-200" />
-				<div
-					v-for="q in questionStatuses"
-					:key="q.index"
-					class="shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold"
-					:class="questionStatusClass(q.status)"
-				>
-					{{ q.label }} · {{ q.detail }}
-				</div>
-			</div>
-		</div>
+		<div ref="scrollRef" data-agent-timeline-scroll="true" class="narrative-scroll min-h-0 flex-1 overflow-y-auto" @scroll="onScroll">
+			<div v-if="displayEvents.length === 0" class="flex h-full items-center justify-center px-6 text-sm text-slate-400">任务开始后，这里会持续总结刚完成的工作和下一步安排。</div>
 
-		<div
-			ref="scrollRef"
-			data-agent-timeline-scroll="true"
-			class="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-3"
-			@scroll="onScroll"
-		>
-			<div v-if="displayEvents.length === 0" class="flex h-full items-center justify-center text-sm text-slate-400">任务消息会以对话流形式显示在这里。</div>
+			<div v-else class="mx-auto w-full max-w-3xl px-4 pb-20 pt-4">
+				<section class="narrative-overview" aria-live="polite">
+					<Sparkles class="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
+					<p>{{ narrativeSummary }}</p>
+				</section>
 
-			<div v-for="ev in displayEvents" :key="ev.id" class="flex" :class="{ 'justify-end': ev.side === 'right', 'justify-center': ev.side === 'center', 'justify-start': ev.side === 'left' }">
-				<div v-if="ev.side === 'center'" class="max-w-[90%] rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-500 shadow-sm">{{ ev.title }} <span v-if="ev.progressText" class="ml-1 font-mono text-blue-600">{{ ev.progressText }}</span></div>
+				<article v-for="ev in displayEvents" :key="ev.id" class="narrative-entry" :class="{ 'narrative-entry--user': ev.side === 'right', 'narrative-entry--warning': ev.status === 'warning' || ev.status === 'error' }">
+					<div class="narrative-sentence">
+						<component :is="statusIcon(ev)" class="mt-0.5 h-4 w-4 shrink-0" :class="{ 'animate-spin text-emerald-600': ev.status === 'running', 'text-blue-600': ev.status === 'done', 'text-amber-600': ev.status === 'warning', 'text-red-600': ev.status === 'error', 'text-slate-400': ev.status === 'waiting' }" />
+						<p class="min-w-0 flex-1">{{ eventSentence(ev) }}</p>
+						<span v-if="ev.timeLabel" class="shrink-0 pt-0.5 text-[10px] tabular-nums text-slate-400">{{ ev.timeLabel }}</span>
+					</div>
 
-				<div v-else class="flex max-w-[98%] gap-1.5" :class="{ 'flex-row-reverse': ev.side === 'right' }">
-					<div class="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full shadow-sm" :class="{ 'bg-blue-600 text-white': ev.side === 'left' && ev.status !== 'warning' && ev.status !== 'error', 'bg-amber-500 text-white': ev.status === 'warning', 'bg-red-500 text-white': ev.status === 'error', 'bg-slate-900 text-white': ev.side === 'right' }"><component :is="actorIcon(ev.actor)" class="h-3.5 w-3.5" /></div>
-
-					<div class="min-w-0 rounded-2xl border px-3 py-2.5 shadow-sm" :class="{ 'rounded-tl-md border-slate-200 bg-white text-slate-800': ev.side === 'left' && ev.status !== 'warning' && ev.status !== 'error', 'rounded-tr-md border-slate-800 bg-slate-900 text-white': ev.side === 'right', 'rounded-tl-md border-amber-200 bg-amber-50 text-amber-950': ev.status === 'warning', 'rounded-tl-md border-red-200 bg-red-50 text-red-950': ev.status === 'error', 'subproblem-group-card': ev.isGroup }">
-						<div class="flex items-start justify-between gap-3">
-							<div class="min-w-0">
-								<div class="flex flex-wrap items-center gap-1.5"><span class="text-[11px] font-semibold opacity-70">{{ ev.actor }}</span><span class="text-[10px] opacity-45">{{ ev.role }}</span><span v-for="badge in ev.badges" :key="badge" class="rounded-full border px-1.5 py-0.5 text-[10px] opacity-80">{{ badge }}</span></div>
-								<div class="mt-1 flex items-center gap-1.5 text-sm font-semibold"><component :is="statusIcon(ev)" class="h-3.5 w-3.5" :class="{ 'animate-spin': ev.status === 'running' }" /><span>{{ ev.title }}</span></div>
-							</div>
-							<span class="shrink-0 text-[10px] opacity-45">{{ ev.timeLabel }}</span>
-						</div>
-
-						<p v-if="ev.detail && !ev.isGroup" class="message-detail mt-1.5 whitespace-pre-wrap break-words text-xs leading-relaxed opacity-80" :class="{ 'streaming-detail': ev.status === 'running' && ev.type === 'raw' }" :data-streaming-detail="ev.status === 'running' && ev.type === 'raw' ? 'true' : undefined">{{ ev.detail }}</p>
-						<div v-if="ev.problemText" class="mt-2 flex flex-wrap gap-1.5">
-							<button
-								type="button"
-								class="inline-flex max-w-full items-center gap-1.5 rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[11px] font-medium transition hover:bg-white/15"
-								:title="expandedProblemIds.has(ev.id) ? '收起题目信息' : '查看题目信息'"
-								@click="toggleProblemDetail(ev.id)"
-							>
-								<FileText class="h-3.5 w-3.5 shrink-0 text-blue-200" />
-								<span>题目信息</span>
-								<span class="opacity-55">题目文本</span>
-								<ChevronDown class="h-3 w-3 shrink-0 transition-transform" :class="{ 'rotate-180': expandedProblemIds.has(ev.id) }" />
-							</button>
-							<button
-								v-for="file in ev.inputFiles"
-								:key="file"
-								type="button"
-								data-chat-artifact-link-ignore="true"
-								class="inline-flex max-w-full items-center gap-1.5 rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[11px] font-medium transition hover:bg-white/15"
-								:title="`下载 ${file}`"
-								@click="emit('fileOpen', file)"
-							>
-								<component :is="inputFileIcon(file)" class="h-3.5 w-3.5 shrink-0 text-emerald-200" />
-								<span class="max-w-44 truncate">{{ file }}</span>
-								<span class="shrink-0 opacity-55">{{ inputFileType(file) }}</span>
-								<Download class="h-3 w-3 shrink-0 opacity-60" />
-							</button>
-						</div>
-						<p
-							v-if="ev.problemText && expandedProblemIds.has(ev.id)"
-							class="message-detail mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-white/10 bg-white/5 px-2.5 py-2 text-xs leading-relaxed opacity-80"
-						>
-							{{ ev.problemText }}
-						</p>
-						<p v-if="ev.progressText && !ev.isGroup" class="mt-1.5 rounded-lg border border-current/10 bg-white/45 px-2 py-1 text-[11px] opacity-90">{{ ev.progressText }}</p>
-
-						<div v-if="ev.groupEvents?.length && ev.status !== 'done' && latestGroupEvent(ev)" class="mt-2 rounded-xl border border-slate-200/70 bg-white/60 px-2.5 py-2 shadow-inner">
-							<div class="flex items-center gap-1.5 text-[11px]">
-								<span class="flex shrink-0 items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 font-bold text-emerald-700">
-									<span class="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-									当前
-								</span>
-								<span class="min-w-0 flex-1 truncate font-semibold text-slate-700">{{ latestGroupEvent(ev)?.actor }} · {{ latestGroupEvent(ev)?.title }}</span>
-								<span class="shrink-0 text-[10px] text-slate-400">{{ latestGroupEvent(ev)?.timeLabel }}</span>
-							</div>
-							<div
-								v-if="hasDistinctDetail(latestGroupEvent(ev))"
-								class="message-detail streaming-detail mt-1.5 whitespace-pre-line break-words text-[11px] leading-relaxed text-slate-500"
-								data-streaming-detail="true"
-							>
-								{{ latestGroupEvent(ev)?.detail }}
-							</div>
-						</div>
-
-						<div v-if="ev.type === 'choice'" class="choice-attachment mt-3 overflow-hidden rounded-2xl border border-slate-200 bg-white text-slate-800 shadow-sm">
-							<div class="flex items-start justify-between gap-3 border-b border-slate-100 bg-slate-50 px-3 py-2">
-								<div class="min-w-0">
-									<div class="flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
-										<MessageSquareText class="h-3.5 w-3.5 text-blue-600" />
-										<span>{{ ev.choiceKind === 'question' ? '问题划分附件' : '建模方案附件' }}</span>
+					<p v-if="hiddenActionCount(ev)" class="narrative-action-omitted">此前已完成 {{ hiddenActionCount(ev) }} 个动作</p>
+					<div v-if="ev.type !== 'choice'" class="narrative-actions">
+						<template v-for="action in visibleActionEvents(ev)" :key="action.id">
+							<details v-if="actionExpandable(action)" class="narrative-action">
+								<summary>
+									<component :is="actorIcon(action.actor)" class="h-3.5 w-3.5 shrink-0 text-slate-400" />
+									<span class="min-w-0 flex-1 truncate">{{ action.title }}</span>
+									<span class="narrative-action-status" :data-status="action.status">{{ actionStatusText(action.status) }}</span>
+									<ChevronRight class="narrative-action-chevron h-3.5 w-3.5 shrink-0" />
+								</summary>
+								<div class="narrative-action-body">
+									<div v-if="actionDetail(action)" class="mb-1 flex justify-end">
+										<button type="button" class="narrative-copy-button" @click="copyActionDetail(action)">
+											<Copy class="h-3 w-3" />
+											{{ copiedActionId === action.id ? '已复制' : '复制' }}
+										</button>
 									</div>
-									<p class="mt-0.5 truncate text-[10px] text-slate-500">
-										{{ ev.choiceKind === 'question'
-											? (questionConfirmed ? '问题划分已确认，流程会继续进入建模方案。' : '请确认题目拆成哪些子问题，可先修改再确认。')
-											: (modelingConfirmed ? '建模方案已确认，ModelerAgent 将先生成整体方案。' : '请为每一问选择建模方案，可重新生成或自定义。') }}
-									</p>
+									<pre v-if="isCodeAction(action)" class="narrative-code"><code>{{ actionDetail(action) }}</code></pre>
+									<p v-else-if="actionDetail(action)" class="message-detail whitespace-pre-wrap text-xs leading-6 text-slate-600">{{ actionDetail(action) }}</p>
+									<div v-if="action.inputFiles?.length" class="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+										<button v-for="file in action.inputFiles" :key="file" type="button" data-chat-artifact-link-ignore="true" class="narrative-file-link" @click="emit('fileOpen', file)">
+											<component :is="inputFileIcon(file)" class="h-3.5 w-3.5" />
+											<span class="max-w-48 truncate">{{ file }}</span>
+											<span class="text-slate-400">{{ inputFileType(file) }}</span>
+											<Download class="h-3 w-3" />
+										</button>
+									</div>
 								</div>
-								<div class="flex shrink-0 items-center gap-1.5">
-									<span class="rounded-full px-2 py-0.5 text-[10px] font-semibold" :class="(ev.choiceKind === 'question' ? questionConfirmed : modelingConfirmed) ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'">
-										{{ (ev.choiceKind === 'question' ? questionConfirmed : modelingConfirmed) ? '已确认' : '待确认' }}
-									</span>
-									<button
-										v-if="!(ev.choiceKind === 'question' ? questionConfirmed : modelingConfirmed)"
-										class="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600 hover:bg-slate-100"
-										@click="ev.choiceKind === 'question' ? (inlineQuestionPanelOpen = !inlineQuestionPanelOpen) : (inlineModelingPanelOpen = !inlineModelingPanelOpen)"
-									>
-										{{ ev.choiceKind === 'question' ? (inlineQuestionPanelOpen ? '收起' : '展开') : (inlineModelingPanelOpen ? '收起' : '展开') }}
-									</button>
-								</div>
+							</details>
+							<div v-else class="narrative-action narrative-action--static">
+								<component :is="actorIcon(action.actor)" class="h-3.5 w-3.5 shrink-0 text-slate-400" />
+								<span class="min-w-0 flex-1 truncate">{{ action.title }}</span>
+								<span class="narrative-action-status" :data-status="action.status">{{ actionStatusText(action.status) }}</span>
 							</div>
+						</template>
+					</div>
 
-							<div v-if="ev.choiceKind === 'question' && questionConfirmed" class="flex items-center gap-2 px-3 py-3 text-xs text-blue-700">
-								<CheckCircle2 class="h-4 w-4 shrink-0" />
-								<span>问题划分已确认，后续 Agent 将基于该问题结构生成建模方案。</span>
-							</div>
-							<div v-else-if="ev.choiceKind === 'modeling' && modelingConfirmed" class="flex items-center gap-2 px-3 py-3 text-xs text-blue-700">
-								<CheckCircle2 class="h-4 w-4 shrink-0" />
-								<span>建模方案已确认，ModelerAgent 将先生成整体建模方案，再交给 Coder 求解。</span>
-							</div>
-							<div v-else class="agent-conversation-inline-panel p-2 text-xs text-slate-800">
-								<QuestionDiscussion
-									v-if="ev.choiceKind === 'question' && props.taskId"
-									:task_id="props.taskId"
-									:expanded="inlineQuestionPanelOpen"
-									:locked="false"
-									:disabled="false"
-									@toggle="inlineQuestionPanelOpen = !inlineQuestionPanelOpen"
-									@confirm="handleInlineQuestionConfirm"
-								/>
-								<ModelingDiscussion
-									v-else-if="ev.choiceKind === 'modeling'"
-									:expanded="inlineModelingPanelOpen"
-									:locked="false"
-									:disabled="false"
-									@toggle="inlineModelingPanelOpen = !inlineModelingPanelOpen"
-									@confirm="handleInlineModelingConfirm"
-								/>
-							</div>
-						</div>
-
-						<div v-if="imageArtifactNames(ev.artifacts).length" class="mt-3">
-							<div class="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold text-slate-500">
-								<ImageIcon class="h-3 w-3 text-blue-500" />
-								<span>图片产物</span>
-								<span class="rounded-full bg-blue-50 px-1.5 py-0.5 text-blue-600">{{ imageArtifactNames(ev.artifacts).length }} 张</span>
-							</div>
-							<div class="grid max-h-72 grid-cols-2 gap-2 overflow-y-auto pr-1">
-								<button
-									v-for="file in imageArtifactNames(ev.artifacts)"
-									:key="file"
-									type="button"
-									class="group/image overflow-hidden rounded-xl border border-slate-200 bg-white/80 text-left shadow-sm transition hover:border-blue-300 hover:shadow-md"
-									:title="`查看图片 ${file}`"
-									@click="emit('imageOpen', file)"
-								>
-									<div class="flex h-24 items-center justify-center overflow-hidden bg-slate-50">
-										<img :src="imageArtifactUrl(file)" :alt="normalizeImageFilename(file)" class="h-full w-full object-contain transition duration-200 group-hover/image:scale-[1.03]" loading="lazy" />
-									</div>
-									<div class="flex items-center gap-1.5 border-t border-slate-100 px-2 py-1.5 text-[10px] font-medium text-slate-600">
-										<ImageIcon class="h-3 w-3 shrink-0 text-blue-500" />
-										<span class="truncate">{{ normalizeImageFilename(file) }}</span>
-									</div>
-								</button>
-							</div>
-						</div>
-						<div v-if="nonImageArtifactNames(ev.artifacts).length" class="mt-3 grid gap-1.5">
-							<div v-for="file in nonImageArtifactNames(ev.artifacts)" :key="file" class="flex items-center gap-2 rounded-xl border border-current/10 bg-white/55 px-2.5 py-1.5 text-xs"><FileText class="h-3.5 w-3.5 opacity-70" /><span class="truncate">{{ file }}</span></div>
+					<div v-if="ev.type === 'choice'" class="narrative-choice">
+						<button v-if="!(ev.choiceKind === 'question' ? questionConfirmed : modelingConfirmed)" type="button" class="narrative-choice-trigger" @click="ev.choiceKind === 'question' ? (inlineQuestionPanelOpen = !inlineQuestionPanelOpen) : (inlineModelingPanelOpen = !inlineModelingPanelOpen)">
+							<MessageSquareText class="h-3.5 w-3.5" />
+							<span>{{ ev.choiceKind === 'question' ? '查看并确认问题划分' : '查看并选择建模方案' }}</span>
+							<ChevronRight class="h-3.5 w-3.5 transition-transform" :class="{ 'rotate-90': ev.choiceKind === 'question' ? inlineQuestionPanelOpen : inlineModelingPanelOpen }" />
+						</button>
+						<span v-else class="inline-flex items-center gap-1.5 text-xs text-blue-700"><CheckCircle2 class="h-3.5 w-3.5" />已确认，无需再次操作</span>
+						<div v-if="!(ev.choiceKind === 'question' ? questionConfirmed : modelingConfirmed) && (ev.choiceKind === 'question' ? inlineQuestionPanelOpen : inlineModelingPanelOpen)" class="narrative-choice-panel">
+							<QuestionDiscussion v-if="ev.choiceKind === 'question' && props.taskId" :task_id="props.taskId" :expanded="true" :locked="false" :disabled="false" @toggle="inlineQuestionPanelOpen = false" @confirm="handleInlineQuestionConfirm" />
+							<ModelingDiscussion v-else-if="ev.choiceKind === 'modeling'" :expanded="true" :locked="false" :disabled="false" @toggle="inlineModelingPanelOpen = false" @confirm="handleInlineModelingConfirm" />
 						</div>
 					</div>
-				</div>
+
+					<div v-if="imageArtifactNames(ev.artifacts).length" class="narrative-images" aria-label="生成的图片">
+						<button v-for="file in imageArtifactNames(ev.artifacts)" :key="file" type="button" class="narrative-image" :title="'查看图片 ' + file" @click="emit('imageOpen', file)">
+							<img :src="imageArtifactUrl(file)" :alt="normalizeImageFilename(file)" loading="lazy" />
+							<span>{{ normalizeImageFilename(file) }}</span>
+						</button>
+					</div>
+					<div v-if="nonImageArtifactNames(ev.artifacts).length" class="narrative-files">
+						<button v-for="file in nonImageArtifactNames(ev.artifacts)" :key="file" type="button" class="narrative-file-link" @click="emit('fileOpen', file)">
+							<FileText class="h-3.5 w-3.5" />
+							<span class="truncate">{{ file }}</span>
+						</button>
+					</div>
+				</article>
 			</div>
 		</div>
 	</div>
 </template>
 
 <style>
-.agent-conversation-inline-panel .question-discussion,
-.agent-conversation-inline-panel .modeling-discussion {
+.narrative-shell {
+	background: rgba(255, 255, 255, 0.88);
+	color: #1e293b;
+}
+
+.narrative-header {
+	border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+	background: rgba(255, 255, 255, 0.86);
+	padding: 0.65rem 1rem 0.55rem;
+	backdrop-filter: blur(14px);
+}
+
+.narrative-stage-nav {
+	display: flex;
+	gap: 0.45rem;
+	margin-top: 0.45rem;
+	overflow-x: auto;
+	font-size: 10px;
+	white-space: nowrap;
+	scrollbar-width: none;
+}
+
+.narrative-scroll {
+	scrollbar-gutter: stable;
+}
+
+.narrative-overview {
+	display: flex;
+	gap: 0.65rem;
+	padding: 0.25rem 0.25rem 1.15rem;
+	font-size: 0.875rem;
+	font-weight: 520;
+	line-height: 1.75;
+	color: #334155;
+}
+
+.narrative-entry {
+	padding: 1rem 0.25rem 1.1rem;
+	border-top: 1px solid rgba(226, 232, 240, 0.72);
+}
+
+.narrative-entry--warning {
+	border-top-color: rgba(245, 158, 11, 0.24);
+}
+
+.narrative-sentence {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.55rem;
+	font-size: 0.8125rem;
+	font-weight: 520;
+	line-height: 1.65;
+}
+
+.narrative-entry--user .narrative-sentence {
+	color: #475569;
+}
+
+.narrative-action-omitted {
+	margin: 0.45rem 0 0 1.55rem;
+	font-size: 10px;
+	color: #94a3b8;
+}
+
+.narrative-actions {
+	margin-top: 0.45rem;
+	margin-left: 1.15rem;
+}
+
+.narrative-action {
+	font-size: 0.75rem;
+	color: #64748b;
+}
+
+.narrative-action + .narrative-action {
+	margin-top: 0.05rem;
+}
+
+.narrative-action summary,
+.narrative-action--static {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	min-height: 2rem;
+	margin-left: -0.45rem;
+	padding: 0.3rem 0.45rem;
+	border-radius: 0.45rem;
+	list-style: none;
+	cursor: pointer;
+	transition: background-color 150ms ease, color 150ms ease;
+}
+
+.narrative-action--static {
+	cursor: default;
+}
+
+.narrative-action summary::-webkit-details-marker {
+	display: none;
+}
+
+.narrative-action summary:hover {
+	background: #f1f5f9;
+	color: #334155;
+}
+
+.narrative-action-chevron {
+	opacity: 0;
+	color: #64748b;
+	transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.narrative-action summary:hover .narrative-action-chevron,
+.narrative-action[open] .narrative-action-chevron {
+	opacity: 1;
+}
+
+.narrative-action[open] .narrative-action-chevron {
+	transform: rotate(90deg);
+}
+
+.narrative-action-status {
+	flex-shrink: 0;
+	font-size: 10px;
+	color: #94a3b8;
+}
+
+.narrative-action-status[data-status="running"] {
+	color: #059669;
+}
+
+.narrative-action-status[data-status="warning"],
+.narrative-action-status[data-status="error"] {
+	color: #d97706;
+}
+
+.narrative-action-body {
+	margin: 0.2rem 0 0.65rem 1rem;
+	padding-left: 0.75rem;
+	border-left: 1px solid #e2e8f0;
+}
+
+.narrative-code {
+	max-height: 22rem;
+	overflow: auto;
+	overscroll-behavior: contain;
+	border-radius: 0.55rem;
+	background: #0f172a;
+	padding: 0.85rem 1rem;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	font-size: 11px;
+	line-height: 1.65;
+	color: #e2e8f0;
+	white-space: pre;
+	scrollbar-width: thin;
+	user-select: text;
+}
+
+.narrative-copy-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3rem;
+	padding: 0.2rem 0.4rem;
+	border-radius: 0.35rem;
+	font-size: 10px;
+	color: #64748b;
+}
+
+.narrative-copy-button:hover {
+	background: #f1f5f9;
+	color: #334155;
+}
+
+.narrative-choice {
+	margin: 0.55rem 0 0 1.55rem;
+}
+
+.narrative-choice-trigger,
+.narrative-file-link {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.45rem;
+	min-width: 0;
+	padding: 0.35rem 0.45rem;
+	border-radius: 0.4rem;
+	font-size: 0.75rem;
+	color: #475569;
+	transition: background-color 150ms ease, color 150ms ease;
+}
+
+.narrative-choice-trigger:hover,
+.narrative-file-link:hover {
+	background: #f1f5f9;
+	color: #1e293b;
+}
+
+.narrative-choice-panel {
+	margin-top: 0.5rem;
+	padding-left: 0.75rem;
+	border-left: 1px solid #cbd5e1;
+}
+
+.narrative-choice-panel .question-discussion,
+.narrative-choice-panel .modeling-discussion {
 	display: flex !important;
 	max-height: none !important;
-	border-radius: 0.75rem;
-	border: 1px solid rgba(226, 232, 240, 0.8);
+	border: 0 !important;
+	border-radius: 0 !important;
+	background: transparent !important;
 	box-shadow: none !important;
 }
 
-.agent-conversation-inline-panel .question-discussion > button,
-.agent-conversation-inline-panel .modeling-discussion > button {
+.narrative-choice-panel .question-discussion > button,
+.narrative-choice-panel .modeling-discussion > button {
 	display: none !important;
 }
 
-.choice-attachment .question-discussion,
-.choice-attachment .modeling-discussion {
-	background: transparent !important;
-}
-
-.subproblem-group-card {
-	min-width: min(620px, 100%);
-	background:
-		radial-gradient(circle at 14% 0%, rgba(255, 255, 255, 0.82), transparent 38%),
-		linear-gradient(135deg, rgba(255, 255, 255, 0.88), rgba(241, 245, 249, 0.74)) !important;
-	backdrop-filter: blur(18px) saturate(1.15);
-	-webkit-backdrop-filter: blur(18px) saturate(1.15);
-}
-
-.streaming-detail {
-	max-height: 8.5rem;
-	overflow-y: auto;
-	padding-right: 0.25rem;
+.narrative-images {
+	display: flex;
+	gap: 0.65rem;
+	margin: 0.7rem 0 0 1.55rem;
+	overflow-x: auto;
+	padding-bottom: 0.25rem;
 	scrollbar-width: thin;
+}
+
+.narrative-image {
+	width: 9.5rem;
+	flex: 0 0 9.5rem;
+	text-align: left;
+	color: #64748b;
+}
+
+.narrative-image img {
+	height: 5.5rem;
+	width: 100%;
+	object-fit: contain;
+	border-radius: 0.45rem;
+	background: #f8fafc;
+}
+
+.narrative-image span {
+	display: block;
+	margin-top: 0.3rem;
+	overflow: hidden;
+	font-size: 10px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.narrative-files {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.2rem 0.5rem;
+	margin: 0.55rem 0 0 1.15rem;
 }
 
 .message-detail {
 	overflow-wrap: anywhere;
 	word-break: break-word;
 }
-
 </style>
