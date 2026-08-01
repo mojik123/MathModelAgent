@@ -6,10 +6,17 @@ import { computed, ref } from "vue";
 const defaultModelConfig: ModelConfig = {
 	apiKey: "",
 	baseUrl: "https://api.deepseek.com/anthropic",
-	modelId: "deepseek-v4-pro[1m]",
+	modelId: "deepseek-v4-flash[1m]",
 	apiType: "anthropic",
 	contextWindow: 1048576,
 };
+
+/** 将旧版 DeepSeek V4 Pro 默认配置迁移到当前 Flash 模型。 */
+function migrateDeepSeekModel(config: ModelConfig) {
+	if (["deepseek-v4-pro", "deepseek-v4-pro[1m]"].includes(config.modelId)) {
+		config.modelId = defaultModelConfig.modelId;
+	}
+}
 
 /** API Key 和模型配置 Store */
 export const useApiKeyStore = defineStore(
@@ -124,6 +131,13 @@ export const useApiKeyStore = defineStore(
 		};
 	},
 	{
-		persist: true, // 启用持久化存储
+		persist: {
+			afterHydrate: ({ store }) => {
+				migrateDeepSeekModel(store.coordinatorConfig);
+				migrateDeepSeekModel(store.modelerConfig);
+				migrateDeepSeekModel(store.coderConfig);
+				migrateDeepSeekModel(store.writerConfig);
+			},
+		},
 	},
 );
