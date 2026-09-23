@@ -38,6 +38,8 @@ _CODEX_MODELS = (
     ("gpt-5.6-luna", "GPT-5.6 Luna", ("low", "medium", "high", "xhigh", "max")),
     ("gpt-5.5", "GPT-5.5", ("low", "medium", "high", "xhigh")),
 )
+_DEFAULT_CODEX_MODEL = "gpt-6-luna"
+_DEFAULT_CODEX_REASONING = "max"
 
 # The frontend registry is mirrored here because this endpoint returns complete
 # WorkflowStage objects. Keep IDs and fields aligned with frontend/src/workflow/stages.ts.
@@ -451,6 +453,21 @@ def _configured_model_registry() -> list[dict[str, Any]]:
     ]
 
 
+def _default_model_selection(registry: list[dict[str, Any]]) -> tuple[str, str]:
+    default_model = next(
+        (entry for entry in registry if entry["id"] == _DEFAULT_CODEX_MODEL),
+        registry[0],
+    )
+    options = default_model["reasoning_options"]
+    if _DEFAULT_CODEX_REASONING in options:
+        reasoning = _DEFAULT_CODEX_REASONING
+    elif "medium" in options:
+        reasoning = "medium"
+    else:
+        reasoning = options[0]
+    return default_model["id"], reasoning
+
+
 def _get_codex_runner() -> CodexRunner:
     return CodexRunner()
 
@@ -523,12 +540,12 @@ def _resolve_workflow_run(payload: WorkflowRunPayload) -> tuple[str, Path, dict[
         registry = _configured_model_registry()
         if not registry:
             raise HTTPException(status_code=503, detail="当前没有可用的 Codex 模型。") from exc
-        default_model = registry[0]
+        default_model, default_reasoning = _default_model_selection(registry)
         config = {
             "task_id": task_id,
             "task_key": stage_id,
-            "model": default_model["id"],
-            "reasoning": "medium" if "medium" in default_model["reasoning_options"] else default_model["reasoning_options"][0],
+            "model": default_model,
+            "reasoning": default_reasoning,
         }
 
     registry = {entry["id"]: entry for entry in _configured_model_registry()}
@@ -838,12 +855,12 @@ async def run_workflow_stage(payload: WorkflowRunPayload) -> dict[str, Any]:
         registry = _configured_model_registry()
         if not registry:
             raise HTTPException(status_code=503, detail="当前没有可用的 Codex 模型。") from exc
-        default_model = registry[0]
+        default_model, default_reasoning = _default_model_selection(registry)
         config = {
             "task_id": task_id,
             "task_key": stage_id,
-            "model": default_model["id"],
-            "reasoning": "medium" if "medium" in default_model["reasoning_options"] else default_model["reasoning_options"][0],
+            "model": default_model,
+            "reasoning": default_reasoning,
         }
 
     registry = {entry["id"]: entry for entry in _configured_model_registry()}

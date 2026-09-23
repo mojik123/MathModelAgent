@@ -25,6 +25,8 @@ codex login
 Use the stage model panel to select a model and reasoning strength, click
 `保存本阶段设置`, then click `运行当前阶段`. The run log is written below the
 task workspace under `logs/codex/` and the workbench can stop an active stage.
+When a stage has no saved setting, the default is `gpt-6-luna` with `max`
+reasoning; an explicitly saved stage setting takes precedence.
 
 The existing DeepSeek configuration remains available to the legacy
 multi-agent `/modeling/{task_id}/start` flow. It is separate from the Codex
