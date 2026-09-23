@@ -30,6 +30,12 @@ const models: ModelRegistryEntry[] = [
     reasoning_options: ["low", "medium", "high"],
   },
   {
+    id: "gpt-6-luna",
+    label: "gpt-6-luna",
+    provider: "codex-cli",
+    reasoning_options: ["low", "medium", "high", "xhigh", "max"],
+  },
+  {
     id: "gpt-6-astra",
     label: "gpt-6-astra",
     provider: "openai-responses",
@@ -84,7 +90,8 @@ describe("ModelSelector", () => {
     const wrapper = mountSelector();
     await flushPromises();
 
-    expect(wrapper.text()).toContain("gpt-6-sol");
+    expect(wrapper.text()).toContain("gpt-6-luna");
+    expect(wrapper.text()).toContain("max");
     expect(wrapper.text()).toContain("尚未保存");
     expect(saveTaskModelConfigMock).not.toHaveBeenCalled();
   });
@@ -154,7 +161,7 @@ describe("ModelSelector", () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain("保存失败");
-    expect(wrapper.text()).toContain("gpt-6-sol");
+    expect(wrapper.text()).toContain("gpt-6-luna");
   });
 
   it("saves the no-reasoning sentinel when the selected model has no reasoning options", async () => {

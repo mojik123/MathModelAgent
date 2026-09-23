@@ -36,6 +36,8 @@ const saveError = ref("");
 const isSaving = ref(false);
 const saveSucceeded = ref(false);
 let loadSequence = 0;
+const DEFAULT_MODEL_ID = "gpt-6-luna";
+const DEFAULT_REASONING = "max";
 
 const selectedModelEntry = computed(
   () => models.value.find((model) => model.id === selectedModel.value) ?? null,
@@ -83,8 +85,13 @@ const lastSavedText = computed(() => {
 });
 
 function defaultReasoning(model: ModelRegistryEntry) {
+  if (model.reasoning_options.includes(DEFAULT_REASONING)) return DEFAULT_REASONING;
   if (model.reasoning_options.includes("medium")) return "medium";
   return model.reasoning_options[0] ?? NO_REASONING_OPTION;
+}
+
+function defaultModel() {
+  return models.value.find((model) => model.id === DEFAULT_MODEL_ID) ?? models.value[0];
 }
 
 function storageKey() {
@@ -157,8 +164,9 @@ async function loadSettings() {
       }
       lastSavedAt.value = readSavedTime();
     } else if (models.value.length > 0) {
-      selectedModel.value = models.value[0].id;
-      selectedReasoning.value = defaultReasoning(models.value[0]);
+      const configuredDefault = defaultModel();
+      selectedModel.value = configuredDefault.id;
+      selectedReasoning.value = defaultReasoning(configuredDefault);
     }
 
     loadState.value = "ready";

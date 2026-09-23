@@ -180,6 +180,31 @@ def test_workflow_run_uses_saved_codex_model_and_reasoning(workflow_client, monk
     assert (work_root / task_id / "logs" / "codex").exists()
 
 
+def test_workflow_run_defaults_to_luna_max_without_saved_config(workflow_client, monkeypatch):
+    client, work_root = workflow_client
+    monkeypatch.setattr("app.routers.workflow_router.shutil.which", lambda name: "codex.exe")
+    task_id = "codex-default-task"
+    (work_root / task_id).mkdir()
+
+    class FakeRunner:
+        executable = "codex.exe"
+
+        async def run(self, *, workspace, model, reasoning, prompt, log_path):
+            assert workspace == work_root / task_id
+            assert model == "gpt-6-luna"
+            assert reasoning == "max"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text("fake default log", encoding="utf-8")
+            return CodexEventResult(output="default done", thread_id="thread-default"), 0, ""
+
+    monkeypatch.setattr("app.routers.workflow_router._get_codex_runner", lambda: FakeRunner())
+    response = client.post("/workflow_run", json={"task_id": task_id, "stage_id": "00-intake"})
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "gpt-6-luna"
+    assert response.json()["reasoning"] == "max"
+
+
 def test_workflow_start_returns_run_id_and_persists_terminal_status(workflow_client, monkeypatch):
     client, work_root = workflow_client
     monkeypatch.setattr("app.routers.workflow_router.shutil.which", lambda name: "codex.exe")
