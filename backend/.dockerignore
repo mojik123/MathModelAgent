@@ -12,6 +12,10 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+# Runtime task data and logs are bind-mounted by docker-compose and are not
+# needed in the image build context.
+logs/
+project/work_dir/
 # Git
 .git/
 .gitignore
