@@ -8,6 +8,58 @@ export interface WorkflowStateResponse {
   checklist: string | null;
 }
 
+export interface WorkflowInputEntry {
+  path: string;
+  original_name: string;
+  source: string;
+  kind: string;
+  size: number;
+  sha256: string;
+  status: string;
+  text_extraction: string;
+  text_preview?: string;
+  note?: string;
+}
+
+export interface WorkflowInputInventory {
+  schema_version: number;
+  task_id: string;
+  created_at: string;
+  entries: WorkflowInputEntry[];
+  rejected: string[];
+  counts: {
+    stored: number;
+    text_extracted: number;
+    rejected: number;
+  };
+}
+
+export interface WorkflowCapabilityReport {
+  schema_version: number;
+  checks: Array<{ name: string; available: boolean; detail: string }>;
+  missing: string[];
+  warnings: string[];
+}
+
+export interface WorkflowIntakeResponse {
+  task_id: string;
+  status: string;
+  inventory: WorkflowInputInventory;
+  capability_report: WorkflowCapabilityReport;
+  rejected: string[];
+}
+
+export interface WorkflowAcceptanceResponse {
+  stage_id: string;
+  verdict: "PASS" | "FAIL" | "BLOCKED";
+  checked_at: string;
+  state_status: string | null;
+  missing: string[];
+  invalid: string[];
+  evidence: string[];
+  reasons: string[];
+}
+
 export interface WorkflowArtifact {
   filename: string;
   path: string;
@@ -37,6 +89,39 @@ export function getWorkflowState(taskId: string) {
   });
 }
 
+export function createWorkflowTask(
+  packageData: {
+    question: string;
+    template?: string;
+    language?: string;
+    output_format?: string;
+  },
+  files?: File[],
+) {
+  const formData = new FormData();
+  formData.append("question", packageData.question || "");
+  formData.append("template", packageData.template || "CHINA");
+  formData.append("language", packageData.language || "中文");
+  formData.append("output_format", packageData.output_format || "Markdown");
+  for (const file of files || []) formData.append("files", file);
+  return request.post<WorkflowIntakeResponse>("/workflow_intake", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 120000,
+  });
+}
+
+export function getWorkflowInputInventory(taskId: string) {
+  return request.get<WorkflowInputInventory>("/workflow_input_inventory", {
+    params: { task_id: taskId },
+  });
+}
+
+export function getWorkflowAcceptance(taskId: string, stageId: string) {
+  return request.get<WorkflowAcceptanceResponse>("/workflow_acceptance", {
+    params: { task_id: taskId, stage_id: stageId },
+  });
+}
+
 export function getArtifacts(taskId: string, stageId: string) {
   return request.get<WorkflowArtifact[]>("/artifacts", {
     params: { task_id: taskId, stage_id: stageId },
@@ -61,7 +146,7 @@ export interface WorkflowRunResponse {
   run_id: string;
   task_id: string;
   stage_id: string;
-  status: "running" | "stopping" | "completed" | "failed" | "cancelled";
+  status: "running" | "stopping" | "completed" | "failed" | "cancelled" | "interrupted";
   model: string;
   reasoning: string;
   output: string;

@@ -30,6 +30,35 @@ The existing DeepSeek configuration remains available to the legacy
 multi-agent `/modeling/{task_id}/start` flow. It is separate from the Codex
 stage workbench flow.
 
+## Complete problem-package intake
+
+The workbench upload entry calls `POST /workflow_intake`. It accepts inline
+question text plus mixed PDF, DOCX, ZIP, image, spreadsheet, and text
+attachments. ZIP entries are extracted below the task's `user_data/` folder
+after path and size checks. Stage 00 input files are recorded in:
+
+- `RUN_CONTEXT.json`
+- `INPUT_INVENTORY.json`
+- `CAPABILITY_REPORT.json`
+- `TASK_CHECKLIST.md`
+- `STAGE_STATE.json`
+
+The `独立验收` button calls `GET /workflow_acceptance` and checks files and
+JSON/PDF readability independently of the model's self-reported status. Run
+metadata is stored atomically in `logs/codex/runs/`; a backend restart marks a
+previously running entry as `interrupted` instead of leaving it falsely active.
+
+For a local smoke check after installing dependencies:
+
+```powershell
+Set-Location .\backend
+python -m pytest app/tests -q --ignore=app/tests/mock
+Set-Location ..\frontend
+pnpm exec vitest run
+npm run type-check
+npm run build
+```
+
 The DeepSeek API key is configured in `backend/.env.dev`.
 
 ## Required system dependency

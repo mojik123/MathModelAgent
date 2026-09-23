@@ -13,10 +13,13 @@ from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.services.codex_runner import CodexRunner
+from app.services.package_intake import IntakeUpload, MAX_UPLOAD_BYTES, ingest_package
+from app.services.stage_acceptance import validate_stage
+from app.services.workflow_run_store import load_all_runs, persist_run
 
 router = APIRouter()
 WORK_DIR_ROOT = Path(__file__).resolve().parents[2] / "project" / "work_dir"
@@ -165,6 +168,42 @@ class WorkflowStopPayload(BaseModel):
 
 
 _WORKFLOW_RUNS: dict[str, dict[str, Any]] = {}
+_RUNS_LOADED_ROOT: Path | None = None
+
+
+def _ensure_persisted_runs_loaded() -> None:
+    """Load file-backed run metadata once per configured work-root."""
+
+    global _RUNS_LOADED_ROOT
+    root = Path(WORK_DIR_ROOT).resolve()
+    if _RUNS_LOADED_ROOT == root:
+        return
+    _WORKFLOW_RUNS.clear()
+    for entry in load_all_runs(root):
+        _WORKFLOW_RUNS[entry["run_id"]] = entry
+    _RUNS_LOADED_ROOT = root
+
+
+def _new_workflow_task_id() -> str:
+    for _ in range(20):
+        task_id = datetime.now(timezone.utc).strftime("workflow-%Y%m%d-%H%M%S-") + uuid4().hex[:8]
+        if not (Path(WORK_DIR_ROOT) / task_id).exists():
+            return task_id
+    raise HTTPException(status_code=500, detail="无法生成唯一任务 ID")
+
+
+async def _read_upload_with_limit(upload: UploadFile) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await upload.read(1024 * 1024):
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"文件 {upload.filename or '<unknown>'} 超过 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB 限制",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _task_dir(task_id: str) -> Path:
@@ -536,13 +575,101 @@ async def _execute_background_run(entry: dict[str, Any]) -> None:
     except (OSError, RuntimeError) as exc:
         entry["status"] = "failed"
         entry["error"] = str(exc)
+    finally:
+        persist_run(entry)
+
+
+@router.post("/workflow_intake")
+async def create_workflow_task(
+    question: str = Form(default=""),
+    ques_all: str | None = Form(default=None),
+    template: str = Form(default="CHINA"),
+    language: str = Form(default="中文"),
+    output_format: str = Form(default="Markdown"),
+    files: list[UploadFile] | None = File(default=None),
+) -> dict[str, Any]:
+    """Create a task from a mixed problem package without running a model."""
+
+    normalized_question = (question or ques_all or "").strip()
+    if not normalized_question and not files:
+        raise HTTPException(status_code=422, detail="至少提供题目文本或一个附件")
+
+    task_id = _new_workflow_task_id()
+    task_dir = Path(WORK_DIR_ROOT) / task_id
+    uploads: list[IntakeUpload] = []
+    for upload in files or []:
+        uploads.append(
+            IntakeUpload(
+                filename=upload.filename or "",
+                content=await _read_upload_with_limit(upload),
+            )
+        )
+
+    normalized_template = template.strip().upper()
+    if normalized_template in {"国赛", "中国赛", "CHINA"}:
+        normalized_template = "CHINA"
+    elif normalized_template in {"美赛", "AMERICAN", "MCM", "ICM"}:
+        normalized_template = "AMERICAN"
+    else:
+        normalized_template = normalized_template or "CHINA"
+    normalized_format = output_format.strip() or "Markdown"
+    if normalized_format.lower() == "latex":
+        normalized_format = "LaTeX"
+    elif normalized_format.lower() in {"markdown", "md"}:
+        normalized_format = "Markdown"
+    result = ingest_package(
+        task_dir,
+        task_id=task_id,
+        question=normalized_question,
+        template=normalized_template,
+        language=language.strip() or "中文",
+        output_format=normalized_format,
+        uploads=uploads,
+    )
+    return result
+
+
+@router.get("/workflow_input_inventory")
+def get_workflow_input_inventory(task_id: str) -> dict[str, Any]:
+    task_dir = _task_dir(task_id)
+    path = _safe_task_file(task_dir, "INPUT_INVENTORY.json")
+    if path is None:
+        raise HTTPException(status_code=404, detail="任务尚未生成输入清单")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail="输入清单无法解析") from exc
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=422, detail="输入清单格式无效")
+    return value
+
+
+@router.get("/workflow_acceptance")
+def get_workflow_acceptance(task_id: str, stage_id: str) -> dict[str, Any]:
+    normalized_stage = _normalize_stage_id(stage_id)
+    if normalized_stage is None:
+        raise HTTPException(status_code=422, detail="非法 stage_id")
+    task_dir = _task_dir(task_id)
+    return validate_stage(task_dir, normalized_stage)
 
 
 @router.get("/workflow_state")
 def get_workflow_state(task_id: str) -> dict[str, Any]:
     task_dir = _task_dir(task_id)
     state = _load_stage_state(task_dir)
-    return {"stages": _workflow_stages(state), "checklist": _read_checklist(task_dir)}
+    stages = _workflow_stages(state)
+    for stage in stages:
+        if stage["status"] not in {"PASS", "FAIL", "BLOCKED"}:
+            continue
+        acceptance = validate_stage(task_dir, stage["id"])
+        if acceptance["verdict"] != "PASS":
+            stage["status"] = acceptance["verdict"]
+    previous_status: str | None = None
+    for stage in stages:
+        if stage["index"] > 0 and previous_status != "PASS":
+            stage["status"] = "LOCKED"
+        previous_status = stage["status"]
+    return {"stages": stages, "checklist": _read_checklist(task_dir)}
 
 
 @router.get("/artifacts")
@@ -630,6 +757,7 @@ def put_task_model_config(payload: TaskModelConfigPayload) -> dict[str, str]:
 
 @router.post("/workflow_start")
 async def start_workflow_stage(payload: WorkflowRunPayload) -> dict[str, Any]:
+    _ensure_persisted_runs_loaded()
     task_id, task_dir, stage, config, runner = _resolve_workflow_run(payload)
     if any(
         item["task_id"] == task_id
@@ -655,12 +783,14 @@ async def start_workflow_stage(payload: WorkflowRunPayload) -> dict[str, Any]:
         "runner": runner,
     }
     _WORKFLOW_RUNS[run_id] = entry
+    persist_run(entry)
     asyncio.create_task(_execute_background_run(entry))
     return _public_run_state(entry)
 
 
 @router.get("/workflow_run/{run_id}")
 def get_workflow_run(run_id: str) -> dict[str, Any]:
+    _ensure_persisted_runs_loaded()
     entry = _WORKFLOW_RUNS.get(run_id)
     if entry is None:
         raise HTTPException(status_code=404, detail="运行记录不存在")
@@ -669,6 +799,7 @@ def get_workflow_run(run_id: str) -> dict[str, Any]:
 
 @router.post("/workflow_stop")
 async def stop_workflow_stage(payload: WorkflowStopPayload) -> dict[str, Any]:
+    _ensure_persisted_runs_loaded()
     entry = _WORKFLOW_RUNS.get(payload.run_id)
     if entry is None:
         raise HTTPException(status_code=404, detail="运行记录不存在")
@@ -676,12 +807,19 @@ async def stop_workflow_stage(payload: WorkflowStopPayload) -> dict[str, Any]:
         return _public_run_state(entry)
     entry["stop_requested"] = True
     entry["status"] = "stopping"
-    await entry["runner"].stop(payload.run_id)
+    runner = entry.get("runner")
+    if runner is None:
+        entry["status"] = "interrupted"
+        entry["error"] = entry.get("error") or "后端重启后没有可停止的运行进程"
+    else:
+        await runner.stop(payload.run_id)
+    persist_run(entry)
     return _public_run_state(entry)
 
 
 @router.post("/workflow_run")
 async def run_workflow_stage(payload: WorkflowRunPayload) -> dict[str, Any]:
+    _ensure_persisted_runs_loaded()
     task_id = payload.task_id.strip()
     stage_id = _normalize_stage_id(payload.stage_id)
     if stage_id is None:
@@ -715,6 +853,20 @@ async def run_workflow_stage(payload: WorkflowRunPayload) -> dict[str, Any]:
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]
     log_path = task_dir / "logs" / "codex" / f"{run_id}.json"
+    entry: dict[str, Any] = {
+        "run_id": run_id,
+        "task_id": task_id,
+        "stage_id": stage_id,
+        "status": "running",
+        "model": config["model"],
+        "reasoning": config["reasoning"],
+        "task_dir": task_dir,
+        "log_file": log_path,
+        "log_path": log_path.relative_to(task_dir).as_posix(),
+        "prompt": _stage_prompt(stage, task_id),
+        "runner": runner,
+    }
+    persist_run(entry)
     try:
         result, returncode, stderr = await runner.run(
             workspace=task_dir,
@@ -724,21 +876,25 @@ async def run_workflow_stage(payload: WorkflowRunPayload) -> dict[str, Any]:
             log_path=log_path,
         )
     except TimeoutError as exc:
+        entry["status"] = "failed"
+        entry["error"] = str(exc)
+        persist_run(entry)
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except (OSError, RuntimeError) as exc:
+        entry["status"] = "failed"
+        entry["error"] = str(exc)
+        persist_run(entry)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     status = "completed" if returncode == 0 and not result.error else "failed"
-    return {
-        "run_id": run_id,
-        "task_id": task_id,
-        "stage_id": stage_id,
-        "status": status,
-        "model": config["model"],
-        "reasoning": config["reasoning"],
-        "output": result.output,
-        "error": result.error or (stderr.strip() if status == "failed" else None),
-        "thread_id": result.thread_id,
-        "usage": result.usage,
-        "log_path": log_path.relative_to(task_dir).as_posix(),
-    }
+    entry.update(
+        {
+            "status": status,
+            "output": result.output,
+            "error": result.error or (stderr.strip() if status == "failed" else None),
+            "thread_id": result.thread_id,
+            "usage": result.usage,
+        }
+    )
+    persist_run(entry)
+    return _public_run_state(entry)

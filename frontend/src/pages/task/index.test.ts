@@ -5,7 +5,7 @@ import WorkflowSidebar from "@/components/Workflow/WorkflowSidebar.vue";
 import { WORKFLOW_STAGES } from "@/workflow/stages";
 import TaskPage from "./index.vue";
 
-const { taskStoreMock, getWorkflowStateMock, getWriterSequeMock, startWorkflowStageMock, getWorkflowRunMock, stopWorkflowRunMock, routerPushMock } = vi.hoisted(() => ({
+const { taskStoreMock, getWorkflowStateMock, getWorkflowAcceptanceMock, getWriterSequeMock, startWorkflowStageMock, getWorkflowRunMock, stopWorkflowRunMock, routerPushMock } = vi.hoisted(() => ({
 	taskStoreMock: {
 		messages: [] as Array<Record<string, unknown>>,
 		currentProgress: null as null | Record<string, unknown>,
@@ -26,6 +26,7 @@ const { taskStoreMock, getWorkflowStateMock, getWriterSequeMock, startWorkflowSt
 		downloadMessages: vi.fn(),
 	},
 	getWorkflowStateMock: vi.fn(),
+	getWorkflowAcceptanceMock: vi.fn(),
 	getWriterSequeMock: vi.fn(),
 	startWorkflowStageMock: vi.fn(),
 	getWorkflowRunMock: vi.fn(),
@@ -39,6 +40,7 @@ vi.mock("@/stores/task", () => ({
 
 vi.mock("@/apis/workflowApi", () => ({
 	getWorkflowState: getWorkflowStateMock,
+	getWorkflowAcceptance: getWorkflowAcceptanceMock,
 	startWorkflowStage: startWorkflowStageMock,
 	getWorkflowRun: getWorkflowRunMock,
 	stopWorkflowRun: stopWorkflowRunMock,
@@ -95,6 +97,18 @@ describe("task workbench layout", () => {
 		taskStoreMock.wsStatus = "disconnected";
 		taskStoreMock.coordinatorMessages = [];
 		getWorkflowStateMock.mockResolvedValue({ data: { stages: WORKFLOW_STAGES, checklist: null } });
+		getWorkflowAcceptanceMock.mockResolvedValue({
+			data: {
+				stage_id: "00-intake",
+				verdict: "BLOCKED",
+				checked_at: "",
+				state_status: "READY",
+				missing: [],
+				invalid: [],
+				evidence: [],
+				reasons: [],
+			},
+		});
 		getWriterSequeMock.mockResolvedValue({ data: { writer_seque: [] } });
 		startWorkflowStageMock.mockResolvedValue({ data: { run_id: "run-1", status: "completed", output: "stage done", log_path: "logs/codex/run-1.json" } });
 	});

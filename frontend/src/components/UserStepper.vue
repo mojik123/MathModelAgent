@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { saveApiConfig } from "@/apis/apiKeyApi";
-import { submitModelingTask } from "@/apis/submitModelingApi";
+import { createWorkflowTask } from "@/apis/workflowApi";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -115,6 +115,14 @@ const handleQuestionFileUpload = (event: Event) => {
 	if (!file) return;
 
 	questionFileName.value = file.name;
+	const lowerName = file.name.toLowerCase();
+	if (!/[.](txt|md|markdown|text)$/.test(lowerName)) {
+		if (!uploadedFiles.value.some((item) => item.name === file.name && item.size === file.size)) {
+			uploadedFiles.value = [...uploadedFiles.value, file];
+		}
+		input.value = "";
+		return;
+	}
 	const reader = new FileReader();
 	reader.onload = (e) => {
 		const text = e.target?.result;
@@ -162,11 +170,12 @@ const handleSubmit = async () => {
 		console.log(selectedOptions.value);
 		console.log(question.value);
 		console.log(uploadedFiles.value);
-		const response = await submitModelingTask(
+		const response = await createWorkflowTask(
 			{
-				ques_all: question.value,
-				comp_template: selectedOptions.value.template,
-				format_output: selectedOptions.value.format,
+				question: question.value,
+				template: selectedOptions.value.template,
+				language: selectedOptions.value.language,
+				output_format: selectedOptions.value.format,
 			},
 			uploadedFiles.value,
 		);
@@ -238,7 +247,7 @@ const handleSubmit = async () => {
         <div
           class="border-2 border-dashed rounded-lg p-8 text-center hover:border-primary/50 transition-colors cursor-pointer"
           @click="() => fileInput?.click()">
-          <input type="file" ref="fileInput" class="hidden" @change="handleFileUpload" accept=".txt,.csv,.xlsx"
+          <input type="file" ref="fileInput" class="hidden" @change="handleFileUpload"
             multiple>
           <div class="mx-auto w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
             <FileUp class="w-6 h-6 text-primary" />
@@ -246,7 +255,7 @@ const handleSubmit = async () => {
           <div>
             <p class="text-lg font-medium">拖拽数据集到此处或点击上传</p>
             <p class="text-sm text-muted-foreground mt-1">
-              支持 .txt, .csv, .xlsx 等格式文件（可多选）
+              支持 PDF、DOCX、ZIP、图片、表格和文本文件（可多选）
             </p>
             <div v-if="uploadedFiles.length > 0" class="text-sm text-green-600 mt-1">
               已上传文件:
@@ -282,7 +291,7 @@ const handleSubmit = async () => {
                 ref="questionFileInput"
                 type="file"
                 class="hidden"
-                accept=".txt,.md,.text"
+                accept=".txt,.md,.markdown,.text,.pdf,.docx"
                 @change="handleQuestionFileUpload"
               >
             </div>
