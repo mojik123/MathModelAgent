@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { getWriterSeque } from "@/apis/commonApi";
 import {
+	getWorkflowAcceptance,
 	getWorkflowRun,
 	getWorkflowState,
 	startWorkflowStage,
 	stopWorkflowRun,
 } from "@/apis/workflowApi";
+import type { WorkflowAcceptanceResponse } from "@/apis/workflowApi";
 import {
 	getAllFilesDownloadUrl,
 	getFileDownloadUrl,
@@ -73,6 +75,9 @@ const writerSequence = ref<string[]>([]);
 const activeStageId = ref(WORKFLOW_STAGES[0].id);
 const workflowStages = ref([...WORKFLOW_STAGES]);
 const workflowStateError = ref("");
+const stageAcceptance = ref<WorkflowAcceptanceResponse | null>(null);
+const acceptanceLoading = ref(false);
+let acceptanceSequence = 0;
 const stageRunState = ref<"idle" | "running" | "stopping" | "completed" | "failed" | "cancelled">("idle");
 const stageRunMessage = ref("");
 const activeRunId = ref<string | null>(null);
@@ -575,7 +580,10 @@ async function runActiveStage() {
 				: (result.error || "阶段执行失败");
 		galleryRefreshKey.value += 1;
 		paperRefreshKey.value += 1;
-		if (result.status === "completed") await loadWorkflowStages(props.task_id);
+		if (result.status === "completed") {
+			await loadWorkflowStages(props.task_id);
+			await loadStageAcceptance(props.task_id, stage.id);
+		}
 	} catch (error) {
 		stageRunState.value = "failed";
 		const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -999,6 +1007,8 @@ function selectStage(stageId: string) {
 		stageRunState.value = "idle";
 		stageRunMessage.value = "";
 		activeRunId.value = null;
+		stageAcceptance.value = null;
+		void loadStageAcceptance(props.task_id, stageId);
 	}
 }
 
@@ -1018,6 +1028,23 @@ async function loadWorkflowStages(taskId: string) {
 	}
 }
 
+async function loadStageAcceptance(taskId: string, stageId: string) {
+	const sequence = ++acceptanceSequence;
+	acceptanceLoading.value = true;
+	try {
+		const response = await getWorkflowAcceptance(taskId, stageId);
+		if (sequence === acceptanceSequence && props.task_id === taskId && activeStageId.value === stageId) {
+			stageAcceptance.value = response.data;
+		}
+	} catch {
+		if (sequence === acceptanceSequence && props.task_id === taskId && activeStageId.value === stageId) {
+			stageAcceptance.value = null;
+		}
+	} finally {
+		if (sequence === acceptanceSequence) acceptanceLoading.value = false;
+	}
+}
+
 watch(
 	() => props.task_id,
 	(taskId) => {
@@ -1025,7 +1052,9 @@ watch(
 		stageRunState.value = "idle";
 		stageRunMessage.value = "";
 		activeRunId.value = null;
+		stageAcceptance.value = null;
 		void loadWorkflowStages(taskId);
+		void loadStageAcceptance(taskId, WORKFLOW_STAGES[0].id);
 	},
 	{ immediate: true },
 );
@@ -1268,7 +1297,10 @@ onBeforeUnmount(() => {
           :stage="activeStage"
           :run-state="stageRunState"
           :run-message="stageRunMessage"
+          :acceptance="stageAcceptance"
+          :acceptance-loading="acceptanceLoading"
           @run="runActiveStage"
+          @check-acceptance="loadStageAcceptance(props.task_id, activeStage.id)"
         />
         <ArtifactWorkbench
           v-if="activeStage"

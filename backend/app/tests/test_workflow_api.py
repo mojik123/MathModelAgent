@@ -47,9 +47,11 @@ def test_stage_state_and_checklist_drive_status_and_artifact_stage(workflow_clie
     output_dir.mkdir(parents=True)
     (output_dir / "结果 图.png").write_bytes(b"png")
     (task_dir / "TASK_CHECKLIST.md").write_text("- [x] 输入已核对\n", encoding="utf-8")
+    for name in ("RUN_CONTEXT.json", "INPUT_INVENTORY.json", "CAPABILITY_REPORT.json"):
+        (task_dir / name).write_text("{}", encoding="utf-8")
     (task_dir / "STAGE_STATE.json").write_text(
         '{"current_stage":"01-analysis","status":"RUNNING","history":['
-        '{"stage":"00-intake","status":"PASS"},'
+        '{"stage":"00-intake","status":"PASS","outputs":["RUN_CONTEXT.json","INPUT_INVENTORY.json","CAPABILITY_REPORT.json","TASK_CHECKLIST.md"]},'
         '{"stage":"01-analysis","status":"RUNNING"},'
         '{"stage":"05-figures","status":"PASS","outputs":[{"path":"05_figures/结果 图.png"}]}'
         ']}',
@@ -206,3 +208,47 @@ def test_workflow_start_returns_run_id_and_persists_terminal_status(workflow_cli
     assert status.status_code == 200
     assert status.json()["status"] == "completed"
     assert status.json()["output"] == "background done"
+
+
+def test_workflow_intake_creates_inventory_for_mixed_uploads(workflow_client):
+    client, work_root = workflow_client
+    response = client.post(
+        "/workflow_intake",
+        data={"question": "一个带附件的题目", "template": "国赛", "output_format": "Markdown"},
+        files=[
+            ("files", ("data.csv", b"x,y\n1,2\n", "text/csv")),
+            ("files", ("notes.txt", "说明".encode("utf-8"), "text/plain")),
+        ],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    task_id = payload["task_id"]
+    assert (work_root / task_id / "INPUT_INVENTORY.json").is_file()
+    inventory = client.get("/workflow_input_inventory", params={"task_id": task_id})
+    assert inventory.status_code == 200
+    assert inventory.json()["counts"]["stored"] == 3
+    acceptance = client.get(
+        "/workflow_acceptance",
+        params={"task_id": task_id, "stage_id": "00-intake"},
+    )
+    assert acceptance.status_code == 200
+    assert acceptance.json()["verdict"] == "BLOCKED"
+
+
+def test_workflow_state_locks_following_stages_when_acceptance_fails(workflow_client):
+    client, work_root = workflow_client
+    task_dir = work_root / "acceptance-gate-task"
+    task_dir.mkdir()
+    (task_dir / "STAGE_STATE.json").write_text(
+        '{"history":[{"stage":"00-intake","status":"PASS","outputs":[]},'
+        '{"stage":"01-analysis","status":"PASS","outputs":[]}]}',
+        encoding="utf-8",
+    )
+
+    response = client.get("/workflow_state", params={"task_id": "acceptance-gate-task"})
+
+    assert response.status_code == 200
+    statuses = {stage["id"]: stage["status"] for stage in response.json()["stages"]}
+    assert statuses["00-intake"] == "FAIL"
+    assert statuses["01-analysis"] == "LOCKED"
