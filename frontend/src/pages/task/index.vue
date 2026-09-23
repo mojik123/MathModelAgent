@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { getWriterSeque } from "@/apis/commonApi";
 import {
+	getWorkflowRun,
+	getWorkflowState,
+	startWorkflowStage,
+	stopWorkflowRun,
+} from "@/apis/workflowApi";
+import {
 	getAllFilesDownloadUrl,
 	getFileDownloadUrl,
 	getFiles,
@@ -9,7 +15,10 @@ import CodeGallery from "@/components/AgentEditor/CodeGallery.vue";
 import ImageGallery from "@/components/AgentEditor/ImageGallery.vue";
 import ModelerEditor from "@/components/AgentEditor/ModelerEditor.vue";
 import WriterEditor from "@/components/AgentEditor/WriterEditor.vue";
-import ChatArea from "@/components/ChatArea.vue";
+import ArtifactWorkbench from "@/components/Workflow/ArtifactWorkbench.vue";
+import ModelSelector from "@/components/Workflow/ModelSelector.vue";
+import StageOverview from "@/components/Workflow/StageOverview.vue";
+import WorkflowSidebar from "@/components/Workflow/WorkflowSidebar.vue";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -24,14 +33,11 @@ import {
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-	ResizableHandle,
-	ResizablePanel,
-	ResizablePanelGroup,
-} from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useTaskStore } from "@/stores/task";
+import type { Message } from "@/utils/response";
+import { WORKFLOW_STAGES } from "@/workflow/stages";
 import {
 	Archive,
 	ArrowLeft,
@@ -64,6 +70,15 @@ const props = defineProps<{ task_id: string }>();
 const taskStore = useTaskStore();
 const router = useRouter();
 const writerSequence = ref<string[]>([]);
+const activeStageId = ref(WORKFLOW_STAGES[0].id);
+const workflowStages = ref([...WORKFLOW_STAGES]);
+const workflowStateError = ref("");
+const stageRunState = ref<"idle" | "running" | "stopping" | "completed" | "failed" | "cancelled">("idle");
+const stageRunMessage = ref("");
+const activeRunId = ref<string | null>(null);
+const activeStage = computed(
+	() => workflowStages.value.find((stage) => stage.id === activeStageId.value) ?? workflowStages.value[0],
+);
 const paperRefreshKey = ref(0);
 const galleryRefreshKey = ref(0);
 
@@ -116,7 +131,8 @@ const terminalRuntimeStatuses = new Set([
 	"failed",
 	"interrupted",
 ]);
-const activeTab = ref<"modeler" | "writer" | "images" | "code">("modeler");
+const activeTab = ref<"modeler" | "writer" | "images" | "code">("writer");
+const legacyViewsOpen = ref(false);
 
 // ---- 子任务进度追踪 ----
 
@@ -389,31 +405,10 @@ const isStoppedLike = computed(() =>
 	["stopping", "stopped", "interrupted"].includes(runtimeStatus.value),
 );
 const startButtonLabel = computed(() => {
-	if (isStarting.value) return "启动中...";
-	if (
-		runtimeStatus.value === "stopped" ||
-		runtimeStatus.value === "interrupted"
-	) {
-		return "继续运行";
-	}
-	if (runtimeStatus.value === "failed") return "重新运行";
-	return "开始运行";
-});
-
-/** 从进度描述推断当前大阶段类型，用于自动切换 Tab */
-const activePhaseTab = computed<"modeler" | "coder" | "writer" | null>(() => {
-	if (taskStore.writerMessages.length > 0) return "writer";
-	if (
-		taskStore.coderMessages.length > 0 ||
-		taskStore.interpreterMessage.length > 0
-	)
-		return "coder";
-	const desc =
-		taskStore.currentProgress?.description ??
-		taskStore.taskRuntimeState?.current_step ??
-		"";
-	if (desc.includes("建模")) return "modeler";
-	return null;
+	if (isStarting.value || stageRunState.value === "running" || stageRunState.value === "stopping") return "执行中...";
+	if (stageRunState.value === "completed") return "再次运行当前阶段";
+	if (stageRunState.value === "failed" || stageRunState.value === "cancelled") return "重试当前阶段";
+	return "运行当前阶段";
 });
 
 const overallProgress = computed(() => {
@@ -548,21 +543,57 @@ async function handleStop() {
 }
 
 async function handleStart() {
+	await runActiveStage();
+}
+
+function waitForWorkflowPoll() {
+	return new Promise<void>((resolve) => window.setTimeout(resolve, 500));
+}
+
+async function runActiveStage() {
+	const stage = activeStage.value;
+	if (!stage || stage.status === "LOCKED" || stageRunState.value === "running" || stageRunState.value === "stopping") return;
 	isStarting.value = true;
+	stageRunState.value = "running";
+	stageRunMessage.value = `正在执行 ${stage.title}…`;
 	try {
-		taskStore.addUserAction(
-			runtimeStatus.value === "ready" ? "启动" : "继续",
-			"任务运行",
-			"用户请求启动或恢复当前建模工作流。",
-			{
-				from: "User",
-				to: "System",
-				label: "启动工作流",
-			},
-		);
-		await taskStore.startTask(props.task_id);
+		let result = (await startWorkflowStage(props.task_id, stage.id)).data;
+		activeRunId.value = result.run_id;
+		while (result.status === "running" || result.status === "stopping") {
+			await waitForWorkflowPoll();
+			result = (await getWorkflowRun(result.run_id)).data;
+		}
+		stageRunState.value = result.status === "completed"
+			? "completed"
+			: result.status === "cancelled"
+				? "cancelled"
+				: "failed";
+		stageRunMessage.value = result.status === "completed"
+			? `已完成 · 日志 ${result.log_path}`
+			: result.status === "cancelled"
+				? "已停止当前阶段"
+				: (result.error || "阶段执行失败");
+		galleryRefreshKey.value += 1;
+		paperRefreshKey.value += 1;
+		if (result.status === "completed") await loadWorkflowStages(props.task_id);
+	} catch (error) {
+		stageRunState.value = "failed";
+		const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+		stageRunMessage.value = detail || "阶段执行请求失败，请查看运行日志。";
 	} finally {
 		isStarting.value = false;
+		activeRunId.value = null;
+	}
+}
+
+async function stopActiveStage() {
+	if (!activeRunId.value || stageRunState.value !== "running") return;
+	stageRunState.value = "stopping";
+	stageRunMessage.value = "正在停止当前阶段…";
+	try {
+		await stopWorkflowRun(activeRunId.value);
+	} catch {
+		stageRunMessage.value = "停止请求失败，正在等待阶段状态更新。";
 	}
 }
 
@@ -754,22 +785,6 @@ function getFileIcon(filename: string) {
 	if (["csv", "xlsx", "xls"].includes(ext)) return FileSpreadsheet;
 	if (["txt", "md", "xml", "yml", "yaml"].includes(ext)) return FileText;
 	return File;
-}
-
-function formatFileSize(size: number | undefined): string {
-	if (!size) return "";
-	const units = ["B", "KB", "MB", "GB"];
-	let i = 0;
-	let s = size;
-	while (s >= 1024 && i < units.length - 1) {
-		s /= 1024;
-		i++;
-	}
-	return `${s.toFixed(1)} ${units[i]}`;
-}
-
-function refreshPaper() {
-	paperRefreshKey.value += 1;
 }
 
 async function loadCurrentTask(taskId: string) {
@@ -977,6 +992,83 @@ function onModelingConfirmed() {
 	}
 }
 
+function selectStage(stageId: string) {
+	if (stageRunState.value === "running" || stageRunState.value === "stopping") return;
+	if (workflowStages.value.some((stage) => stage.id === stageId)) {
+		activeStageId.value = stageId;
+		stageRunState.value = "idle";
+		stageRunMessage.value = "";
+		activeRunId.value = null;
+	}
+}
+
+async function loadWorkflowStages(taskId: string) {
+	workflowStages.value = [...WORKFLOW_STAGES];
+	workflowStateError.value = "";
+	try {
+		const response = await getWorkflowState(taskId);
+		if (props.task_id !== taskId) return;
+		if (Array.isArray(response.data?.stages) && response.data.stages.length > 0) {
+			workflowStages.value = response.data.stages;
+		}
+	} catch {
+		if (props.task_id === taskId) {
+			workflowStateError.value = "阶段状态暂不可用，当前显示默认阶段顺序。";
+		}
+	}
+}
+
+watch(
+	() => props.task_id,
+	(taskId) => {
+		activeStageId.value = WORKFLOW_STAGES[0].id;
+		stageRunState.value = "idle";
+		stageRunMessage.value = "";
+		activeRunId.value = null;
+		void loadWorkflowStages(taskId);
+	},
+	{ immediate: true },
+);
+
+function openPaperArtifact(payload: { view: "markdown" | "pdf" }) {
+	if (payload.view === "markdown") {
+		paperRefreshKey.value += 1;
+		activeTab.value = "writer";
+		legacyViewsOpen.value = true;
+		return;
+	}
+	void router.push(`/task/${props.task_id}/pdf`);
+}
+
+const recentRunLog = computed(() => taskStore.messages.slice(-80));
+
+function formatLogTime(value?: string) {
+	if (!value) return "--:--:--";
+	const timestamp = Date.parse(value);
+	if (Number.isNaN(timestamp)) return "--:--:--";
+	return new Date(timestamp).toLocaleTimeString("zh-CN", {
+		hour: "2-digit",
+		minute: "2-digit",
+		second: "2-digit",
+	});
+}
+
+function getLogLabel(message: Message) {
+	if (message.msg_type === "system") return "系统";
+	if (message.msg_type === "user") return "用户";
+	if (message.msg_type === "progress") return "进度";
+	if (message.msg_type === "tool") return `工具 · ${message.tool_name}`;
+	return message.agent_type.replace(/Agent$/, "");
+}
+
+function getLogContent(message: Message) {
+	if (message.msg_type === "progress") {
+		return `${Math.round(message.percentage)}% · ${message.description}`;
+	}
+	if (message.msg_type === "tool") return message.content || "工具执行记录";
+	return message.content?.trim() || "（无文本内容）";
+}
+
 onMounted(async () => {
 	const res = await getWriterSeque();
 	writerSequence.value = Array.isArray(res.data?.writer_seque)
@@ -993,207 +1085,276 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="fixed inset-0">
-    <ResizablePanelGroup direction="horizontal" class="h-full rounded-lg border">
-      <ResizablePanel :default-size="36" class="h-full min-w-[320px]">
-        <div class="flex h-full flex-col border-r border-white/20 glass-left-panel">
-          <div class="border-b border-white/20 px-4 py-2 space-y-2 glass-header">
-            <div class="flex items-center justify-between gap-3">
-              <div class="flex min-w-0 items-start gap-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  class="h-8 w-8 shrink-0"
-                  title="返回主界面"
-                  aria-label="返回主界面"
-                  @click="goBackToHome"
-                >
-                  <ArrowLeft class="h-4 w-4" />
-                </Button>
-                <div class="min-w-0 space-y-1">
-                  <div class="text-sm text-gray-600 whitespace-nowrap">
-                    运行时长: <span class="font-mono text-blue-600">{{ runningDuration }}</span>
-                    <span v-if="isTaskFinished" class="ml-2 rounded-full bg-green-50 px-2 py-0.5 text-xs text-green-600">
-                      已停止计时
-                    </span>
-                  </div>
-                  <div class="flex items-center gap-1.5 text-sm whitespace-nowrap">
-                    <span
-                      class="inline-block h-2 w-2 rounded-full"
-                      :class="{
-                        'bg-green-500': taskStore.wsStatus === 'connected',
-                        'bg-yellow-500 animate-pulse': taskStore.wsStatus === 'connecting' || taskStore.wsStatus === 'reconnecting',
-                        'bg-red-500': taskStore.wsStatus === 'disconnected',
-                      }"
-                    />
-                    <span class="text-gray-500">
-                      {{
-                        taskStore.wsStatus === 'connected' ? '已连接'
-                        : taskStore.wsStatus === 'connecting' ? '连接中'
-                        : taskStore.wsStatus === 'reconnecting' ? '重连中'
-                        : '未连接'
-                      }}
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <div class="flex shrink-0 items-center gap-2">
-                <Button v-if="runtimeStatus === 'stopping'" variant="destructive" disabled>
-                  停止中...
-                </Button>
-                <Button v-else-if="taskStore.isRunning" variant="destructive" :disabled="isStoppingNow" @click="handleStop">
-                  {{ isStoppingNow ? "停止中..." : "停止运行" }}
-                </Button>
-                <Button v-else variant="default" :disabled="isStarting" @click="handleStart">
-                  {{ startButtonLabel }}
-                </Button>
-                <!-- + 导出菜单 -->
-                <DropdownMenu>
-                  <DropdownMenuTrigger as-child>
-                    <Button variant="outline" size="icon" class="shrink-0" title="更多操作">
-                      <Plus class="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" class="w-48">
-                    <DropdownMenuItem @click="handleExportPdf">
-                      <Archive class="mr-2 h-4 w-4 text-slate-500" />
-                      导出 PDF
-                    </DropdownMenuItem>
-                    <DropdownMenuItem @click="handleExportFolder" :disabled="downloadingAll">
-                      <RefreshCw v-if="downloadingAll" class="mr-2 h-4 w-4 animate-spin text-slate-400" />
-                      <FolderOpen v-else class="mr-2 h-4 w-4 text-slate-500" />
-                      {{ downloadingAll ? '打包中...' : '导出文件夹' }}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem @click="handleExportLogs">
-                      <ScrollText class="mr-2 h-4 w-4 text-slate-500" />
-                      导出日志
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem @click="handleViewFileTree">
-                      <Download class="mr-2 h-4 w-4 text-slate-500" />
-                      查看文件夹结构
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            </div>
-            <div class="rounded-xl border border-white/20 bg-white/30 backdrop-blur px-3 py-2 space-y-1.5">
-              <!-- 顶部：阶段名 + 百分比 -->
-              <div class="flex items-center justify-between">
-                <div class="flex items-center gap-1.5 min-w-0">
-                  <span class="text-[10px] text-slate-400 shrink-0">当前阶段</span>
-                  <span class="truncate text-sm font-semibold text-slate-900">{{ currentPhaseName }}</span>
-                </div>
-                <div class="flex items-center gap-2 shrink-0">
-                  <span class="text-[10px] text-slate-400 hidden sm:inline">{{ progressText }}</span>
-                  <span class="font-mono text-lg font-semibold text-blue-600">{{ overallProgress }}%</span>
-                  <span
-                    class="rounded-full px-2 py-0.5 text-[10px] font-medium"
-                    :class="{
-                      'bg-green-50 text-green-700': progressStatus === '已完成',
-                      'bg-red-50 text-red-700': progressStatus === '出错',
-                      'bg-amber-50 text-amber-700': progressStatus === '已结束' || progressStatus === '停止中' || progressStatus === '已停止' || progressStatus === '已中断' || progressStatus === '待确认',
-                      'bg-blue-50 text-blue-700': progressStatus === '进行中',
-                      'bg-slate-100 text-slate-500': progressStatus === '等待中',
-                    }"
-                  >{{ progressStatus }}</span>
-                </div>
-              </div>
-
-              <!-- 进度条 -->
-              <div class="relative h-2.5 rounded-full bg-slate-200 overflow-hidden">
-                <div
-                  class="absolute inset-y-0 left-0 rounded-full transition-all duration-700 ease-out"
-                  :class="{
-                    'bg-amber-500': isStoppedLike,
-                    'bg-red-500': progressStatus === '出错',
-                    'bg-green-500': progressStatus === '已完成',
-                    'bg-blue-500': !isStoppedLike && progressStatus !== '出错' && progressStatus !== '已完成',
-                  }"
-                  :style="{ width: `${overallProgress}%` }"
-                />
-              </div>
-
-              <!-- 子任务节点：动态从系统消息中提取 -->
-              <div class="flex justify-start gap-0.5 overflow-x-auto scrollbar-none">
-                <div
-                  v-for="node in subTaskNodes"
-                  :key="node.key"
-                  class="flex flex-col items-center shrink-0"
-                  style="min-width: 28px"
-                >
-                  <span
-                    class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold"
-                    :class="{
-                      'bg-blue-600 text-white': node.status === 'done',
-                      'bg-blue-500 text-white': node.status === 'active',
-                      'bg-blue-300 text-white': node.status === 'coding' || node.status === 'writing',
-                      'bg-orange-500 text-white shadow-[0_0_18px_rgba(249,115,22,0.9)] animate-pulse': node.status === 'stopping',
-                      'bg-orange-500 text-white shadow-[0_0_18px_rgba(249,115,22,0.75)]': node.status === 'stopped',
-                      'bg-slate-200 text-slate-400': node.status === 'pending',
-                    }"
-                  >{{ node.status === "done" ? "✓" : node.index + 1 }}</span>
-                  <span
-                    class="text-[8px] mt-0.5 font-medium text-center leading-tight"
-                    :class="{
-                      'text-blue-700': node.status === 'active',
-                      'text-slate-500': node.status === 'done',
-                      'text-slate-400': node.status === 'pending',
-                      'text-blue-600': node.status === 'coding' || node.status === 'writing',
-                    }"
-                  >{{ node.label }}</span>
-                </div>
-              </div>
-            </div>
+  <div
+    data-testid="task-workbench-layout"
+    data-layout="responsive-three-column"
+    class="fixed inset-0 z-20 flex min-h-0 flex-col overflow-hidden bg-slate-50 text-slate-900"
+  >
+    <header class="shrink-0 border-b border-slate-200 bg-white">
+      <div class="flex min-h-14 items-center gap-3 border-b border-slate-100 px-3 py-2 sm:px-5">
+        <Button
+          variant="ghost"
+          size="icon"
+          class="h-9 w-9 shrink-0"
+          title="返回主界面"
+          aria-label="返回主界面"
+          @click="goBackToHome"
+        >
+          <ArrowLeft class="h-4 w-4" />
+        </Button>
+        <div class="min-w-0">
+          <h1 class="truncate text-sm font-semibold text-slate-900 sm:text-base">数学建模工作台</h1>
+          <div class="flex min-w-0 items-center gap-2 text-xs text-slate-500">
+            <span class="truncate">{{ props.task_id }}</span>
+            <span class="hidden shrink-0 items-center gap-1.5 sm:inline-flex">
+              <span
+                class="inline-block h-1.5 w-1.5 rounded-full"
+                :class="{
+                  'bg-emerald-500': taskStore.wsStatus === 'connected',
+                  'bg-amber-500 motion-safe:animate-pulse': taskStore.wsStatus === 'connecting' || taskStore.wsStatus === 'reconnecting',
+                  'bg-slate-300': taskStore.wsStatus === 'disconnected',
+                }"
+                aria-hidden="true"
+              />
+              {{
+                taskStore.wsStatus === 'connected' ? '已连接'
+                : taskStore.wsStatus === 'connecting' ? '连接中'
+                : taskStore.wsStatus === 'reconnecting' ? '重连中'
+                : '未连接'
+              }}
+            </span>
           </div>
+        </div>
+        <div class="hidden shrink-0 items-center gap-2 border-l border-slate-200 pl-3 text-xs text-slate-500 sm:flex">
+          <span>运行时长</span>
+          <span class="font-mono tabular-nums text-blue-700">{{ runningDuration }}</span>
+          <span v-if="isTaskFinished" class="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">
+            已停止计时
+          </span>
+        </div>
 
-          <!-- Agent 对话流：问题划分与建模方案确认均嵌入对话气泡 -->
-          <ChatArea
-            class="flex-1 min-h-0"
-            :messages="taskStore.messages"
-            :task-status="taskStore.taskStatus"
-            :taskId="props.task_id"
-            @question-confirm="onQuestionConfirmed"
-            @modeling-confirm="onModelingConfirmed"
+        <div class="ml-auto flex shrink-0 items-center gap-2">
+          <Button v-if="runtimeStatus === 'stopping'" variant="destructive" size="sm" disabled>
+            停止中…
+          </Button>
+          <Button v-else-if="stageRunState === 'running' || stageRunState === 'stopping'" variant="destructive" size="sm" :disabled="stageRunState === 'stopping'" @click="stopActiveStage">
+            {{ stageRunState === 'stopping' ? "停止中…" : "停止当前阶段" }}
+          </Button>
+          <Button v-else-if="taskStore.isRunning" variant="destructive" size="sm" :disabled="isStoppingNow" @click="handleStop">
+            {{ isStoppingNow ? "停止中…" : "停止运行" }}
+          </Button>
+          <Button v-else variant="default" size="sm" :disabled="isStarting" @click="handleStart">
+            {{ startButtonLabel }}
+          </Button>
+          <a
+            href="#task-model-selector-column"
+            class="inline-flex h-9 items-center rounded-md border border-slate-200 px-3 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 md:hidden"
+          >
+            模型设置
+          </a>
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <Button variant="outline" size="icon" class="shrink-0" title="更多操作" aria-label="更多操作">
+                <Plus class="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" class="w-52">
+              <DropdownMenuItem @click="handleExportPdf">
+                <Archive class="mr-2 h-4 w-4 text-slate-500" />
+                导出 PDF
+              </DropdownMenuItem>
+              <DropdownMenuItem @click="handleExportFolder" :disabled="downloadingAll">
+                <RefreshCw v-if="downloadingAll" class="mr-2 h-4 w-4 animate-spin text-slate-400" />
+                <FolderOpen v-else class="mr-2 h-4 w-4 text-slate-500" />
+                {{ downloadingAll ? '打包中…' : '导出文件夹' }}
+              </DropdownMenuItem>
+              <DropdownMenuItem @click="handleExportLogs">
+                <ScrollText class="mr-2 h-4 w-4 text-slate-500" />
+                导出日志
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem @click="handleViewFileTree">
+                <Download class="mr-2 h-4 w-4 text-slate-500" />
+                查看文件夹结构
+              </DropdownMenuItem>
+              <DropdownMenuItem @click="legacyViewsOpen = true">
+                <FileText class="mr-2 h-4 w-4 text-slate-500" />
+                更多成果视图
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+
+      <div class="space-y-2 px-4 py-2 sm:px-5">
+        <div class="flex items-center justify-between gap-3">
+          <div class="flex min-w-0 items-center gap-2">
+            <span class="shrink-0 text-[11px] text-slate-400">当前阶段</span>
+            <span class="truncate text-sm font-semibold text-slate-900">{{ currentPhaseName }}</span>
+            <span class="hidden truncate text-xs text-slate-500 lg:inline">{{ progressText }}</span>
+          </div>
+          <div class="flex shrink-0 items-center gap-2">
+            <span class="font-mono text-sm font-semibold tabular-nums text-blue-700">{{ overallProgress }}%</span>
+            <span
+              class="rounded-full px-2 py-0.5 text-[10px] font-medium"
+              :class="{
+                'bg-emerald-50 text-emerald-700': progressStatus === '已完成',
+                'bg-red-50 text-red-700': progressStatus === '出错',
+                'bg-amber-50 text-amber-700': progressStatus === '已结束' || progressStatus === '停止中' || progressStatus === '已停止' || progressStatus === '已中断' || progressStatus === '待确认',
+                'bg-blue-50 text-blue-700': progressStatus === '进行中',
+                'bg-slate-100 text-slate-600': progressStatus === '等待中',
+              }"
+            >{{ progressStatus }}</span>
+          </div>
+        </div>
+        <div class="relative h-1.5 overflow-hidden rounded-full bg-slate-100" aria-label="任务进度">
+          <div
+            class="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 motion-reduce:transition-none"
+            :class="{
+              'bg-amber-500': isStoppedLike,
+              'bg-red-500': progressStatus === '出错',
+              'bg-emerald-500': progressStatus === '已完成',
+              'bg-blue-600': !isStoppedLike && progressStatus !== '出错' && progressStatus !== '已完成',
+            }"
+            :style="{ width: `${overallProgress}%` }"
           />
         </div>
-      </ResizablePanel>
-
-      <ResizableHandle />
-
-      <ResizablePanel :default-size="64" class="h-full">
-        <Tabs v-model="activeTab" class="flex h-full flex-col">
-          <div class="flex items-center justify-between border-b border-white/20 bg-white/50 px-3 py-1.5">
-            <TabsList class="h-8">
-              <TabsTrigger value="modeler" class="text-xs">
-                {{ questionDiscussionAvailable && !questionDiscussionLocked ? "原始题目" : "建模方案" }}
-              </TabsTrigger>
-              <TabsTrigger value="writer" class="text-xs">论文预览</TabsTrigger>
-              <TabsTrigger value="images" class="text-xs">图片</TabsTrigger>
-              <TabsTrigger value="code" class="text-xs">代码</TabsTrigger>
-            </TabsList>
+        <div v-if="subTaskNodes.length" class="flex gap-1 overflow-x-auto scrollbar-none" aria-label="子任务进度">
+          <div v-for="node in subTaskNodes" :key="node.key" class="flex min-w-7 shrink-0 flex-col items-center">
+            <span
+              class="inline-flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-semibold"
+              :class="{
+                'bg-blue-700 text-white': node.status === 'done',
+                'bg-blue-600 text-white': node.status === 'active',
+                'bg-blue-300 text-white': node.status === 'coding' || node.status === 'writing',
+                'bg-amber-500 text-white motion-safe:animate-pulse': node.status === 'stopping',
+                'bg-amber-500 text-white': node.status === 'stopped',
+                'bg-slate-200 text-slate-500': node.status === 'pending',
+              }"
+            >{{ node.status === "done" ? "✓" : node.index + 1 }}</span>
+            <span class="mt-0.5 text-[8px] font-medium leading-tight text-slate-500">{{ node.label }}</span>
           </div>
-          <div class="min-h-0 flex-1">
-            <TabsContent value="modeler" class="h-full m-0 p-0">
+        </div>
+      </div>
+    </header>
+
+    <main
+      class="grid min-h-0 flex-1 grid-cols-1 grid-rows-[7.5rem_minmax(20rem,1fr)_auto] overflow-y-auto md:grid-cols-[clamp(10rem,19vw,14rem)_minmax(15rem,1fr)_clamp(12rem,20vw,16rem)] md:grid-rows-1 md:overflow-hidden xl:grid-cols-[15rem_minmax(0,1fr)_18rem]"
+    >
+      <section class="min-h-0 min-w-0 border-b border-slate-200 bg-white md:border-b-0 md:border-r" aria-label="阶段导航">
+        <WorkflowSidebar
+          data-testid="task-primary-stage-navigation"
+          class="min-h-0"
+          :stages="workflowStages"
+          :active-stage-id="activeStageId"
+          @select="selectStage"
+        />
+      </section>
+
+      <section
+        data-testid="task-center-column"
+        aria-label="当前阶段工作内容"
+        class="flex min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50"
+      >
+        <div
+          v-if="workflowStateError"
+          role="alert"
+          class="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800"
+        >
+          {{ workflowStateError }}
+        </div>
+        <StageOverview
+          v-if="activeStage"
+          :stage="activeStage"
+          :run-state="stageRunState"
+          :run-message="stageRunMessage"
+          @run="runActiveStage"
+        />
+        <ArtifactWorkbench
+          v-if="activeStage"
+          class="min-h-0 flex-1"
+          :task-id="props.task_id"
+          :stage-id="activeStage.id"
+          :refresh-key="galleryRefreshKey"
+          @open-paper="openPaperArtifact"
+        />
+      </section>
+
+      <aside
+        data-testid="task-model-selector-column"
+        id="task-model-selector-column"
+        aria-label="任务模型设置"
+        class="min-h-[22rem] border-t border-slate-200 bg-white md:min-h-0 md:border-l md:border-t-0"
+      >
+        <ModelSelector
+          class="min-h-0 flex-1"
+          :task-id="props.task_id"
+          :task-key="activeStage.id"
+        />
+      </aside>
+    </main>
+
+    <details data-testid="task-run-log" class="group shrink-0 border-t border-slate-200 bg-white">
+      <summary class="flex min-h-10 cursor-pointer list-none items-center gap-2 px-4 text-xs text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600">
+        <ScrollText class="h-4 w-4 text-slate-400" aria-hidden="true" />
+        <span class="font-medium text-slate-800">运行日志</span>
+        <span class="rounded-full bg-slate-100 px-2 py-0.5 tabular-nums text-slate-500">{{ taskStore.messages.length }} 条</span>
+        <span class="ml-auto text-slate-400 group-open:hidden">展开</span>
+        <span class="ml-auto hidden text-slate-400 group-open:inline">收起</span>
+      </summary>
+      <div class="max-h-48 overflow-y-auto border-t border-slate-100 bg-slate-50/70 px-3 py-2 sm:px-5">
+        <p v-if="recentRunLog.length === 0" class="py-3 text-xs text-slate-500">
+          任务运行后，实时消息会显示在这里。
+        </p>
+        <ol v-else role="log" aria-label="任务运行消息" aria-live="off" class="space-y-1.5">
+          <li
+            v-for="message in recentRunLog"
+            :key="message.id"
+            class="grid grid-cols-[4.25rem_5rem_minmax(0,1fr)] items-start gap-2 text-xs leading-5"
+          >
+            <time class="font-mono tabular-nums text-slate-400">{{ formatLogTime(message.created_at) }}</time>
+            <span class="truncate font-medium text-slate-600">{{ getLogLabel(message) }}</span>
+            <span class="min-w-0 whitespace-pre-wrap break-words text-slate-700">{{ getLogContent(message) }}</span>
+          </li>
+        </ol>
+      </div>
+    </details>
+
+    <Dialog v-model:open="legacyViewsOpen">
+      <DialogContent class="flex h-[min(84vh,56rem)] w-[min(96vw,84rem)] max-w-none flex-col">
+        <DialogHeader>
+          <DialogTitle>更多成果视图</DialogTitle>
+        </DialogHeader>
+        <Tabs v-model="activeTab" class="flex min-h-0 flex-1 flex-col">
+          <TabsList class="h-9 shrink-0 self-start">
+            <TabsTrigger value="modeler" class="text-xs">
+              {{ questionDiscussionAvailable && !questionDiscussionLocked ? "原始题目" : "建模方案" }}
+            </TabsTrigger>
+            <TabsTrigger value="writer" class="text-xs">论文预览</TabsTrigger>
+            <TabsTrigger value="images" class="text-xs">图片</TabsTrigger>
+            <TabsTrigger value="code" class="text-xs">代码</TabsTrigger>
+          </TabsList>
+          <div class="min-h-0 flex-1 overflow-hidden">
+            <TabsContent value="modeler" class="m-0 h-full p-0">
               <ModelerEditor :task_id="props.task_id" />
             </TabsContent>
-            <TabsContent value="writer" class="h-full m-0 p-0">
+            <TabsContent value="writer" class="m-0 h-full p-0">
               <WriterEditor
                 :messages="taskStore.writerMessages"
                 :writer-sequence="writerSequence"
                 :refresh-key="paperRefreshKey"
               />
             </TabsContent>
-            <TabsContent value="images" class="h-full m-0 p-0 overflow-y-auto">
+            <TabsContent value="images" class="m-0 h-full overflow-y-auto p-0">
               <ImageGallery :task_id="props.task_id" :refresh-key="galleryRefreshKey" />
             </TabsContent>
-            <TabsContent value="code" class="h-full m-0 p-0 overflow-y-auto">
+            <TabsContent value="code" class="m-0 h-full overflow-y-auto p-0">
               <CodeGallery :task_id="props.task_id" :refresh-key="galleryRefreshKey" />
             </TabsContent>
           </div>
         </Tabs>
-      </ResizablePanel>
-    </ResizablePanelGroup>
+      </DialogContent>
+    </Dialog>
 
     <!-- 文件夹结构对话框 -->
     <Dialog v-model:open="fileDialogOpen">

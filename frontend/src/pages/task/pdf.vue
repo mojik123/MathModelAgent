@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { compilePdf } from "@/apis/filesApi";
+import { compilePdf, getPaper, savePaper } from "@/apis/filesApi";
+import { getArtifacts } from "@/apis/workflowApi";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Download, RefreshCw } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
@@ -17,8 +18,13 @@ async function compileAndPreview() {
 	loading.value = true;
 	errorMessage.value = "";
 	try {
+		const paper = await getPaper(taskId.value);
+		const content = paper.data?.content ?? "";
+		if (!content.trim()) throw new Error("论文内容为空，无法编译 PDF。");
+		const saved = await savePaper(taskId.value, content);
+		if (!saved.data?.success) throw new Error("论文保存失败，PDF 尚未编译。");
 		const res = await compilePdf(taskId.value);
-		pdfUrl.value = `${res.data.pdf_url}?t=${Date.now()}`;
+		pdfUrl.value = addCacheBuster(res.data.pdf_url);
 		hasCompiled.value = true;
 	} catch (error) {
 		console.error("PDF 编译失败:", error);
@@ -29,6 +35,32 @@ async function compileAndPreview() {
 			? `PDF 编译失败:
 ${detail}`
 			: "PDF 编译失败。请确认后端已安装 xelatex 和 pandoc，或检查论文中的 LaTeX 语法。";
+	} finally {
+		loading.value = false;
+	}
+}
+
+function addCacheBuster(url: string) {
+	const separator = url.includes("?") ? "&" : "?";
+	return `${url}${separator}t=${Date.now()}`;
+}
+
+async function loadCompiledPdf() {
+	loading.value = true;
+	errorMessage.value = "";
+	try {
+		const response = await getArtifacts(taskId.value, "07-compile");
+		const artifact = response.data.find(
+			(item) => item.kind === "pdf" && item.path.toLowerCase() === "res.pdf",
+		);
+		if (!artifact) throw new Error("编译接口已返回，但任务目录中没有找到 res.pdf。");
+		pdfUrl.value = addCacheBuster(artifact.preview_url);
+		hasCompiled.value = true;
+	} catch (error) {
+		const detail =
+			(error as { response?: { data?: { detail?: string } }; message?: string })?.response?.data?.detail ??
+			(error as { message?: string })?.message;
+		errorMessage.value = detail || "无法读取刚编译的 PDF，请返回工作区重试。";
 	} finally {
 		loading.value = false;
 	}
@@ -46,6 +78,10 @@ function downloadPdf() {
 }
 
 onMounted(() => {
+	if (route.query.compiled === "true") {
+		void loadCompiledPdf();
+		return;
+	}
 	void compileAndPreview();
 });
 </script>
