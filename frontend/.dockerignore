@@ -2,6 +2,8 @@
 
 # Node modules
 node_modules/
+.pnpm-store/
+.corepack/
 
 # Build output
 dist/
