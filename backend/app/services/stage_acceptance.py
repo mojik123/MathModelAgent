@@ -198,7 +198,12 @@ def _stage_record(state: dict[str, Any], stage_id: str) -> dict[str, Any] | None
     for record in _stage_records(state):
         value = record.get("stage") or record.get("id")
         if value == stage_id or str(value).replace("_", "-").lower() == stage_id:
-            found = record
+            if found is None:
+                found = {}
+            for key, item in record.items():
+                if key in {"outputs", "artifacts", "evidence"} and not item and found.get(key):
+                    continue
+                found[key] = item
     return found
 
 
