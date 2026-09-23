@@ -13,6 +13,7 @@ from app.routers import (
     files_router,
     paper_repair_router,
     artifact_edit_router,
+    workflow_router,
 )
 from app.utils.log_util import logger
 from fastapi.staticfiles import StaticFiles
@@ -48,6 +49,7 @@ app.include_router(ws_router.router)
 app.include_router(common_router.router)
 app.include_router(paper_repair_router.router)
 app.include_router(artifact_edit_router.router)
+app.include_router(workflow_router.router)
 app.include_router(files_router.router)
 
 app.add_middleware(

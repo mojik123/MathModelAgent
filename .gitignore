@@ -13,6 +13,7 @@ frontend/.env.*
 !.env.example
 backend/logs/
 backend/project/work_dir/
+project/work_dir/
 .claude/
 .codex-run/
 .cursor/
