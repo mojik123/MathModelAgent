@@ -85,10 +85,7 @@ class CodexRunner:
             model,
             "--config",
             f'model_reasoning_effort="{reasoning}"',
-            "--sandbox",
-            "workspace-write",
-            "--ask-for-approval",
-            "never",
+            "--approve-for-me",
             prompt,
         ]
 

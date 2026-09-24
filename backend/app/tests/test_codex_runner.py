@@ -19,6 +19,9 @@ def test_build_command_passes_codex_model_reasoning_and_workspace(tmp_path):
     assert command[command.index("--model") + 1] == "gpt-6-sol"
     assert command[command.index("--config") + 1] == 'model_reasoning_effort="high"'
     assert command[command.index("--cd") + 1] == str(tmp_path)
+    assert "--approve-for-me" in command
+    assert "--ask-for-approval" not in command
+    assert "--sandbox" not in command
     assert command[-1] == "Run the current stage."
 
 
