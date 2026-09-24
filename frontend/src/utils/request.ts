@@ -1,8 +1,13 @@
 import axios from "axios";
 
+const defaultApiBaseUrl =
+	typeof window === "undefined"
+		? "http://localhost:8000"
+		: `${window.location.protocol}//${window.location.hostname}:8000`;
+
 /** 创建 axios 实例 */
 const service = axios.create({
-	baseURL: import.meta.env.VITE_API_BASE_URL,
+	baseURL: import.meta.env.VITE_API_BASE_URL || defaultApiBaseUrl,
 	timeout: 30000,
 });
 

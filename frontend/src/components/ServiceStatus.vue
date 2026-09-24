@@ -1,9 +1,9 @@
 <template>
-  <div class="flex items-center gap-2">
+  <div class="flex min-w-0 max-w-full items-center gap-2 overflow-x-auto">
     <div
       v-for="entry in serviceEntries"
       :key="entry.key"
-      class="flex items-center gap-1 px-2 py-1 rounded-md text-xs"
+      class="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs"
       :class="getStatusClass(entry.service.status)"
       :title="entry.service.message"
     >
@@ -48,10 +48,16 @@ const services = ref<Services>({
 	active_tasks: { status: "unknown", message: "Checking..." },
 });
 
+const serviceKeys = ["backend", "redis", "active_tasks"] as const;
+
 const serviceEntries = computed(() =>
-	Object.entries(services.value)
-		.filter((entry): entry is [string, ServiceStatus] => Boolean(entry[1]))
-		.map(([key, service]) => ({ key, service })),
+	serviceKeys.map((key) => ({
+		key,
+		service: services.value[key] ?? {
+			status: "unknown" as ServiceState,
+			message: "Service status unavailable",
+		},
+	})),
 );
 
 let statusInterval: number | null = null;
@@ -96,11 +102,25 @@ const checkStatus = async () => {
 	try {
 		const response = await getServiceStatus();
 		const oldStatus = { ...services.value };
-		const nextServices = response.data as Services;
-		services.value = nextServices;
+		const nextServices = response.data as Partial<Services>;
+		services.value = {
+			backend: nextServices.backend ?? {
+				status: "unknown",
+				message: "Backend status unavailable",
+			},
+			redis: nextServices.redis ?? {
+				status: "unknown",
+				message: "Redis status unavailable",
+			},
+			active_tasks: nextServices.active_tasks ?? {
+				status: "unknown",
+				message: "Active task status unavailable",
+			},
+		};
 		lastStatusCheckFailed = false;
 
-		for (const [key, service] of Object.entries(nextServices)) {
+		for (const key of serviceKeys) {
+			const service = nextServices[key];
 			if (!service) continue;
 			const oldStatusValue = oldStatus[key]?.status ?? "unknown";
 			if (service.status === "error" && oldStatusValue !== "error") {

@@ -8,7 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from aiofile import async_open
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from app.config.setting import settings
 from app.utils.common_utils import ensure_safe_task_id, get_config_template
 from app.schemas.enums import CompTemplate
@@ -331,21 +331,27 @@ def _is_recent_task_update(updated_timestamp: float) -> bool:
 
 
 @router.get("/tasks")
-async def list_tasks():
+async def list_tasks(
+    limit: int | None = Query(default=None, ge=1, le=1000),
+):
     """列出本机已经生成过的建模任务。"""
     tasks: list[dict] = []
     MESSAGES_DIR.mkdir(parents=True, exist_ok=True)
     WORK_DIR_ROOT.mkdir(parents=True, exist_ok=True)
     client = None
     try:
-        client = await redis_manager.get_client()
+        client = await asyncio.wait_for(redis_manager.get_client(), timeout=1.0)
     except Exception:
         client = None
 
     task_ids = {path.stem for path in MESSAGES_DIR.glob("*.json")}
     task_ids.update(path.name for path in WORK_DIR_ROOT.iterdir() if path.is_dir())
 
-    for task_id in sorted(task_ids, reverse=True):
+    ordered_task_ids = sorted(task_ids, reverse=True)
+    if limit is not None:
+        ordered_task_ids = ordered_task_ids[:limit]
+
+    for task_id in ordered_task_ids:
         try:
             safe_task_id = _require_safe_task_id(task_id)
         except HTTPException:
@@ -368,10 +374,11 @@ async def list_tasks():
         )
         status = _parse_task_status(messages)
         state = None
-        try:
-            state = await get_task_state(safe_task_id)
-        except Exception:
-            state = None
+        if client is not None:
+            try:
+                state = await get_task_state(safe_task_id)
+            except Exception:
+                state = None
         if state and state.get("status"):
             status = str(state["status"])
         if client is not None:

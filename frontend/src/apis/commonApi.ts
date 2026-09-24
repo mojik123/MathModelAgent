@@ -81,8 +81,11 @@ export function getTaskMessages(task_id: string) {
 	});
 }
 
-export function getTaskHistory() {
-	return request.get<TaskHistoryItem[]>("/tasks");
+export function getTaskHistory(limit?: number) {
+	return request.get<TaskHistoryItem[]>("/tasks", {
+		params: typeof limit === "number" ? { limit } : undefined,
+		timeout: 60000,
+	});
 }
 
 export function deleteTaskHistory(task_id: string) {
