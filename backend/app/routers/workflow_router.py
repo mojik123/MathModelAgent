@@ -40,6 +40,7 @@ _CODEX_MODELS = (
 )
 _DEFAULT_CODEX_MODEL = "gpt-6-luna"
 _DEFAULT_CODEX_REASONING = "max"
+_TASK_DEFAULT_MODEL_KEY = "task-default"
 
 # The frontend registry is mirrored here because this endpoint returns complete
 # WorkflowStage objects. Keep IDs and fields aligned with frontend/src/workflow/stages.ts.
@@ -532,14 +533,18 @@ def _resolve_workflow_run(payload: WorkflowRunPayload) -> tuple[str, Path, dict[
     if not runner.executable:
         raise HTTPException(status_code=503, detail="未找到 Codex CLI，请先安装并登录 Codex。")
 
-    try:
-        config = _read_task_model_config(task_dir, task_id, stage_id)
-    except HTTPException as exc:
-        if exc.status_code != 404:
-            raise
+    config = None
+    for task_key in (_TASK_DEFAULT_MODEL_KEY, stage_id):
+        try:
+            config = _read_task_model_config(task_dir, task_id, task_key)
+            break
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+    if config is None:
         registry = _configured_model_registry()
         if not registry:
-            raise HTTPException(status_code=503, detail="当前没有可用的 Codex 模型。") from exc
+            raise HTTPException(status_code=503, detail="当前没有可用的 Codex 模型。")
         default_model, default_reasoning = _default_model_selection(registry)
         config = {
             "task_id": task_id,
@@ -837,36 +842,8 @@ async def stop_workflow_stage(payload: WorkflowStopPayload) -> dict[str, Any]:
 @router.post("/workflow_run")
 async def run_workflow_stage(payload: WorkflowRunPayload) -> dict[str, Any]:
     _ensure_persisted_runs_loaded()
-    task_id = payload.task_id.strip()
-    stage_id = _normalize_stage_id(payload.stage_id)
-    if stage_id is None:
-        raise HTTPException(status_code=422, detail="非法 stage_id")
-    task_dir = _task_dir(task_id)
-    stage = next(stage for stage in _STAGE_DEFINITIONS if stage["id"] == stage_id)
-    runner = _get_codex_runner()
-    if not runner.executable:
-        raise HTTPException(status_code=503, detail="未找到 Codex CLI，请先安装并登录 Codex。")
-
-    try:
-        config = _read_task_model_config(task_dir, task_id, stage_id)
-    except HTTPException as exc:
-        if exc.status_code != 404:
-            raise
-        registry = _configured_model_registry()
-        if not registry:
-            raise HTTPException(status_code=503, detail="当前没有可用的 Codex 模型。") from exc
-        default_model, default_reasoning = _default_model_selection(registry)
-        config = {
-            "task_id": task_id,
-            "task_key": stage_id,
-            "model": default_model,
-            "reasoning": default_reasoning,
-        }
-
-    registry = {entry["id"]: entry for entry in _configured_model_registry()}
-    model = registry.get(config["model"])
-    if model is None or config["reasoning"] not in model["reasoning_options"]:
-        raise HTTPException(status_code=422, detail="保存的模型或推理强度当前不可用，请重新选择并保存。")
+    task_id, task_dir, stage, config, runner = _resolve_workflow_run(payload)
+    stage_id = stage["id"]
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]
     log_path = task_dir / "logs" / "codex" / f"{run_id}.json"

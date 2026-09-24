@@ -61,10 +61,6 @@ const stubs = {
 		props: ["taskId", "stageId"],
 		template: '<section data-testid="stage-artifacts" :data-stage-id="stageId" />',
 	},
-	ModelSelector: {
-		props: ["taskId", "taskKey"],
-		template: '<aside data-testid="task-model-selector" :data-task-id="taskId" :data-task-key="taskKey" />',
-	},
 	Tabs: { template: "<div><slot /></div>" },
 	TabsContent: {
 		props: ["value"],
@@ -124,22 +120,20 @@ describe("task workbench layout", () => {
 		await flushPromises();
 
 		const layout = wrapper.get('[data-testid="task-workbench-layout"]');
-		expect(layout.attributes("data-layout")).toBe("responsive-three-column");
+		expect(layout.attributes("data-layout")).toBe("responsive-two-column");
 		expect(layout.get('[data-testid="task-primary-stage-navigation"]').exists()).toBe(true);
-		expect(layout.get('[data-testid="task-model-selector-column"]').exists()).toBe(true);
-		expect(wrapper.get('[data-testid="task-model-selector"]').attributes("data-task-key")).toBe("00-intake");
+		expect(layout.find('[data-testid="task-model-selector-column"]').exists()).toBe(false);
 		const mainGridClasses = layout.get("main").classes();
-		expect(mainGridClasses).toContain("md:grid-cols-[clamp(10rem,19vw,14rem)_minmax(15rem,1fr)_clamp(12rem,20vw,16rem)]");
-		expect(mainGridClasses).toContain("xl:grid-cols-[15rem_minmax(0,1fr)_18rem]");
+		expect(mainGridClasses).toContain("md:grid-cols-[clamp(10rem,19vw,14rem)_minmax(15rem,1fr)]");
+		expect(mainGridClasses).toContain("xl:grid-cols-[15rem_minmax(0,1fr)]");
 		expect(wrapper.get('button[data-stage-id="00-intake"]').classes().join(" ")).toContain("focus-visible:ring-2");
-		expect(wrapper.get('a[href="#task-model-selector-column"]').exists()).toBe(true);
+		expect(wrapper.find('a[href="#task-model-selector-column"]').exists()).toBe(false);
 
 		await wrapper.get('[data-stage-id="01-analysis"]').trigger("click");
 		await flushPromises();
 
 		expect(wrapper.get("#stage-overview-title").text()).toBe("赛题分析");
 		expect(wrapper.get('[data-testid="stage-artifacts"]').attributes("data-stage-id")).toBe("01-analysis");
-		expect(wrapper.get('[data-testid="task-model-selector"]').attributes("data-task-key")).toBe("01-analysis");
 	});
 
 	it("keeps WebSocket messages in a compact, keyboard-expandable run log", async () => {

@@ -18,7 +18,6 @@ import ImageGallery from "@/components/AgentEditor/ImageGallery.vue";
 import ModelerEditor from "@/components/AgentEditor/ModelerEditor.vue";
 import WriterEditor from "@/components/AgentEditor/WriterEditor.vue";
 import ArtifactWorkbench from "@/components/Workflow/ArtifactWorkbench.vue";
-import ModelSelector from "@/components/Workflow/ModelSelector.vue";
 import StageOverview from "@/components/Workflow/StageOverview.vue";
 import WorkflowSidebar from "@/components/Workflow/WorkflowSidebar.vue";
 import { Button } from "@/components/ui/button";
@@ -1116,7 +1115,7 @@ onBeforeUnmount(() => {
 <template>
   <div
     data-testid="task-workbench-layout"
-    data-layout="responsive-three-column"
+    data-layout="responsive-two-column"
     class="fixed inset-0 z-20 flex min-h-0 flex-col overflow-hidden bg-slate-50 text-slate-900"
   >
     <header class="shrink-0 border-b border-slate-200 bg-white">
@@ -1175,12 +1174,6 @@ onBeforeUnmount(() => {
           <Button v-else variant="default" size="sm" :disabled="isStarting" @click="handleStart">
             {{ startButtonLabel }}
           </Button>
-          <a
-            href="#task-model-selector-column"
-            class="inline-flex h-9 items-center rounded-md border border-slate-200 px-3 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 md:hidden"
-          >
-            模型设置
-          </a>
           <DropdownMenu>
             <DropdownMenuTrigger as-child>
               <Button variant="outline" size="icon" class="shrink-0" title="更多操作" aria-label="更多操作">
@@ -1268,7 +1261,7 @@ onBeforeUnmount(() => {
     </header>
 
     <main
-      class="grid min-h-0 flex-1 grid-cols-1 grid-rows-[7.5rem_minmax(20rem,1fr)_auto] overflow-y-auto md:grid-cols-[clamp(10rem,19vw,14rem)_minmax(15rem,1fr)_clamp(12rem,20vw,16rem)] md:grid-rows-1 md:overflow-hidden xl:grid-cols-[15rem_minmax(0,1fr)_18rem]"
+      class="grid min-h-0 flex-1 grid-cols-1 grid-rows-[7.5rem_minmax(20rem,1fr)] overflow-y-auto md:grid-cols-[clamp(10rem,19vw,14rem)_minmax(15rem,1fr)] md:grid-rows-1 md:overflow-hidden xl:grid-cols-[15rem_minmax(0,1fr)]"
     >
       <section class="min-h-0 min-w-0 border-b border-slate-200 bg-white md:border-b-0 md:border-r" aria-label="阶段导航">
         <WorkflowSidebar
@@ -1312,18 +1305,6 @@ onBeforeUnmount(() => {
         />
       </section>
 
-      <aside
-        data-testid="task-model-selector-column"
-        id="task-model-selector-column"
-        aria-label="任务模型设置"
-        class="min-h-[22rem] border-t border-slate-200 bg-white md:min-h-0 md:border-l md:border-t-0"
-      >
-        <ModelSelector
-          class="min-h-0 flex-1"
-          :task-id="props.task_id"
-          :task-key="activeStage.id"
-        />
-      </aside>
     </main>
 
     <details data-testid="task-run-log" class="group shrink-0 border-t border-slate-200 bg-white">
