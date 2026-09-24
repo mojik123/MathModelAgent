@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import type { StageStatus, WorkflowStage } from "@/workflow/types";
+import TaskModelControls from "@/components/Workflow/TaskModelControls.vue";
 
 defineProps<{
   stages: WorkflowStage[];
   activeStageId: string;
+  taskId: string;
 }>();
 
 const emit = defineEmits<{
@@ -81,6 +83,7 @@ const statusTextClasses: Record<StageStatus, string> = {
               </span>
             </span>
           </button>
+          <TaskModelControls :task-id="taskId" :task-key="stage.id" />
         </li>
       </ol>
     </nav>

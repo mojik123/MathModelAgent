@@ -534,7 +534,7 @@ def _resolve_workflow_run(payload: WorkflowRunPayload) -> tuple[str, Path, dict[
         raise HTTPException(status_code=503, detail="未找到 Codex CLI，请先安装并登录 Codex。")
 
     config = None
-    for task_key in (_TASK_DEFAULT_MODEL_KEY, stage_id):
+    for task_key in (stage_id, _TASK_DEFAULT_MODEL_KEY):
         try:
             config = _read_task_model_config(task_dir, task_id, task_key)
             break

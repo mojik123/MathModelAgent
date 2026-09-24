@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
 	NO_REASONING_OPTION,
-	TASK_DEFAULT_MODEL_KEY,
 	getModelRegistry,
 	getTaskModelConfig,
 	saveTaskModelConfig,
@@ -9,7 +8,7 @@ import {
 import type { ModelRegistryEntry } from "@/apis/workflowApi";
 import { computed, ref, watch } from "vue";
 
-const props = defineProps<{ taskId: string }>();
+const props = defineProps<{ taskId: string; taskKey: string }>();
 
 let registryPromise: ReturnType<typeof getModelRegistry> | null = null;
 function loadRegistry() {
@@ -52,7 +51,7 @@ async function loadTaskConfig(taskId: string) {
 	try {
 		const [registryResponse, configResponse] = await Promise.all([
 			loadRegistry(),
-			getTaskModelConfig(taskId, TASK_DEFAULT_MODEL_KEY),
+			getTaskModelConfig(taskId, props.taskKey),
 		]);
 		models.value = registryResponse.data ?? [];
 		setFallbackSelection();
@@ -92,7 +91,7 @@ async function persistSelection() {
 	saveStatus.value = "idle";
 	const payload = {
 		task_id: props.taskId,
-		task_key: TASK_DEFAULT_MODEL_KEY,
+		task_key: props.taskKey,
 		model: selectedModel.value,
 		reasoning: selectedReasoning.value || NO_REASONING_OPTION,
 	};
@@ -122,8 +121,8 @@ function handleReasoningChange() {
 	void persistSelection();
 }
 
-watch(() => props.taskId, (taskId) => {
-	if (taskId) void loadTaskConfig(taskId);
+watch(() => [props.taskId, props.taskKey], ([taskId, taskKey]) => {
+	if (taskId && taskKey) void loadTaskConfig(taskId);
 }, { immediate: true });
 </script>
 

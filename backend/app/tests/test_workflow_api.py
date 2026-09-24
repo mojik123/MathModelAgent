@@ -205,7 +205,7 @@ def test_workflow_run_defaults_to_luna_max_without_saved_config(workflow_client,
     assert response.json()["reasoning"] == "max"
 
 
-def test_workflow_run_prefers_task_default_model_config_over_stage_config(workflow_client, monkeypatch):
+def test_workflow_run_prefers_stage_model_config_over_task_default(workflow_client, monkeypatch):
     client, work_root = workflow_client
     monkeypatch.setattr("app.routers.workflow_router.shutil.which", lambda name: "codex.exe")
     task_id = "codex-task-default-task"
@@ -227,11 +227,41 @@ def test_workflow_run_prefers_task_default_model_config_over_stage_config(workfl
         executable = "codex.exe"
 
         async def run(self, *, workspace, model, reasoning, prompt, log_path):
-            assert model == "gpt-6-sol"
-            assert reasoning == "high"
+            assert model == "gpt-6-luna"
+            assert reasoning == "max"
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_path.write_text("fake task default log", encoding="utf-8")
             return CodexEventResult(output="task default done", thread_id="thread-task-default"), 0, ""
+
+    monkeypatch.setattr("app.routers.workflow_router._get_codex_runner", lambda: FakeRunner())
+    response = client.post("/workflow_run", json={"task_id": task_id, "stage_id": "00-intake"})
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "gpt-6-luna"
+    assert response.json()["reasoning"] == "max"
+
+
+def test_workflow_run_uses_task_default_when_stage_config_is_missing(workflow_client, monkeypatch):
+    client, work_root = workflow_client
+    monkeypatch.setattr("app.routers.workflow_router.shutil.which", lambda name: "codex.exe")
+    task_id = "codex-task-default-fallback"
+    (work_root / task_id).mkdir()
+    assert client.put("/task_model_config", json={
+        "task_id": task_id,
+        "task_key": "task-default",
+        "model": "gpt-6-sol",
+        "reasoning": "high",
+    }).status_code == 200
+
+    class FakeRunner:
+        executable = "codex.exe"
+
+        async def run(self, *, workspace, model, reasoning, prompt, log_path):
+            assert model == "gpt-6-sol"
+            assert reasoning == "high"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text("fake fallback log", encoding="utf-8")
+            return CodexEventResult(output="fallback done", thread_id="thread-fallback"), 0, ""
 
     monkeypatch.setattr("app.routers.workflow_router._get_codex_runner", lambda: FakeRunner())
     response = client.post("/workflow_run", json={"task_id": task_id, "stage_id": "00-intake"})

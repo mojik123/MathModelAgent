@@ -1269,6 +1269,7 @@ onBeforeUnmount(() => {
           class="min-h-0"
           :stages="workflowStages"
           :active-stage-id="activeStageId"
+          :task-id="props.task_id"
           @select="selectStage"
         />
       </section>

@@ -61,6 +61,10 @@ const stubs = {
 		props: ["taskId", "stageId"],
 		template: '<section data-testid="stage-artifacts" :data-stage-id="stageId" />',
 	},
+	TaskModelControls: {
+		props: ["taskId", "taskKey"],
+		template: '<div data-testid="task-stage-model-controls" :data-task-key="taskKey" />',
+	},
 	Tabs: { template: "<div><slot /></div>" },
 	TabsContent: {
 		props: ["value"],

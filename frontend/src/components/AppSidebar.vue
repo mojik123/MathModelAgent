@@ -5,7 +5,6 @@ import {
 	getTaskHistory,
 } from "@/apis/commonApi";
 import { Button } from "@/components/ui/button";
-import TaskModelControls from "@/components/Workflow/TaskModelControls.vue";
 import {
 	Sidebar,
 	SidebarContent,
@@ -194,8 +193,6 @@ onMounted(() => {
                     </div>
                   </RouterLink>
                 </SidebarMenuButton>
-
-                <TaskModelControls :task-id="task.task_id" />
 
                 <button
                   type="button"

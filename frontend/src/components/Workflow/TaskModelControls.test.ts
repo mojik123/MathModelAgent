@@ -11,7 +11,6 @@ const { getModelRegistryMock, getTaskModelConfigMock, saveTaskModelConfigMock } 
 
 vi.mock("@/apis/workflowApi", () => ({
 	NO_REASONING_OPTION: "none",
-	TASK_DEFAULT_MODEL_KEY: "task-default",
 	getModelRegistry: getModelRegistryMock,
 	getTaskModelConfig: getTaskModelConfigMock,
 	saveTaskModelConfig: saveTaskModelConfigMock,
@@ -29,16 +28,16 @@ describe("TaskModelControls", () => {
 		vi.clearAllMocks();
 		getModelRegistryMock.mockResolvedValue({ data: models });
 		getTaskModelConfigMock.mockResolvedValue({
-			data: { task_id: "task-1", task_key: "task-default", model: "gpt-6-luna", reasoning: "max" },
+			data: { task_id: "task-1", task_key: "00-intake", model: "gpt-6-luna", reasoning: "max" },
 		});
 		saveTaskModelConfigMock.mockImplementation(async (config: TaskModelConfig) => ({ data: config }));
 	});
 
-	it("loads and saves compact task-level model controls", async () => {
-		const wrapper = mount(TaskModelControls, { props: { taskId: "task-1" } });
+	it("loads and saves compact controls for one task stage", async () => {
+		const wrapper = mount(TaskModelControls, { props: { taskId: "task-1", taskKey: "00-intake" } });
 		await flushPromises();
 
-		expect(getTaskModelConfigMock).toHaveBeenCalledWith("task-1", "task-default");
+		expect(getTaskModelConfigMock).toHaveBeenCalledWith("task-1", "00-intake");
 		expect(wrapper.get('[aria-label="任务模型"]').element).toHaveProperty("value", "gpt-6-luna");
 		expect(wrapper.get('[aria-label="任务思考强度"]').element).toHaveProperty("value", "max");
 
@@ -48,7 +47,7 @@ describe("TaskModelControls", () => {
 
 		expect(saveTaskModelConfigMock).toHaveBeenCalledWith({
 			task_id: "task-1",
-			task_key: "task-default",
+			task_key: "00-intake",
 			model: "gpt-6-sol",
 			reasoning: "high",
 		});
@@ -57,7 +56,7 @@ describe("TaskModelControls", () => {
 
 	it("shows Luna max without saving when task config is missing", async () => {
 		getTaskModelConfigMock.mockRejectedValue(notFound());
-		const wrapper = mount(TaskModelControls, { props: { taskId: "task-2" } });
+		const wrapper = mount(TaskModelControls, { props: { taskId: "task-2", taskKey: "01-analysis" } });
 		await flushPromises();
 
 		expect(wrapper.get('[aria-label="任务模型"]').element).toHaveProperty("value", "gpt-6-luna");

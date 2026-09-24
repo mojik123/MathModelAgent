@@ -2,7 +2,6 @@ import request from "@/utils/request";
 import type { WorkflowStage } from "@/workflow/types";
 
 export const NO_REASONING_OPTION = "none" as const;
-export const TASK_DEFAULT_MODEL_KEY = "task-default" as const;
 
 export interface WorkflowStateResponse {
   stages: WorkflowStage[];
