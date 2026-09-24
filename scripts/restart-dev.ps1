@@ -2,7 +2,7 @@ param(
     [ValidateSet("auto", "local", "docker")]
     [string]$BackendMode = "auto",
     [int]$BackendPort = 8000,
-    [string]$FrontendHost = "localhost",
+    [string]$FrontendHost = "0.0.0.0",
     [int]$FrontendPort = 5174,
     [switch]$BackendOnly,
     [switch]$FrontendOnly,
@@ -30,6 +30,7 @@ function Get-ProcessInfoForPort([int]$Port) {
     $ids = Get-ListenProcessIds $Port
     foreach ($id in $ids) {
         $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
+        if (-not $proc) { continue }
         $cmd = Get-CimInstance Win32_Process -Filter "ProcessId=$id" -ErrorAction SilentlyContinue
         [pscustomobject]@{
             Port = $Port
@@ -41,18 +42,44 @@ function Get-ProcessInfoForPort([int]$Port) {
     }
 }
 
+function Stop-ProcessTree([int]$ProcessId) {
+    $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$ProcessId" -ErrorAction SilentlyContinue)
+    foreach ($child in $children) {
+        Stop-ProcessTree ([int]$child.ProcessId)
+    }
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+}
+
 function Stop-Port([int]$Port) {
     $ids = Get-ListenProcessIds $Port
     foreach ($id in $ids) {
         $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
         if (-not $proc) { continue }
         Write-Host "Stopping port $Port process $id ($($proc.ProcessName))"
-        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+        Stop-ProcessTree $id
+    }
+}
+
+function Stop-LocalBackendProcesses {
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.CommandLine -and
+        $_.CommandLine -match "uvicorn\s+app\.main:app" -and
+        $_.CommandLine -like "*$backendDir*"
+    })
+    foreach ($process in $processes) {
+        Stop-ProcessTree ([int]$process.ProcessId)
     }
 }
 
 function Get-BrowserHost([string]$HostName) {
     if ($HostName -eq "0.0.0.0" -or $HostName -eq "::") { return "localhost" }
+    return $HostName
+}
+
+function Get-ProbeHost([string]$HostName) {
+    if ($HostName -eq "0.0.0.0" -or $HostName -eq "::" -or $HostName -eq "localhost") {
+        return "127.0.0.1"
+    }
     return $HostName
 }
 
@@ -149,9 +176,9 @@ function Start-Frontend {
 
 function Start-BackendLocal {
     $env:ENV = "DEV"
-    if (-not $env:REDIS_URL) {
-        $env:REDIS_URL = "redis://localhost:6379/0"
-    }
+    # The local backend must talk to the Redis container through the published
+    # host port.  Override the Docker-only value from backend/.env.dev.
+    $env:REDIS_URL = "redis://127.0.0.1:6379/0"
 
     $python = Join-Path $backendDir ".venv\Scripts\python.exe"
     $out = Join-Path $logDir "backend.out.log"
@@ -184,6 +211,46 @@ function Start-BackendLocal {
     }
 
     throw "No local backend runtime found. Use -BackendMode docker or install uv / backend .venv."
+}
+
+function Start-RedisDocker {
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        throw "Docker is not available"
+    }
+    $env:DOCKER_CONFIG = Join-Path $root ".docker-config"
+    Push-Location $root
+    try {
+        Write-Host "Starting Docker Redis on localhost:6379"
+        $oldErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        docker compose up -d redis
+        if ($LASTEXITCODE -ne 0) {
+            throw "docker compose up redis failed with exit code $LASTEXITCODE"
+        }
+        $ErrorActionPreference = $oldErrorActionPreference
+    } finally {
+        if ($oldErrorActionPreference) {
+            $ErrorActionPreference = $oldErrorActionPreference
+        }
+        Pop-Location
+    }
+}
+
+function Stop-DockerAppServices {
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return }
+    $env:DOCKER_CONFIG = Join-Path $root ".docker-config"
+    Push-Location $root
+    try {
+        $oldErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        docker compose stop backend frontend *> $null
+        $ErrorActionPreference = $oldErrorActionPreference
+    } finally {
+        if ($oldErrorActionPreference) {
+            $ErrorActionPreference = $oldErrorActionPreference
+        }
+        Pop-Location
+    }
 }
 
 function Start-BackendDocker {
@@ -226,10 +293,11 @@ function Show-Status {
         }
     }
     $frontendUrlHost = Get-BrowserHost $FrontendHost
+    $frontendProbeHost = Get-ProbeHost $FrontendHost
     $frontendUrl = "http://${frontendUrlHost}:$FrontendPort"
-    $backendHealthUrl = "http://localhost:$BackendPort/healthz"
-    $backendStatusUrl = "http://localhost:$BackendPort/status"
-    $frontendStatus = Test-HttpEndpoint $frontendUrl 2
+    $backendHealthUrl = "http://127.0.0.1:$BackendPort/healthz"
+    $backendStatusUrl = "http://127.0.0.1:$BackendPort/status"
+    $frontendStatus = Test-HttpEndpoint "http://${frontendProbeHost}:$FrontendPort" 2
     $backendHealth = Test-HttpEndpoint $backendHealthUrl 2
     $backendStatus = Test-HttpEndpoint $backendStatusUrl 2
     Write-Host "Frontend URL: $frontendUrl [$(Format-HttpStatusCode $frontendStatus.StatusCode)]"
@@ -260,11 +328,16 @@ if (-not $FrontendOnly) {
             Pop-Location
         }
     } else {
+        Stop-DockerAppServices
+        Stop-LocalBackendProcesses
         Stop-Port $BackendPort
     }
 }
 
 if (-not $BackendOnly) {
+    if ($mode -eq "local") {
+        Stop-DockerAppServices
+    }
     Stop-Port $FrontendPort
 }
 
@@ -277,6 +350,7 @@ if (-not $FrontendOnly) {
     if ($mode -eq "docker") {
         Start-BackendDocker
     } else {
+        Start-RedisDocker
         Start-BackendLocal
     }
 }
@@ -288,16 +362,17 @@ if (-not $BackendOnly) {
 $backendReady = $true
 $frontendReady = $true
 $frontendUrlHost = Get-BrowserHost $FrontendHost
+$frontendProbeHost = Get-ProbeHost $FrontendHost
 if (-not $FrontendOnly) {
-    $backendReady = Wait-HttpEndpoint "http://localhost:$BackendPort/healthz" 30
+    $backendReady = Wait-HttpEndpoint "http://127.0.0.1:$BackendPort/healthz" 30
     if (-not $backendReady) {
         $backendReady = Wait-Port $BackendPort 5 "127.0.0.1"
     }
 }
 if (-not $BackendOnly) {
-    $frontendReady = Wait-HttpEndpoint "http://${frontendUrlHost}:$FrontendPort" 30
+    $frontendReady = Wait-HttpEndpoint "http://${frontendProbeHost}:$FrontendPort" 30
     if (-not $frontendReady) {
-        $frontendReady = Wait-Port $FrontendPort 5 $frontendUrlHost
+        $frontendReady = Wait-Port $FrontendPort 5 $frontendProbeHost
     }
 }
 

@@ -3,6 +3,8 @@ services:
     image: redis:alpine
     container_name: mathmodelagent_redis
     command: redis-server --maxclients 10000 --timeout 300 --tcp-keepalive 60
+    ports:
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
 
