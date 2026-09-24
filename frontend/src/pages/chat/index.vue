@@ -38,10 +38,10 @@ onMounted(() => {
   <SidebarProvider>
     <MoreDetail v-model="isMoreDetailOpen" />
     <AppSidebar />
-    <SidebarInset>
-      <header class="flex h-16 shrink-0 items-center gap-2 px-4">
+    <SidebarInset class="min-w-0 overflow-x-hidden">
+      <header class="flex h-16 min-w-0 shrink-0 items-center gap-2 px-4">
         <SidebarTrigger class="-ml-1" />
-        <div class="flex justify-between w-full gap-2">
+        <div class="flex min-w-0 w-full items-center justify-between gap-2">
           <ServiceStatus />
           <div class="flex gap-2">
             <Button variant="outline" @click="isMoreDetailOpen = true">
@@ -52,8 +52,8 @@ onMounted(() => {
         </div>
       </header>
 
-      <div class="py-5 px-4">
-        <div class="space-y-6">
+      <div class="min-w-0 px-4 py-5">
+        <div class="mx-auto w-full max-w-6xl space-y-6">
           <div class="text-center space-y-2 mb-10">
             <h1 class="text-2xl font-semibold">MathModelAgent</h1>
             <p class="text-muted-foreground">

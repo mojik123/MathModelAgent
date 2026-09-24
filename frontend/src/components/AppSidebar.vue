@@ -36,9 +36,18 @@ const router = useRouter();
 const historyTasks = ref<TaskHistoryItem[]>([]);
 const loadingHistory = ref(false);
 const deletingTaskId = ref<string | null>(null);
+const showAllHistory = ref(false);
+const historyIsComplete = ref(false);
+const visibleHistoryLimit = 6;
 
 const currentTaskId = computed(() =>
 	typeof route.params.task_id === "string" ? route.params.task_id : "",
+);
+
+const visibleHistoryTasks = computed(() =>
+	showAllHistory.value
+		? historyTasks.value
+		: historyTasks.value.slice(0, visibleHistoryLimit),
 );
 
 const statusLabel: Record<TaskHistoryItem["status"], string> = {
@@ -78,16 +87,31 @@ const formatTime = (value?: string | null) => {
 	});
 };
 
-async function loadHistory() {
+async function loadHistory(loadAll = historyIsComplete.value) {
 	loadingHistory.value = true;
 	try {
-		const res = await getTaskHistory();
+		const res = await getTaskHistory(loadAll ? undefined : visibleHistoryLimit + 1);
 		historyTasks.value = res.data;
+		historyIsComplete.value = loadAll;
 	} catch (error) {
 		console.error("读取历史任务失败:", error);
+		if (loadAll) {
+			showAllHistory.value = false;
+			historyIsComplete.value = false;
+		}
 	} finally {
 		loadingHistory.value = false;
 	}
+}
+
+async function toggleHistory() {
+	if (historyIsComplete.value) {
+		showAllHistory.value = !showAllHistory.value;
+		return;
+	}
+
+	showAllHistory.value = true;
+	await loadHistory(true);
 }
 
 async function deleteHistoryTask(task: TaskHistoryItem) {
@@ -155,7 +179,7 @@ onMounted(() => {
               <div class="px-2 py-2 text-xs text-slate-500">暂无历史建模</div>
             </SidebarMenuItem>
 
-            <SidebarMenuItem v-for="task in historyTasks" :key="task.task_id">
+			<SidebarMenuItem v-for="task in visibleHistoryTasks" :key="task.task_id">
               <div class="group/history relative rounded-md">
                 <SidebarMenuButton as-child :is-active="currentTaskId === task.task_id" class="h-auto py-2 pr-9">
                   <RouterLink :to="`/task/${task.task_id}`" class="min-w-0">
@@ -182,6 +206,17 @@ onMounted(() => {
                 </button>
               </div>
             </SidebarMenuItem>
+
+			<SidebarMenuItem v-if="historyTasks.length > visibleHistoryLimit">
+			  <SidebarMenuButton
+				  type="button"
+				  class="justify-center text-xs text-slate-500 hover:text-slate-900"
+				  :disabled="loadingHistory"
+				  @click="toggleHistory"
+			  >
+				  {{ showAllHistory ? "收起历史" : "查看全部历史" }}
+			  </SidebarMenuButton>
+			</SidebarMenuItem>
           </SidebarMenu>
         </SidebarGroupContent>
       </SidebarGroup>

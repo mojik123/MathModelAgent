@@ -538,7 +538,11 @@ export const useTaskStore = defineStore("task", () => {
 				: deriveStatusFromMessages(taskId);
 		isRunning.value = isActiveStatus(status);
 
-		const baseUrl = import.meta.env.VITE_WS_URL;
+		const defaultWsBaseUrl =
+			typeof window === "undefined"
+				? "ws://localhost:8000"
+				: `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:8000`;
+		const baseUrl = import.meta.env.VITE_WS_URL || defaultWsBaseUrl;
 		const wsUrl = `${baseUrl}/task/${taskId}`;
 
 		ws = new TaskWebSocket(
